@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 
+from parser import MEDIA_MARKERS
 from storage import make_cache_key
 
 SCHEMA_VERSION = "chat-signal-v2.1"  # 问题 schema 变更时必须递增，使旧缓存自然失效
@@ -18,15 +19,33 @@ DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
 
+# 基础分析规则（与 v2.1 及更早版本一致：纯文本消息的 state 因此保持
+# 与历史缓存条目完全相同的 cache key）。
 ANALYSIS_RULE = (
     "Judge only observable signals in the conversation. "
     "Do not assume romantic interest from politeness or normal friendliness alone. "
     "Base every answer only on the target message and the conversation context "
-    "that precedes it, as if you just saw this message at that moment in the chat. "
-    "Bracketed neutral markers such as [发送了一张图片，内容未知] mean the actual "
+    "that precedes it, as if you just saw this message at that moment in the chat."
+)
+
+# 媒体补充规则：**仅当 state 中实际存在媒体中性 marker 时**才追加
+# （见 build_state → analysis_rule_for）。这样：
+# - 不含媒体的纯文本消息：rule 与旧版一致 → cache key 不变，旧缓存可继续命中；
+# - 含媒体 marker 的消息：rule 自然不同 → cache key 自然不同。
+MEDIA_RULE_CLAUSE = (
+    " Bracketed neutral markers such as [发送了一张图片，内容未知] mean the actual "
     "media content is unknown and was not provided; never guess what the media "
     "shows or what emotion it carries."
 )
+
+
+def analysis_rule_for(state: dict) -> str:
+    """按 state 实际内容返回分析规则（媒体 marker 存在时才追加媒体条款）。"""
+    texts = [state.get("target_message", {}).get("text", "")]
+    texts += [c.get("text", "") for c in state.get("conversation_context", [])]
+    if any(marker in t for t in texts for marker in MEDIA_MARKERS.values()):
+        return ANALYSIS_RULE + MEDIA_RULE_CLAUSE
+    return ANALYSIS_RULE
 
 # ---------------------------------------------------------------------------
 # 问题定义（同时是缓存 key 的一部分，改动后请提升 SCHEMA_VERSION）
@@ -230,12 +249,17 @@ def build_state(
     """构建 Jev state：目标消息 + 之前的最多 max_context 条上下文。
 
     不包含任何未来消息——模拟“当时看到这句话时能判断出什么”。
+
+    ``analysis_rule`` 按 state 实际内容生成：仅当上下文 / 目标中存在媒体中性
+    marker 时才追加媒体条款，因此纯文本消息的 state（及缓存 key）与
+    引入媒体过滤之前完全一致。
     """
-    return {
+    state = {
         "conversation_context": context[-max_context:],
         "target_message": target,
-        "analysis_rule": ANALYSIS_RULE,
     }
+    state["analysis_rule"] = analysis_rule_for(state)
+    return state
 
 
 # ---------------------------------------------------------------------------

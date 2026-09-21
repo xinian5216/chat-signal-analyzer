@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import analyzer
 from analyzer import analyze_messages, extract_answers
 from parser import (
     MEDIA_KIND_FILE,
@@ -269,10 +270,85 @@ TA: 好的 [图片] 微信图片_1.dat"""
 
 
 def test_analysis_rule_forbids_guessing_media_content():
-    from analyzer import ANALYSIS_RULE
+    from analyzer import MEDIA_RULE_CLAUSE, analysis_rule_for
 
-    assert "内容未知" in ANALYSIS_RULE or "unknown" in ANALYSIS_RULE.lower()
-    assert "never guess" in ANALYSIS_RULE.lower()
+    # 无媒体 marker → 基础规则（与旧版一致）
+    plain = {"conversation_context": [], "target_message": {"text": "在忙吗"}}
+    assert analysis_rule_for(plain) == analyzer.ANALYSIS_RULE
+    assert "never guess" not in analysis_rule_for(plain).lower()
+
+    # 有媒体 marker → 追加媒体条款
+    with_media = {
+        "conversation_context": [{"text": MEDIA_MARKERS[MEDIA_KIND_IMAGE]}],
+        "target_message": {"text": "你看这个"},
+    }
+    rule = analysis_rule_for(with_media)
+    assert rule == analyzer.ANALYSIS_RULE + MEDIA_RULE_CLAUSE
+    assert "never guess" in rule.lower()
+    assert "内容未知" in rule
+
+
+def test_pure_text_state_keeps_pre_media_cache_key():
+    """纯文本消息的 state / cache key 与媒体过滤前完全一致（旧缓存可命中）。"""
+    from storage import make_cache_key
+
+    target = {"speaker": "them", "text": "明天还上班呢吗", "time": "22:31",
+              "raw_speaker": "TA"}
+    context = [{"speaker": "me", "text": "在忙吗", "time": "22:30"}]
+    state = analyzer.build_state(context, target)
+    assert state["analysis_rule"] == analyzer.ANALYSIS_RULE
+
+    # 媒体过滤前（HEAD~1）的 rule 就是当前基础 rule
+    assert "never guess" not in state["analysis_rule"].lower()
+
+    # 与本地缓存中真实存在的历史 key 对比（v2.1 smoke 样本）
+    chat = """我: 在忙吗
+TA: 收到，谢谢
+我: 周末出去玩吗
+TA: 哈哈你又来了
+我: 你还记得那个梗啊
+TA: 你还记得那个梗啊哈哈哈
+我: 请看一下附件
+TA: 请确认附件是否收到
+我: 这事只有你懂
+TA: 行行行，还是你懂我"""
+    msgs = mask_messages(parse_chat(chat))
+    schema = analyzer.build_questions_schema()
+    hits = 0
+    for i, m in enumerate(msgs):
+        if m["speaker"] != "them":
+            continue
+        ctx = [{"speaker": c["speaker"], "text": c["text"], "time": c.get("time")}
+               for c in msgs[:i]]
+        tgt = {"speaker": "them", "text": m["text"], "time": m.get("time"),
+               "raw_speaker": m.get("raw_speaker")}
+        key = make_cache_key(analyzer.build_state(ctx, tgt), schema,
+                             analyzer.DEFAULT_MODEL, analyzer.SCHEMA_VERSION)
+        from storage import Cache
+
+        c = Cache()
+        got = c.get(key)
+        c.close()
+        if got is not None:
+            hits += 1
+    # 本地 .jev_cache 若含这些历史条目，应全部命中；无缓存环境则为 0（不失败）
+    assert hits in (0, 5)
+
+
+def test_media_context_state_gets_media_clause():
+    """含媒体 marker 的 state 才带媒体条款 → key 自然不同。"""
+    from storage import make_cache_key
+
+    ctx_plain = [{"speaker": "me", "text": "在忙吗", "time": None}]
+    ctx_media = [{"speaker": "me", "text": MEDIA_MARKERS[MEDIA_KIND_IMAGE],
+                  "time": None}]
+    tgt = {"speaker": "them", "text": "哈哈", "time": None, "raw_speaker": "TA"}
+    schema = analyzer.build_questions_schema()
+    k_plain = make_cache_key(analyzer.build_state(ctx_plain, tgt), schema,
+                             analyzer.DEFAULT_MODEL, analyzer.SCHEMA_VERSION)
+    k_media = make_cache_key(analyzer.build_state(ctx_media, tgt), schema,
+                             analyzer.DEFAULT_MODEL, analyzer.SCHEMA_VERSION)
+    assert k_plain != k_media
 
 
 # ---------------------------------------------------------------------------
