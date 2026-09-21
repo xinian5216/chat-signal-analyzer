@@ -13,16 +13,20 @@ from datetime import datetime
 
 from analyzer import DEFAULT_MODEL, EMOTION_LABELS, INTENT_OPTIONS, SCHEMA_VERSION
 from scoring import (
-    EFFECTIVE_MESSAGE_MIN_EVIDENCE,
     INTENT_PROFILE_LABELS,
     TREND_LABELS,
+    behavior_summary_text,
     evidence_level_label,
+    information_coverage,
+    is_low_evidence_display,
     message_metrics,
+    rank_relationship_signals,
+    relational_ease_label,
+    score_level_label,
     total_evidence_label,
 )
 
 TOP_SIGNALS_MAX = 5          # “主要关系信号”最多列几条
-BEHAVIOR_MIN_PERCENT = 10    # 摘要中只提占比 >= 10% 的行为
 TOP_BEHAVIORS_IN_SUMMARY = 3
 
 
@@ -35,56 +39,45 @@ def report_filename(ext: str) -> str:
 # 摘要文本（确定性模板，适合直接复制）
 # ---------------------------------------------------------------------------
 
-def _score_level(value: float | None) -> str:
-    if value is None:
-        return "数据不足"
-    if value >= 3.0:
-        return "较高水平"
-    if value >= 2.0:
-        return "中等水平"
-    if value >= 1.0:
-        return "偏弱水平"
-    return "很弱水平"
-
 
 def build_summary_text(results: list[dict], stats: dict) -> str:
     analyzed = stats["analyzed"]
     effective = stats["effective_messages"]
+    coverage = information_coverage(stats)
     parts: list[str] = [
-        f"本次共分析 {analyzed} 条 TA 消息，其中 {effective} 条包含较明确的关系信息。"
+        f"本次共分析 {analyzed} 条 TA 消息，其中 {effective} 条包含较明确的关系信息"
+        + (f"（信息覆盖率 {coverage * 100:.0f}%）。" if coverage is not None else "。")
     ]
 
     if stats["overall"] is not None:
         trend_text = {"up": "前后互动呈上升态势", "flat": "前后互动基本稳定",
                       "down": "前后互动呈下降态势"}.get(stats["trend"])
         trend_sentence = f"{trend_text}。" if trend_text else ""
+        reference_note = "（仅供参考）" if is_low_evidence_display(stats) else ""
         parts.append(
-            f"整体互动亲近信号指数为 {stats['overall']:.1f}/100，"
+            f"整体互动亲近信号指数为 {stats['overall']:.1f}/100{reference_note}，"
             f"关系信息量{total_evidence_label(stats['total_weight'])}。{trend_sentence}"
         )
     else:
         parts.append("当前样本缺少足够的关系层面信息，暂不生成可靠的互动亲近信号指数。")
 
-    # 互动行为：按占比取前几位（仅解释层）
-    profiles = stats.get("intent_profiles") or {}
-    ranked = sorted(
-        ((k, v) for k, v in profiles.items() if v * 100 >= BEHAVIOR_MIN_PERCENT),
-        key=lambda kv: kv[1],
-        reverse=True,
-    )[:TOP_BEHAVIORS_IN_SUMMARY]
-    if ranked:
-        names = "、".join(INTENT_PROFILE_LABELS.get(k, k) for k, _ in ranked)
-        parts.append(f"聊天以{names}为主。")
-    else:
-        parts.append("聊天中各类型互动行为分布较为分散。")
+    # 互动行为：中性措辞（仅解释层）
+    parts.append(behavior_summary_text(stats.get("intent_profiles") or {}))
 
     parts.append(f"暧昧信号：{evidence_level_label(stats['romantic_evidence'])}。")
     parts.append(f"疏离信号：{evidence_level_label(stats['distancing_evidence'])}。")
     parts.append(
-        f"温暖程度与投入程度处于{_score_level(stats['warmth_avg'])}"
-        f"（温暖 {_fmt_opt(stats['warmth_avg'])}/4，投入 {_fmt_opt(stats['engagement_avg'])}/4），"
-        f"特殊关注信号{_score_level(stats['special_attention_avg'])}"
+        f"温暖程度{score_level_label(stats['warmth_avg'])}"
+        f"（{_fmt_opt(stats['warmth_avg'])}/4），"
+        f"投入程度{score_level_label(stats['engagement_avg'])}"
+        f"（{_fmt_opt(stats['engagement_avg'])}/4），"
+        f"特殊关注{score_level_label(stats['special_attention_avg'])}"
         f"（{_fmt_opt(stats['special_attention_avg'])}/4）。"
+    )
+    parts.append(
+        f"互动熟悉度{relational_ease_label(stats['relational_ease_avg'])}"
+        f"（{_fmt_opt(stats['relational_ease_avg'])}/4），"
+        "衡量互动的自然与默契程度，不等于浪漫兴趣或特殊关注。"
     )
     return "".join(parts)
 
@@ -121,6 +114,11 @@ def build_json_report(
             "engagement": r["engagement"]["score"],
             "special_attention": r["special_attention"]["score"],
             "relationship_evidence_strength": r["relationship_evidence_strength"]["score"],
+            "relational_ease": {
+                "score": r["relational_ease"]["score"],
+                "probabilities": r["relational_ease"]["probabilities"],
+                "confidence": r["relational_ease"]["confidence"],
+            },
             "romantic_signal": {"raw": r["romantic_signal"], "evidence": m["romantic_ev"]},
             "distancing_signal": {"raw": r["distancing_signal"], "evidence": m["distancing_ev"]},
             "base_score": m["base_score"],
@@ -154,6 +152,10 @@ def build_json_report(
             "warmth_avg": stats["warmth_avg"],
             "engagement_avg": stats["engagement_avg"],
             "special_attention_avg": stats["special_attention_avg"],
+            "relational_ease_avg": stats["relational_ease_avg"],
+            "relational_ease_label": relational_ease_label(stats["relational_ease_avg"]),
+            "information_coverage": information_coverage(stats),
+            "low_evidence_display": is_low_evidence_display(stats),
             "romantic_evidence": stats["romantic_evidence"],
             "romantic_evidence_label": evidence_level_label(stats["romantic_evidence"]),
             "distancing_evidence": stats["distancing_evidence"],
@@ -234,18 +236,33 @@ def build_markdown_report(
 
     # ---- 总体结果 ----
     lines += ["## 总体结果", ""]
+    low_evidence = is_low_evidence_display(stats)
     if stats["overall"] is not None:
-        lines.append(f"- 互动亲近信号指数：{stats['overall']:.1f} / 100")
+        suffix = "（参考）" if low_evidence else ""
+        lines.append(f"- 互动亲近信号指数：{stats['overall']:.1f} / 100{suffix}")
     else:
         lines.append("- 互动亲近信号指数：样本有效关系信息不足，暂不生成可靠指数")
     lines.append(f"- 关系信息量：{total_evidence_label(stats['total_weight'])}")
+    coverage = information_coverage(stats)
+    if coverage is not None:
+        lines.append(f"- 信息覆盖率：{effective} / {analyzed}（{coverage * 100:.0f}%）")
     lines.append(f"- 最近互动趋势：{TREND_LABELS.get(stats['trend'], stats['trend'])}")
-    lines.append(f"- 温暖程度：{_fmt(stats['warmth_avg'])} / 4")
-    lines.append(f"- 投入程度：{_fmt(stats['engagement_avg'])} / 4")
-    lines.append(f"- 特殊关注：{_fmt(stats['special_attention_avg'])} / 4")
+    lines.append(f"- 温暖程度：{_fmt(stats['warmth_avg'])} / 4（{score_level_label(stats['warmth_avg'])}）")
+    lines.append(f"- 投入程度：{_fmt(stats['engagement_avg'])} / 4（{score_level_label(stats['engagement_avg'])}）")
+    lines.append(f"- 特殊关注：{_fmt(stats['special_attention_avg'])} / 4（{score_level_label(stats['special_attention_avg'])}）")
+    lines.append(
+        f"- 互动熟悉度：{_fmt(stats['relational_ease_avg'])} / 4"
+        f"（{relational_ease_label(stats['relational_ease_avg'])}）"
+    )
     lines.append(f"- 暧昧信号：{evidence_level_label(stats['romantic_evidence'])}")
     lines.append(f"- 疏离信号：{evidence_level_label(stats['distancing_evidence'])}")
     lines.append("")
+    if low_evidence:
+        lines += [
+            "> 当前样本关系信息量较低，互动亲近信号指数仅作参考，"
+            "不建议据此判断整体关系亲近程度。",
+            "",
+        ]
 
     # ---- 整段互动行为 ----
     profiles = stats.get("intent_profiles") or {}
@@ -260,17 +277,12 @@ def build_markdown_report(
             "",
         ]
 
-    # ---- 主要关系信号（evidence 最高的若干条，只收有效消息）----
-    ok_entries = [
-        e for e in results
-        if not e.get("error") and (m := message_metrics(e)) is not None
-        and m["evidence"] >= EFFECTIVE_MESSAGE_MIN_EVIDENCE
-    ]
-    ok_entries.sort(key=lambda e: message_metrics(e)["evidence"], reverse=True)
+    # ---- 主要关系信号（按 evidence × relation_confidence 降序，最多 5 条）----
+    ranked = rank_relationship_signals(results, max_n=TOP_SIGNALS_MAX)
     lines += ["## 主要关系信号", ""]
-    if ok_entries:
-        for rank, e in enumerate(ok_entries[:TOP_SIGNALS_MAX], start=1):
-            m = message_metrics(e)
+    if ranked:
+        for rank, item in enumerate(ranked, start=1):
+            e, m = item["entry"], item["metrics"]
             r = e["result"]
             lines.append(f"### {rank}. {_message_label(e, include_text)}")
             lines.append(f"- 关系信息量：{m['evidence']:.1f} / 4")
@@ -288,6 +300,8 @@ def build_markdown_report(
             lines.append(f"- 温暖程度：{r['warmth']['score']:.1f} / 4")
             lines.append(f"- 投入程度：{r['engagement']['score']:.1f} / 4")
             lines.append(f"- 特殊关注：{r['special_attention']['score']:.1f} / 4")
+            lines.append(f"- 互动熟悉度：{m['relational_ease']:.1f} / 4"
+                         f"（{relational_ease_label(m['relational_ease'])}）")
             lines.append(f"- 暧昧信号：{evidence_level_label(m['romantic_ev'])}")
             lines.append(f"- 疏离信号：{evidence_level_label(m['distancing_ev'])}")
             lines.append("")
@@ -320,6 +334,9 @@ def build_markdown_report(
         "≥0.70 为明确证据，romantic / distancing 共用；",
         "- **weighted aggregation**：总体指数与三项 Score 均值均按 message_weight 加权，"
         "低信息量短回复不会稀释结论；行为统计仅解释层，不计入总分。",
+        "- **relational_ease（互动熟悉度）**：v2.1 新增的解释层 Score，"
+        "衡量互动的自然、熟悉、轻松与默契程度，按 message_weight 加权展示，"
+        "**不计入**互动亲近信号指数。",
         "",
     ]
     return "\n".join(lines)

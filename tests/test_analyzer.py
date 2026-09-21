@@ -23,6 +23,9 @@ def make_fake_response():
         "relationship_evidence_strength": FakeAnswer(
             score=2.0, probabilities={"0": 0.0, "1": 0.2, "2": 0.8}, confidence=0.7
         ),
+        "relational_ease": FakeAnswer(
+            score=2.0, probabilities={"0": 0.0, "1": 0.2, "2": 0.8}, confidence=0.7
+        ),
         "romantic_signal": FakeAnswer(noul=0.1),
         "distancing_signal": FakeAnswer(noul=0.9),
     }
@@ -74,23 +77,33 @@ def test_extract_answers_shape():
     assert out["emotion"]["choice"] == "calm"
     assert out["warmth"]["probabilities"]["2"] == 0.7
     assert out["relationship_evidence_strength"]["score"] == 2.0
+    assert out["relational_ease"]["score"] == 2.0
+    assert set(out["relational_ease"]) == {"score", "probabilities", "confidence"}
     assert out["romantic_signal"] == 0.1
     assert out["distancing_signal"] == 0.9
 
 
-def test_schema_v2_includes_evidence_and_invalidates_v1_cache():
-    """v2 question schema 必须包含新 Score，且旧 v1 缓存 key 不能命中新结果。"""
+def test_schema_v21_includes_ease_and_invalidates_v2_cache():
+    """v2.1 question schema 必须包含 relational_ease，且旧 v2 缓存 key 不能命中。"""
     from storage import make_cache_key
 
-    schema_v2 = analyzer.build_questions_schema()
-    assert "relationship_evidence_strength" in schema_v2
+    schema_v21 = analyzer.build_questions_schema()
+    assert "relational_ease" in schema_v21
+    assert len(schema_v21) == 9
 
-    # 模拟 v1 时代的 schema（无 evidence 问题）与版本号
-    schema_v1 = {k: v for k, v in schema_v2.items() if k != "relationship_evidence_strength"}
+    # 模拟 v2 时代的 schema（无 relational_ease 问题）与版本号
+    schema_v2 = {k: v for k, v in schema_v21.items() if k != "relational_ease"}
     state = {"conversation_context": [], "target_message": {"speaker": "them", "text": "哦"}}
-    key_v1 = make_cache_key(state, schema_v1, "jev-latest", "chat-signal-v1")
-    key_v2 = make_cache_key(state, schema_v2, "jev-latest", analyzer.SCHEMA_VERSION)
-    assert key_v1 != key_v2
+    key_v2 = make_cache_key(state, schema_v2, "jev-latest", "chat-signal-v2")
+    key_v21 = make_cache_key(state, schema_v21, "jev-latest", analyzer.SCHEMA_VERSION)
+    assert key_v2 != key_v21
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v2.1"
+
+
+def test_relational_ease_question_is_score_with_five_levels():
+    schema = analyzer.build_questions_schema()
+    assert schema["relational_ease"]["type"] == "score"
+    assert len(schema["relational_ease"]["criteria"]) == 5
 
 
 def test_analyze_only_them_messages_and_single_call_each():

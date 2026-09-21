@@ -4,20 +4,28 @@ import pytest
 
 import scoring
 from scoring import (
+    BEHAVIOR_DOMINANT_THRESHOLD,
+    EFFECTIVE_MESSAGE_MIN_EVIDENCE,
     INTENT_PROFILE_LABELS,
     TREND_LABELS,
+    behavior_summary_text,
     compute_conversation_stats,
     confidence_label,
     evidence_level_label,
+    information_coverage,
+    is_low_evidence_display,
     message_metrics,
     noul_label,
+    rank_relationship_signals,
+    relational_ease_label,
+    score_level_label,
     total_evidence_label,
     transform_noul_evidence,
 )
 
 
 def make_result(warmth=2.0, engagement=2.0, special=1.0,
-                romantic=0.1, distancing=0.1, evidence=2.0,
+                romantic=0.1, distancing=0.1, evidence=2.0, ease=2.0,
                 intent_probs=None, conf=0.8, econf=0.8):
     return {
         "emotion": {"choice": "calm", "probabilities": {"calm": 1.0}, "confidence": 0.8},
@@ -29,11 +37,14 @@ def make_result(warmth=2.0, engagement=2.0, special=1.0,
         "warmth": {"score": warmth, "probabilities": {}, "confidence": conf},
         "engagement": {"score": engagement, "probabilities": {}, "confidence": conf},
         "special_attention": {"score": special, "probabilities": {}, "confidence": conf},
-        "romantic_signal": romantic,
-        "distancing_signal": distancing,
         "relationship_evidence_strength": {
             "score": evidence, "probabilities": {}, "confidence": econf
         },
+        "relational_ease": {
+            "score": ease, "probabilities": {}, "confidence": econf
+        },
+        "romantic_signal": romantic,
+        "distancing_signal": distancing,
     }
 
 
@@ -312,3 +323,166 @@ def test_v1_shaped_result_returns_none_metrics():
     stats = compute_conversation_stats([make_entry(v1_result)])
     assert stats["overall"] is None
     assert stats["analyzed"] == 0  # 不计入 v2 聚合
+
+# ---------------------------------------------------------------------------
+# v2.1：relational_ease 解释层（硬要求：不进任何总分公式）
+# ---------------------------------------------------------------------------
+
+
+def test_relational_ease_not_in_base_score():
+    """ease 变化不影响 base_score。"""
+    a = message_metrics(make_entry(make_result(ease=0.0)))
+    b = message_metrics(make_entry(make_result(ease=4.0)))
+    assert a["base_score"] == b["base_score"]
+    assert a["weight"] == b["weight"]
+
+
+def test_relational_ease_not_in_overall_or_trend():
+    low = [make_entry(make_result(ease=0.0, evidence=3.0, conf=0.9), index=i)
+           for i in range(6)]
+    high = [make_entry(make_result(ease=4.0, evidence=3.0, conf=0.9), index=i)
+            for i in range(6)]
+    s1, s2 = compute_conversation_stats(low), compute_conversation_stats(high)
+    assert s1["overall"] == s2["overall"]
+    assert s1["recent"] == s2["recent"]
+    assert s1["trend"] == s2["trend"]
+
+
+def test_relational_ease_weighted_average():
+    a = make_entry(make_result(ease=4.0, evidence=4.0, conf=0.9, econf=0.9), index=0)
+    b = make_entry(make_result(ease=0.0, evidence=0.5, conf=0.9, econf=0.9), index=1)
+    stats = compute_conversation_stats([a, b])
+    # A 权重 0.9，B 权重 0.1125 → 4.0*0.9/1.0125 ≈ 3.556
+    assert stats["relational_ease_avg"] == pytest.approx(4.0 * 0.9 / (0.9 + 0.1125),
+                                                        abs=1e-6)
+
+
+def test_relational_ease_insufficient_when_weight_low():
+    entries = [make_entry(make_result(ease=3.0, evidence=0.2), index=i)
+               for i in range(3)]
+    stats = compute_conversation_stats(entries)
+    assert stats["relational_ease_avg"] is None
+
+
+def test_relational_ease_label_boundaries():
+    assert relational_ease_label(0.5) == "较生疏"
+    assert relational_ease_label(1.0) == "偏正式 / 熟悉度较低"
+    assert relational_ease_label(2.0) == "自然熟悉"
+    assert relational_ease_label(3.0) == "较熟悉、互动轻松"
+    assert relational_ease_label(3.8) == "高度熟悉 / 明显默契"
+    assert relational_ease_label(None) == "有效关系信息不足"
+
+
+# ---------------------------------------------------------------------------
+# v2.1：LOW_EVIDENCE_DISPLAY_MODE
+# ---------------------------------------------------------------------------
+
+
+def _low_evidence_sample():
+    """1 条有效 + 7 条低信息量（对应用户真实样本形态）。"""
+    entries = [make_entry(make_result(evidence=3.0, conf=0.8), index=0)]
+    entries += [
+        make_entry(make_result(evidence=0.2, conf=0.8), index=i) for i in range(1, 8)
+    ]
+    return entries
+
+
+def test_low_evidence_display_mode_true_for_1_of_8():
+    stats = compute_conversation_stats(_low_evidence_sample())
+    assert stats["effective_messages"] == 1
+    assert stats["analyzed"] == 8
+    assert is_low_evidence_display(stats) is True
+
+
+def test_low_evidence_display_mode_false_for_rich_sample():
+    entries = [make_entry(make_result(evidence=3.0, conf=0.9), index=i)
+               for i in range(6)]
+    stats = compute_conversation_stats(entries)
+    assert stats["effective_messages"] == 6
+    assert is_low_evidence_display(stats) is False
+
+
+# ---------------------------------------------------------------------------
+# v2.1：score_level_label
+# ---------------------------------------------------------------------------
+
+
+def test_score_level_label_boundaries():
+    assert score_level_label(1.7) == "一般"
+    assert score_level_label(2.1) == "一般"
+    assert score_level_label(1.0) == "偏弱"
+    assert score_level_label(0.5) == "弱"
+    assert score_level_label(3.0) == "较强"
+    assert score_level_label(3.8) == "强"
+    assert score_level_label(None) == "数据不足"
+
+
+# ---------------------------------------------------------------------------
+# v2.1：行为摘要措辞
+# ---------------------------------------------------------------------------
+
+
+def test_behavior_summary_avoids_dominant_wording_below_40pct():
+    profiles = {"share_personal": 0.20, "continue_topic": 0.17, "tease": 0.12}
+    text = behavior_summary_text(profiles)
+    assert "相对更常见的互动信号包括" in text
+    assert "以" not in text.split("包括")[0] or "为主" not in text
+    assert "为主" not in text
+
+
+def test_behavior_summary_allows_dominant_at_40pct():
+    profiles = {"tease": 0.45, "share_personal": 0.20, "continue_topic": 0.17}
+    text = behavior_summary_text(profiles)
+    assert "以调侃互动为主" in text
+    assert text.count("为主") == 1
+
+
+def test_behavior_summary_all_below_10pct():
+    profiles = {"tease": 0.08, "share_personal": 0.05}
+    text = behavior_summary_text(profiles)
+    assert "没有特别突出的单一互动行为类型" in text
+
+
+# ---------------------------------------------------------------------------
+# v2.1：主要关系信号排序（evidence × relation_confidence 降序）
+# ---------------------------------------------------------------------------
+
+
+def test_rank_relationship_signals_orders_by_evidence_times_confidence():
+    # 顺序即消息顺序；第 0 条 evidence×conf 最大，应排第一
+    e0 = make_entry(make_result(evidence=4.0, conf=0.9, econf=0.9), index=0)
+    e1 = make_entry(make_result(evidence=4.0, conf=0.5, econf=0.5), index=1)
+    e2 = make_entry(make_result(evidence=1.0, conf=0.9, econf=0.9), index=2)  # 有效
+    e3 = make_entry(make_result(evidence=0.2, conf=0.9, econf=0.9), index=3)  # 无效
+    ranked = rank_relationship_signals([e0, e1, e2, e3], max_n=5)
+    assert [item["entry"]["index"] for item in ranked] == [0, 1, 2]
+    assert ranked[0]["score"] == pytest.approx(4.0 * 0.9, abs=1e-6)
+    assert all(item["entry"]["index"] != 3 for item in ranked)
+
+
+def test_rank_relationship_signals_tie_keeps_original_order():
+    a = make_entry(make_result(evidence=3.0, conf=0.8, econf=0.8), index=0)
+    b = make_entry(make_result(evidence=3.0, conf=0.8, econf=0.8), index=1)
+    ranked = rank_relationship_signals([b, a], max_n=5)
+    assert [item["entry"]["index"] for item in ranked] == [1, 0]  # 输入顺序即原顺序
+
+
+def test_rank_relationship_signals_max_five():
+    entries = [make_entry(make_result(evidence=3.0, conf=0.9), index=i)
+               for i in range(8)]
+    ranked = rank_relationship_signals(entries, max_n=5)
+    assert len(ranked) == 5
+
+
+# ---------------------------------------------------------------------------
+# v2.1：信息覆盖率
+# ---------------------------------------------------------------------------
+
+
+def test_information_coverage():
+    stats = compute_conversation_stats(_low_evidence_sample())
+    assert information_coverage(stats) == pytest.approx(1 / 8, abs=1e-9)
+
+
+def test_information_coverage_none_when_no_messages():
+    assert information_coverage(compute_conversation_stats([])) is None

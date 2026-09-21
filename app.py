@@ -27,8 +27,13 @@ from scoring import (
     compute_conversation_stats,
     confidence_label,
     evidence_level_label,
+    information_coverage,
+    is_low_evidence_display,
     message_metrics,
     noul_label,
+    rank_relationship_signals,
+    relational_ease_label,
+    score_level_label,
     total_evidence_label,
 )
 from storage import Cache
@@ -150,6 +155,13 @@ def show_distribution(title: str, probabilities: dict, label_map: dict | None = 
         st.progress(float(prob), text=f"{name} {prob * 100:.0f}%")
 
 
+def show_top_choice(title: str, answer: dict, label_map: dict) -> None:
+    """默认只展示 top-1 标签 + 概率；完整分布在折叠区。"""
+    top_key, top_prob = max(answer["probabilities"].items(), key=lambda kv: kv[1])
+    name = label_map.get(top_key, top_key)
+    st.progress(float(top_prob), text=f"{title}：{name} {top_prob * 100:.0f}%")
+
+
 def show_message_card(entry: dict) -> None:
     r = entry.get("result")
     with st.container(border=True):
@@ -160,62 +172,101 @@ def show_message_card(entry: dict) -> None:
             st.error(f"本条分析失败：{entry['error']}")
             return
 
+        # ---- 默认可见：top-1 情绪 / 意图 + 两个解释层 Score ----
         col1, col2 = st.columns(2)
         with col1:
-            show_distribution("情绪", r["emotion"]["probabilities"], EMOTION_LABELS)
-            conf = confidence_label(r["emotion"]["confidence"])
-            st.caption(f"置信度：{r['emotion']['confidence']:.2f}（{conf}）")
+            show_top_choice("情绪", r["emotion"], EMOTION_LABELS)
         with col2:
-            show_distribution("意图", r["intent"]["probabilities"], INTENT_OPTIONS)
-            conf = confidence_label(r["intent"]["confidence"])
-            st.caption(f"置信度：{r['intent']['confidence']:.2f}（{conf}）")
+            show_top_choice("意图", r["intent"], INTENT_OPTIONS)
 
-        for key, name in (
-            ("warmth", "温暖程度"),
-            ("engagement", "投入程度"),
-            ("special_attention", "特殊关注"),
-        ):
-            a = r[key]
-            st.progress(
-                float(a["score"]) / SCORE_MAX,
-                text=f"{name}：{a['score']:.1f} / {SCORE_MAX:.0f}"
-                     f"（{confidence_label(a['confidence'])}）",
-            )
-
-        # 关系信息量：决定本条消息在总体聚合中的权重
         ev = r["relationship_evidence_strength"]
-        st.progress(
-            float(ev["score"]) / SCORE_MAX,
-            text=f"关系信息量：{ev['score']:.1f} / {SCORE_MAX:.0f}"
-                 f"（{confidence_label(ev['confidence'])}）",
-        )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.progress(
-                float(r["romantic_signal"]),
-                text=f"暧昧信号（原始概率）：{r['romantic_signal'] * 100:.0f}%"
-                     f"（{noul_label(r['romantic_signal'])}）",
-            )
-        with c2:
-            st.progress(
-                float(r["distancing_signal"]),
-                text=f"疏离信号（原始概率）：{r['distancing_signal'] * 100:.0f}%"
-                     f"（{noul_label(r['distancing_signal'])}）",
-            )
+        ease = r["relational_ease"]
+        st.progress(float(ev["score"]) / SCORE_MAX,
+                    text=f"关系信息量：{ev['score']:.1f} / {SCORE_MAX:.0f}")
+        st.progress(float(ease["score"]) / SCORE_MAX,
+                    text=f"互动熟悉度：{ease['score']:.1f} / {SCORE_MAX:.0f}"
+                         f"（{relational_ease_label(ease['score'])}）")
 
         m = message_metrics(entry)
         if m is not None and m["evidence"] < EFFECTIVE_MESSAGE_MIN_EVIDENCE:
             st.caption("关系信息量较低，本条不适合单独判断关系亲近程度。")
         elif m is not None:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("关系信息量", f"{m['evidence']:.1f} / 4")
-            c2.metric("聚合权重", f"{m['weight']:.2f}")
-            c3.metric("本条关系信号", f"{m['base_score'] * 100:.0f} / 100")
-            if entry.get("cached"):
-                st.caption("缓存结果")
+            st.progress(
+                m["base_score"],
+                text=f"本条关系信号：{m['base_score'] * 100:.0f} / 100"
+                     f"（聚合权重 {m['weight']:.2f}）",
+            )
 
-        with st.expander("本条 debug（原始数据）"):
+        # ---- 折叠：详细指标 ----
+        with st.expander("▶ 查看详细指标"):
+            for key, name in (
+                ("warmth", "温暖程度"),
+                ("engagement", "投入程度"),
+                ("special_attention", "特殊关注"),
+            ):
+                a = r[key]
+                st.progress(
+                    float(a["score"]) / SCORE_MAX,
+                    text=f"{name}：{a['score']:.1f} / {SCORE_MAX:.0f}"
+                         f"（{confidence_label(a['confidence'])}）",
+                )
+            c1, c2 = st.columns(2)
+            with c1:
+                st.progress(
+                    float(r["romantic_signal"]),
+                    text=f"暧昧信号（原始概率）：{r['romantic_signal'] * 100:.0f}%"
+                         f"（{noul_label(r['romantic_signal'])}）",
+                )
+            with c2:
+                st.progress(
+                    float(r["distancing_signal"]),
+                    text=f"疏离信号（原始概率）：{r['distancing_signal'] * 100:.0f}%"
+                         f"（{noul_label(r['distancing_signal'])}）",
+                )
+            if m is not None:
+                st.caption(
+                    f"relation_confidence：{m['relation_confidence']:.2f}　|　"
+                    f"message_weight：{m['weight']:.3f}　|　"
+                    f"base_score：{m['base_score']:.3f}"
+                )
+            with st.expander("查看完整概率分布"):
+                show_distribution("情绪（完整分布）", r["emotion"]["probabilities"],
+                                  EMOTION_LABELS, top_n=99)
+                st.caption(
+                    f"情绪置信度：{r['emotion']['confidence']:.2f}"
+                    f"（{confidence_label(r['emotion']['confidence'])}）"
+                )
+                show_distribution("意图（完整分布）", r["intent"]["probabilities"],
+                                  INTENT_OPTIONS, top_n=99)
+                st.caption(
+                    f"意图置信度：{r['intent']['confidence']:.2f}"
+                    f"（{confidence_label(r['intent']['confidence'])}）"
+                )
+                show_distribution("关系信息量（完整分布）", ev["probabilities"],
+                                  None, top_n=99)
+                st.caption(
+                    f"关系信息量置信度：{ev['confidence']:.2f}"
+                    f"（{confidence_label(ev['confidence'])}）"
+                )
+                show_distribution("互动熟悉度（完整分布）", ease["probabilities"],
+                                  None, top_n=99)
+                st.caption(
+                    f"互动熟悉度置信度：{ease['confidence']:.2f}"
+                    f"（{confidence_label(ease['confidence'])}）"
+                )
+
+        # ---- 折叠：判断上下文 ----
+        with st.expander("▶ 查看判断上下文"):
+            if entry["context"]:
+                for c in entry["context"]:
+                    who = "我" if c["speaker"] == "me" else "TA"
+                    t = f"（{c['time']}）" if c.get("time") else ""
+                    st.markdown(f"- **{who}{t}**：{c['text']}")
+            else:
+                st.caption("（本条之前没有上下文）")
+
+        # ---- 最底层：debug 原始数据 ----
+        with st.expander("▶ Debug"):
             if m is not None:
                 st.markdown(
                     f"- base_score：{m['base_score']:.3f}\n"
@@ -225,15 +276,8 @@ def show_message_card(entry: dict) -> None:
                     f" → evidence：{m['distancing_ev']:.3f}\n"
                     f"- relation_confidence：{m['relation_confidence']:.2f}"
                 )
-
-        with st.expander("用于判断的上下文"):
-            if entry["context"]:
-                for c in entry["context"]:
-                    who = "我" if c["speaker"] == "me" else "TA"
-                    t = f"（{c['time']}）" if c.get("time") else ""
-                    st.markdown(f"- **{who}{t}**：{c['text']}")
-            else:
-                st.caption("（本条之前没有上下文）")
+            if entry.get("cached"):
+                st.caption("缓存结果")
 
 
 def show_export(results: list[dict], stats: dict) -> None:
@@ -274,29 +318,84 @@ def show_export(results: list[dict], stats: dict) -> None:
     st.caption("导出完全基于本次已完成的本地分析结果，不会发起任何 TypeSafe API 请求。")
 
 
-def show_summary(results: list[dict], stats: dict) -> None:
-    st.divider()
-    c0, c1, c2, c3 = st.columns(4)
-    if stats["overall"] is not None:
-        c0.metric("互动亲近信号指数", f"{fmt(stats['overall'])} / 100")
-    else:
-        c0.metric("互动亲近信号指数", "—")
-        st.info("当前样本缺少足够的关系层面信息，暂不生成可靠的互动亲近信号指数。")
-    c1.metric("关系信息量", total_evidence_label(stats["total_weight"]))
-    c2.metric("有效消息", f"{stats['effective_messages']} / {stats['analyzed']}")
-    c3.metric("趋势", TREND_SHORT.get(stats["trend"], stats["trend"]))
-
-    c1, c2, c3, c4, c5 = st.columns(5)
+def _metric_row_second(stats: dict) -> None:
+    """第二行：三项 Score + 互动熟悉度（解释层）。"""
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("温暖程度", f"{fmt(stats['warmth_avg'])} / 4")
     c2.metric("投入程度", f"{fmt(stats['engagement_avg'])} / 4")
     c3.metric("特殊关注", f"{fmt(stats['special_attention_avg'])} / 4")
-    c4.metric("暧昧", EVIDENCE_SHORT.get(evidence_level_label(stats["romantic_evidence"])))
-    c5.metric("疏离", EVIDENCE_SHORT.get(evidence_level_label(stats["distancing_evidence"])))
+    c4.metric("互动熟悉度", f"{fmt(stats['relational_ease_avg'])} / 4")
     st.caption(
-        f"最近互动趋势：{TREND_LABELS.get(stats['trend'], stats['trend'])}　|　"
-        f"暧昧信号：{evidence_level_label(stats['romantic_evidence'])}　|　"
-        f"疏离信号：{evidence_level_label(stats['distancing_evidence'])}"
+        f"温暖{score_level_label(stats['warmth_avg'])}　|　"
+        f"投入{score_level_label(stats['engagement_avg'])}　|　"
+        f"特殊关注{score_level_label(stats['special_attention_avg'])}　|　"
+        f"互动熟悉度：{relational_ease_label(stats['relational_ease_avg'])}"
+        "（衡量自然 / 熟悉 / 默契，不等于喜欢或暧昧）"
     )
+
+
+def _metric_row_third(stats: dict) -> None:
+    """第三行：暧昧 / 疏离（metric 只放短文本，完整说明放 caption）。"""
+    c1, c2, c3 = st.columns(3)
+    rom_label = evidence_level_label(stats["romantic_evidence"])
+    dis_label = evidence_level_label(stats["distancing_evidence"])
+    c1.metric("暧昧", EVIDENCE_SHORT.get(rom_label, rom_label))
+    c2.metric("疏离", EVIDENCE_SHORT.get(dis_label, dis_label))
+    c3.empty()
+    st.caption(f"暧昧信号：{rom_label}　|　疏离信号：{dis_label}")
+
+
+def filter_entries(results: list[dict], only_effective: bool, mode: str) -> list[dict]:
+    """仅改变 UI 展示，绝不修改分析结果。"""
+    entries = sorted(results, key=lambda e: e["index"])
+    if only_effective or mode == "仅有效关系消息":
+        entries = [
+            e for e in entries
+            if (m := message_metrics(e)) is not None
+            and m["evidence"] >= EFFECTIVE_MESSAGE_MIN_EVIDENCE
+        ]
+    elif mode == "关系信息量最高 Top 5":
+        entries = [item["entry"] for item in rank_relationship_signals(results, max_n=5)]
+        entries.sort(key=lambda e: e["index"])
+    return entries
+
+
+def show_summary(results: list[dict], stats: dict) -> None:
+    st.divider()
+    low_evidence = is_low_evidence_display(stats)
+    coverage = information_coverage(stats)
+
+    if low_evidence:
+        # ---- 低信息量模式：不用大号总分制造“关系只有 XX 分”的错觉 ----
+        st.warning("⚠ 当前样本关系信息不足")
+        st.caption("以下指数仅作参考，不建议据此判断整体关系亲近程度。")
+        c0, c1, c2 = st.columns(3)
+        c0.metric("参考指数",
+                  f"{fmt(stats['overall'])} / 100" if stats["overall"] is not None else "—")
+        c1.metric("有效消息", f"{stats['effective_messages']} / {stats['analyzed']}")
+        c2.metric("关系信息量", total_evidence_label(stats["total_weight"]))
+        if coverage is not None:
+            st.caption(f"关系信息覆盖率：{coverage * 100:.0f}%"
+                       "（本次聊天中有多少消息包含较明确的关系层面信息，不代表关系好坏）")
+        if stats["overall"] is None:
+            st.info("当前样本缺少足够的关系层面信息，暂不生成可靠的互动亲近信号指数。")
+    else:
+        # ---- 正常模式 ----
+        c0, c1, c2, c3 = st.columns(4)
+        if stats["overall"] is not None:
+            c0.metric("互动亲近信号指数", f"{fmt(stats['overall'])} / 100")
+        else:
+            c0.metric("互动亲近信号指数", "—")
+            st.info("当前样本缺少足够的关系层面信息，暂不生成可靠的互动亲近信号指数。")
+        c1.metric("关系信息量", total_evidence_label(stats["total_weight"]))
+        c2.metric("有效消息", f"{stats['effective_messages']} / {stats['analyzed']}")
+        c3.metric("趋势", TREND_SHORT.get(stats["trend"], stats["trend"]))
+        if coverage is not None:
+            st.caption(f"关系信息覆盖率：{coverage * 100:.0f}%"
+                       "（本次聊天中有多少消息包含较明确的关系层面信息，不代表关系好坏）")
+
+    _metric_row_second(stats)
+    _metric_row_third(stats)
 
     recent_text = (
         f"最近 {min(10, stats['analyzed'])} 条加权平均：{fmt(stats['recent'])}"
@@ -347,8 +446,27 @@ def show_summary(results: list[dict], stats: dict) -> None:
             run_analysis(st.session_state["analysis_messages"], only_failed=True)
             st.rerun()
 
-    st.subheader("逐条分析（TA 的消息）")
-    for entry in sorted(results, key=lambda e: e["index"]):
+    # ---- 逐条分析（含纯 UI 过滤器，不修改分析结果）----
+    header_col, filter_col = st.columns([3, 2])
+    with header_col:
+        st.subheader("逐条分析（TA 的消息）")
+    with filter_col:
+        filter_mode = st.selectbox(
+            "显示",
+            ["全部消息", "仅有效关系消息", "关系信息量最高 Top 5"],
+            index=0,
+            key="msg_filter_mode",
+            help="只改变展示，不修改分析结果。",
+        )
+    only_effective = st.checkbox(
+        f"只显示关系信息量 ≥ {EFFECTIVE_MESSAGE_MIN_EVIDENCE:.0f} 的消息",
+        value=False,
+        key="msg_filter_effective",
+    )
+    visible = filter_entries(results, only_effective, filter_mode)
+    if not visible:
+        st.caption("当前过滤条件下没有可显示的消息。")
+    for entry in visible:
         show_message_card(entry)
 
 

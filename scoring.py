@@ -56,6 +56,34 @@ EVIDENCE_TOTAL_HIGH = 3.0
 EVIDENCE_TOTAL_MEDIUM = 1.0
 
 # ---------------------------------------------------------------------------
+# 低信息量展示模式（LOW_EVIDENCE_DISPLAY_MODE）
+# 满足任一条件即进入：避免用大号总分制造“关系只有 XX 分”的错觉
+# ---------------------------------------------------------------------------
+LOW_EVIDENCE_MIN_EFFECTIVE = 2      # effective_messages < 2 → 低信息量展示
+LOW_EVIDENCE_TOTAL_WEIGHT = 0.75    # total_weight < 0.75 → 低信息量展示
+
+# ---------------------------------------------------------------------------
+# 通用 Score 文字等级（warmth / engagement / special_attention 用）
+# ---------------------------------------------------------------------------
+SCORE_LEVEL_WEAK = 1.0        # < 1.0  → 弱
+SCORE_LEVEL_BELOW = 1.5       # < 1.5  → 偏弱
+SCORE_LEVEL_MID = 2.5         # < 2.5  → 一般
+SCORE_LEVEL_STRONG = 3.25     # < 3.25 → 较强；否则 强
+
+# ---------------------------------------------------------------------------
+# relational_ease（互动熟悉度）文字等级 —— 专用标签，不复用上面的体系
+# 仅解释层，不计入 base_score / message_weight / overall / recent / trend
+# ---------------------------------------------------------------------------
+EASE_LEVEL_DISTANT = 0.9      # < 0.9   → 较生疏
+EASE_LEVEL_FORMAL = 1.7       # < 1.7   → 偏正式 / 熟悉度较低
+EASE_LEVEL_NATURAL = 2.5      # < 2.5   → 自然熟悉
+EASE_LEVEL_CLOSE = 3.3        # < 3.3   → 较熟悉、互动轻松；否则 高度熟悉 / 明显默契
+
+# 行为摘要措辞阈值：>= 40% 才允许说“以 X 为主”
+BEHAVIOR_DOMINANT_THRESHOLD = 0.40
+BEHAVIOR_NOTABLE_THRESHOLD = 0.10  # 全部 < 10% → “没有特别突出的单一互动行为类型”
+
+# ---------------------------------------------------------------------------
 # 置信度 / 信号阈值（MVP 默认值，集中配置）
 # ---------------------------------------------------------------------------
 CHOICE_SCORE_CONFIDENT = 0.70   # >= 0.70：显示正常结论
@@ -134,10 +162,13 @@ def message_metrics(entry: dict) -> dict | None:
             "romantic_ev": / "distancing_ev": 转换后证据,
             "romantic_raw": / "distancing_raw": Jev 原始概率（仅展示/debug）,
             "warmth"/"engagement"/"special_attention": 原始 Score,
+            "relational_ease": 0~4,        # v2.1 解释层指标（不进任何总分公式）
+            "relational_ease_probabilities": dict,
+            "relational_ease_confidence": float | None,
             "intent_probabilities": dict,
             "warnings": [str],
         }
-    分析失败、字段缺失（例如旧缓存 v1 结果没有 evidence 字段）时返回 None。
+    分析失败、字段缺失（例如旧缓存结果没有 relational_ease 字段）时返回 None。
     """
     r = entry.get("result")
     if not r:
@@ -147,6 +178,7 @@ def message_metrics(entry: dict) -> dict | None:
         engagement = float(r["engagement"]["score"])
         special = float(r["special_attention"]["score"])
         evidence = float(r["relationship_evidence_strength"]["score"])
+        relational_ease = float(r["relational_ease"]["score"])
         romantic_p = float(r["romantic_signal"])
         distancing_p = float(r["distancing_signal"])
         intent_probs = dict(r["intent"]["probabilities"])
@@ -190,6 +222,11 @@ def message_metrics(entry: dict) -> dict | None:
         "warmth": warmth,
         "engagement": engagement,
         "special_attention": special,
+        "relational_ease": relational_ease,
+        "relational_ease_probabilities": {
+            str(k): v for k, v in dict(r["relational_ease"]["probabilities"]).items()
+        },
+        "relational_ease_confidence": r["relational_ease"].get("confidence"),
         "intent_probabilities": intent_probs,
         "warnings": warnings,
     }
@@ -238,6 +275,7 @@ def compute_conversation_stats(results: list[dict]) -> dict:
         "warmth_avg": None,
         "engagement_avg": None,
         "special_attention_avg": None,
+        "relational_ease_avg": None,   # v2.1 解释层：互动熟悉度（message_weight 加权）
         "romantic_evidence": None,
         "distancing_evidence": None,
         "romantic_raw_avg": None,
@@ -280,6 +318,12 @@ def compute_conversation_stats(results: list[dict]) -> dict:
     )
     base["distancing_evidence"], _ = _weighted_mean(
         [(m["distancing_ev"], m["weight"]) for _, m in metrics]
+    )
+
+    # 互动熟悉度（relational_ease，v2.1 解释层）：同样按 message_weight 加权，
+    # 但**绝不进入** base_score / message_weight / overall / recent / trend。
+    base["relational_ease_avg"], _ = _weighted_mean(
+        [(m["relational_ease"], m["weight"]) for _, m in metrics]
     )
 
     # conversation-level intent 行为统计（完整概率分布加权，非 top-1 计数）
@@ -367,3 +411,103 @@ def total_evidence_label(total_weight: float) -> str:
     if total_weight >= EVIDENCE_TOTAL_MEDIUM:
         return "中等"
     return "较低"
+
+
+# ---------------------------------------------------------------------------
+# v2.1 解释层：文字等级 / 低信息量展示 / 排序 / 行为摘要措辞
+# ---------------------------------------------------------------------------
+
+
+def score_level_label(score: float | None) -> str:
+    """通用 Score 文字等级（warmth / engagement / special_attention）。"""
+    if score is None:
+        return "数据不足"
+    if score < SCORE_LEVEL_WEAK:
+        return "弱"
+    if score < SCORE_LEVEL_BELOW:
+        return "偏弱"
+    if score < SCORE_LEVEL_MID:
+        return "一般"
+    if score < SCORE_LEVEL_STRONG:
+        return "较强"
+    return "强"
+
+
+def relational_ease_label(value: float | None) -> str:
+    """互动熟悉度（relational_ease）专用文字等级。
+
+    衡量自然 / 熟悉 / 轻松 / 默契，不等于喜欢、暧昧或特殊关注。
+    """
+    if value is None:
+        return "有效关系信息不足"
+    if value < EASE_LEVEL_DISTANT:
+        return "较生疏"
+    if value < EASE_LEVEL_FORMAL:
+        return "偏正式 / 熟悉度较低"
+    if value < EASE_LEVEL_NATURAL:
+        return "自然熟悉"
+    if value < EASE_LEVEL_CLOSE:
+        return "较熟悉、互动轻松"
+    return "高度熟悉 / 明显默契"
+
+
+def is_low_evidence_display(stats: dict) -> bool:
+    """是否进入 LOW_EVIDENCE_DISPLAY_MODE（弱化 overall 的视觉优先级）。
+
+    满足任一条件即触发：
+    - effective_messages < LOW_EVIDENCE_MIN_EFFECTIVE
+    - total_weight < LOW_EVIDENCE_TOTAL_WEIGHT
+    - 关系信息量标签为“较低”
+    """
+    return (
+        stats["effective_messages"] < LOW_EVIDENCE_MIN_EFFECTIVE
+        or stats["total_weight"] < LOW_EVIDENCE_TOTAL_WEIGHT
+        or total_evidence_label(stats["total_weight"]) == "较低"
+    )
+
+
+def information_coverage(stats: dict) -> float | None:
+    """信息覆盖率 = effective_messages / analyzed_messages（0~1）。"""
+    if not stats["analyzed"]:
+        return None
+    return stats["effective_messages"] / stats["analyzed"]
+
+
+def rank_relationship_signals(results: list[dict], max_n: int = 5) -> list[dict]:
+    """按 relationship_evidence_strength × relation_confidence 降序取前 max_n 条。
+
+    并列时保持原消息顺序（稳定排序）。只返回可分析且 evidence >= 1 的消息。
+    """
+    candidates = []
+    for order, e in enumerate(results):
+        if e.get("error"):
+            continue
+        m = message_metrics(e)
+        if m is None or m["evidence"] < EFFECTIVE_MESSAGE_MIN_EVIDENCE:
+            continue
+        candidates.append((m["evidence"] * m["relation_confidence"], order, e, m))
+    candidates.sort(key=lambda t: (-t[0], t[1]))
+    return [
+        {"entry": e, "metrics": m, "score": s} for s, _, e, m in candidates[:max_n]
+    ]
+
+
+def behavior_summary_text(profiles: dict) -> str:
+    """行为统计的中性摘要措辞。
+
+    - 某行为 >= BEHAVIOR_DOMINANT_THRESHOLD：允许“以 X 为主”；
+    - 否则：“当前样本中相对更常见的互动信号包括：X、Y、Z”；
+    - 全部 < BEHAVIOR_NOTABLE_THRESHOLD：“没有特别突出的单一互动行为类型”。
+    """
+    if not profiles:
+        return "当前样本行为统计不足。"
+    ranked = sorted(profiles.items(), key=lambda kv: kv[1], reverse=True)
+    dominant = [(k, v) for k, v in ranked if v >= BEHAVIOR_DOMINANT_THRESHOLD]
+    if dominant:
+        names = "、".join(INTENT_PROFILE_LABELS.get(k, k) for k, _ in dominant[:3])
+        return f"聊天以{names}为主。"
+    notable = [(k, v) for k, v in ranked if v >= BEHAVIOR_NOTABLE_THRESHOLD]
+    if not notable:
+        return "当前样本中没有特别突出的单一互动行为类型。"
+    names = "、".join(INTENT_PROFILE_LABELS.get(k, k) for k, _ in notable[:3])
+    return f"当前样本中相对更常见的互动信号包括：{names}。"

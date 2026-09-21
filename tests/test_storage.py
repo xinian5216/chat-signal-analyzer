@@ -197,6 +197,7 @@ class _FakeClientA:
                 "engagement": A(score=2.0, probabilities={}, confidence=0.9),
                 "special_attention": A(score=1.0, probabilities={}, confidence=0.9),
                 "relationship_evidence_strength": A(score=2.0, probabilities={}, confidence=0.9),
+                "relational_ease": A(score=2.0, probabilities={}, confidence=0.9),
                 "romantic_signal": A(noul=0.1),
                 "distancing_signal": A(noul=0.1),
             },

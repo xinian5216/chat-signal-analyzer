@@ -1,7 +1,7 @@
 """调用 TypeSafe Jev（System One）对 TA 的单条消息做结构化分析。
 
-每个 TA 消息只发一次 API 请求，一次请求同时提出全部 8 个问题
-（2 Choice + 4 Score + 2 Noul），与官方“fan-out / parallel questions”
+每个 TA 消息只发一次 API 请求，一次请求同时提出全部 9 个问题
+（2 Choice + 5 Score + 2 Noul），与官方“fan-out / parallel questions”
 模式一致。
 
 官方文档：https://docs.typesafe.ai/
@@ -13,7 +13,7 @@ import os
 
 from storage import make_cache_key
 
-SCHEMA_VERSION = "chat-signal-v2"  # 问题 schema 变更时必须递增，使旧缓存自然失效
+SCHEMA_VERSION = "chat-signal-v2.1"  # 问题 schema 变更时必须递增，使旧缓存自然失效
 DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
@@ -126,6 +126,26 @@ RELATIONSHIP_EVIDENCE_INSTRUCTIONS = (
     "明显关心、特殊关注、主动邀约、关系表达、暧昧、拒绝、回避等消息信息量高。"
 )
 
+# relational_ease（v2.1 新增，仅解释层，不计入总分）：
+# 衡量互动的自然 / 熟悉 / 轻松 / 默契程度。
+# 不等于浪漫兴趣、特殊关注或暧昧——“哈哈你又来了”可能 ease 高但 romantic 低。
+RELATIONAL_EASE_LEVELS: list[str] = [
+    "明显陌生、拘谨、纯事务性或互动不自然",
+    "较正式或普通礼貌，熟悉感较弱",
+    "自然、正常、舒适的熟人互动",
+    "明显熟悉、轻松、有默契或自然接话",
+    "高度熟悉、非常自然、明显存在长期互动形成的舒适感或默契",
+]
+
+RELATIONAL_EASE_INSTRUCTIONS = (
+    "这条消息在多大程度上体现双方互动中的自然、熟悉、无需过度客套、"
+    "能够轻松接话或共享默认背景的关系舒适度？"
+    "评价的是互动是否自然熟悉，不是浪漫兴趣，也不是特殊关注。"
+    "普通朋友之间自然调侃、无需解释太多就能接话、轻松分享日常、自然接梗，"
+    "都可以体现较高 relational_ease；"
+    "正式、拘谨、纯事务性、明显陌生或尴尬互动通常较低。"
+)
+
 
 def build_questions() -> dict:
     """构建 SDK 问题对象（依赖 typesafe_sdk）。"""
@@ -159,6 +179,10 @@ def build_questions() -> dict:
             instructions=RELATIONSHIP_EVIDENCE_INSTRUCTIONS,
             criteria=RELATIONSHIP_EVIDENCE_LEVELS,
         ),
+        "relational_ease": Score(
+            instructions=RELATIONAL_EASE_INSTRUCTIONS,
+            criteria=RELATIONAL_EASE_LEVELS,
+        ),
         "romantic_signal": Noul(
             instructions=ROMANTIC_QUESTION,
             criteria={
@@ -187,6 +211,10 @@ def build_questions_schema() -> dict:
         "relationship_evidence_strength": {
             "type": "score",
             "criteria": RELATIONSHIP_EVIDENCE_LEVELS,
+        },
+        "relational_ease": {
+            "type": "score",
+            "criteria": RELATIONAL_EASE_LEVELS,
         },
         "romantic_signal": {"type": "noul"},
         "distancing_signal": {"type": "noul"},
@@ -239,6 +267,7 @@ def extract_answers(response) -> dict:
         "engagement": score_of("engagement"),
         "special_attention": score_of("special_attention"),
         "relationship_evidence_strength": score_of("relationship_evidence_strength"),
+        "relational_ease": score_of("relational_ease"),
         "romantic_signal": answers["romantic_signal"].noul,
         "distancing_signal": answers["distancing_signal"].noul,
         "model": getattr(response, "model", None),

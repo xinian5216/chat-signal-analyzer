@@ -43,10 +43,12 @@ See [PRIVACY.md](PRIVACY.md) for the full privacy model and
 - 对每条 TA 消息**只发一次 Jev 请求**，同一次请求并行取得全部指标：
   - **情绪 Choice**：平静 / 高兴 / 调侃 / 好奇 / 疑惑 / 惊讶 / 关心 / 不满 / 尴尬 / 低落 / 其他（完整概率分布）
   - **意图 Choice**：询问 / 确认 / 解释 / 表达观点 / 延续话题 / 关心 / 调侃 / 邀约 / 分享个人 / 结束话题 / 敷衍 / 疏离 / 其他（完整概率分布）
-  - **Score ×4**：温暖程度、对话投入程度、特殊关注程度、关系信息量（各 5 级，含各级概率与 confidence）
+  - **Score ×5**：温暖程度、对话投入程度、特殊关注程度、关系信息量、互动熟悉度（各 5 级，含各级概率与 confidence）
   - **Noul ×2**：暧昧 / 浪漫信号概率、疏离 / 结束对话信号概率（0~1）
 - 由**程序**（不是模型）按固定公式聚合出「互动亲近信号指数」，并给出
   整体 / 最近 10 条 / 前半段 vs 后半段统计与趋势。
+- **互动熟悉度（relational_ease）**：v2.1 新增的**解释层**指标，衡量互动的
+  自然、熟悉、轻松与默契程度，**不计入**互动亲近信号指数（详见第 9 节）。
 
 ## 2. 为什么不是“读心工具”
 
@@ -159,22 +161,23 @@ TA: 对哈哈
 
 ## 8. Jev 调用了哪些 primitives
 
-每条 TA 消息一次 `client.system_one(state, questions)` 请求，包含 8 个问题（schema v2）：
+每条 TA 消息一次 `client.system_one(state, questions)` 请求，包含 9 个问题（schema v2.1）：
 
 | 指标 | primitive | 返回 |
 |---|---|---|
 | emotion | Choice（11 选项） | `choice` / `probabilities` / `confidence` |
 | intent | Choice（13 选项） | 同上 |
 | warmth / engagement / special_attention | Score（各 5 级） | `score`(0~4) / `probabilities` / `confidence` |
-| relationship_evidence_strength（v2 新增） | Score（5 级） | 同上 |
+| relationship_evidence_strength | Score（5 级） | 同上 |
+| relational_ease（v2.1 新增，解释层） | Score（5 级） | 同上 |
 | romantic_signal / distancing_signal | Noul（0~1 概率） | `noul`（无 confidence 字段，官方设计如此） |
 
 - `state` 只包含：目标消息 + 之前最多 5 条上下文 + 发言人身份 + 可选时间 +
   一条分析规则（“只判断可观察信号，不得仅凭礼貌推断浪漫兴趣”）。
   **不包含任何未来消息**——模拟“当时看到这句话时能判断出什么”。
-- **缓存 schema 版本 v1 → v2**：v2 新增 `relationship_evidence_strength` 问题。
+- **缓存 schema 版本 v2 → v2.1**：v2.1 新增 `relational_ease` 问题。
   缓存 key 由（state + 问题 schema + 模型 + schema 版本）的 SHA256 构成，
-  旧 v1 缓存条目**自然失效**（不会冒充新 schema 结果），不会被删除。
+  旧 v2 缓存条目**自然失效**（不会冒充新 schema 结果），不会被删除。
 - 官方文档：<https://docs.typesafe.ai/>；SDK：<https://github.com/typesafe-ai/typesafe-sdk-python>
   （第三方 SDK 遵循其各自许可证，与本项目 MIT 许可证相互独立。）
 
@@ -223,6 +226,42 @@ recent  = 最近最多 10 条 TA 消息的同样加权平均
   邀约 / 调侃 / 低投入回应 / 结束话题 / 疏离意图）基于 intent **完整概率分布**
   加权平均，目前**仅作解释层展示，未计入总分公式**。
 
+### 互动熟悉度（relational_ease，v2.1 解释层）
+
+```
+relational_ease_avg = Σ(relational_ease × message_weight) / Σ(message_weight)
+```
+
+- 文字等级（阈值集中在 `scoring.py`）：`<0.9` 较生疏；`<1.7` 偏正式 / 熟悉度较低；
+  `<2.5` 自然熟悉；`<3.3` 较熟悉、互动轻松；否则 高度熟悉 / 明显默契。
+- **衡量**：互动是否自然、熟悉、轻松、有默契。
+- **不等于**：喜欢、浪漫兴趣、暧昧、特殊关注。
+  例：“哈哈你又来了”可能熟悉度高但暧昧信号低。
+- **不进入** base_score / message_weight / overall / recent / trend /
+  romantic / distancing 任何总分公式，仅用于单条解释、顶部汇总、报告与未来校准观察。
+
+### 低信息量展示模式（LOW_EVIDENCE_DISPLAY_MODE）
+
+当满足任一条件时（阈值集中在 `scoring.py`）：
+
+- 有效关系消息 < 2；
+- `Σ(message_weight) < 0.75`；
+- 关系信息量标签为“较低”；
+
+界面**不再把 overall 当主指标**，改为：
+
+```
+⚠ 当前样本关系信息不足
+以下指数仅作参考，不建议据此判断整体关系亲近程度。
+
+参考指数：XX / 100
+有效消息：X / N
+关系信息量：较低
+```
+
+目的是避免用大号总分制造“你们关系只有 XX 分”的错觉。
+overall 仍然计算并展示，只是降低视觉优先级；Markdown 报告会附带同样的免责说明。
+
 置信度展示（阈值集中在 `scoring.py`，可自行调整）：
 
 - Choice / Score：`confidence ≥ 0.70` 结论较明确；`0.45~0.70` 存在一定歧义；`< 0.45` 难以判断。
@@ -241,7 +280,7 @@ recent  = 最近最多 10 条 TA 消息的同样加权平均
 
 ## 11. API 成本 / 调用次数说明
 
-- **每条 TA 消息恰好 1 次 API 请求**（8 个问题合并一次调用，官方证实并行提问
+- **每条 TA 消息恰好 1 次 API 请求**（9 个问题合并一次调用，官方证实并行提问
   更便宜更快），N 条 TA 消息 = N 次请求。
 - 同一条“消息 + 上下文 + 问题 schema + 模型版本”会计算 SHA256 缓存 key，
   命中本地 SQLite 缓存时**不消耗 API**（`.jev_cache/cache.db`）。

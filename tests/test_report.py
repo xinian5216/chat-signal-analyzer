@@ -12,7 +12,7 @@ from scoring import compute_conversation_stats
 
 
 def make_result(warmth=2.0, engagement=2.0, special=1.5,
-                romantic=0.2, distancing=0.2, evidence=2.4,
+                romantic=0.2, distancing=0.2, evidence=2.4, ease=2.3,
                 emotion="teasing", intent="tease"):
     return {
         "emotion": {"choice": emotion, "probabilities": {emotion: 0.93, "calm": 0.07},
@@ -24,6 +24,7 @@ def make_result(warmth=2.0, engagement=2.0, special=1.5,
         "special_attention": {"score": special, "probabilities": {}, "confidence": 0.8},
         "relationship_evidence_strength": {"score": evidence, "probabilities": {},
                                            "confidence": 0.8},
+        "relational_ease": {"score": ease, "probabilities": {}, "confidence": 0.8},
         "romantic_signal": romantic,
         "distancing_signal": distancing,
     }
@@ -159,3 +160,88 @@ def test_filename_has_no_nickname():
     name = report_filename("md")
     assert name.startswith("chat-analysis-") and name.endswith(".md")
     assert len(name.split("-")) >= 4  # 日期时间戳
+
+
+# ---------------------------------------------------------------------------
+# v2.1：relational_ease 与低信息量免责声明
+# ---------------------------------------------------------------------------
+
+
+def test_json_contains_relational_ease():
+    results, stats = sample_stats()
+    data = build_json_report(results, stats, include_text=True)
+    assert "relational_ease_avg" in data["aggregate"]
+    assert "relational_ease_label" in data["aggregate"]
+    assert "information_coverage" in data["aggregate"]
+    assert "low_evidence_display" in data["aggregate"]
+    m = data["messages"][0]
+    assert set(m["relational_ease"]) == {"score", "probabilities", "confidence"}
+
+
+def test_json_aggregate_labels_consistent():
+    results, stats = sample_stats()
+    data = build_json_report(results, stats)
+    ease = data["aggregate"]["relational_ease_avg"]
+    if ease is not None:
+        assert data["aggregate"]["relational_ease_label"] in (
+            "较生疏", "偏正式 / 熟悉度较低", "自然熟悉",
+            "较熟悉、互动轻松", "高度熟悉 / 明显默契",
+        )
+
+
+def test_markdown_low_evidence_disclaimer():
+    # 1 条有效 + 7 条低信息量 → 低信息量展示模式
+    results = [{"index": 0, "speaker": "them", "time": None, "text": "你比较重要",
+                "result": make_result(evidence=3.0)}]
+    results += [
+        {"index": i, "speaker": "them", "time": None, "text": "哦哦",
+         "result": make_result(evidence=0.2, warmth=0.5, engagement=0.5, special=0.2)}
+        for i in range(1, 8)
+    ]
+    stats = compute_conversation_stats(results)
+    md = build_markdown_report(results, stats, include_text=True)
+    assert "当前样本关系信息量较低，互动亲近信号指数仅作参考" in md
+    assert "不建议据此判断整体关系亲近程度" in md
+    assert "（参考）" in md
+    assert "互动熟悉度" in md
+    assert "信息覆盖率" in md
+
+
+def test_markdown_normal_mode_has_no_low_evidence_disclaimer():
+    results = [{"index": i, "speaker": "them", "time": None, "text": f"m{i}",
+                "result": make_result(evidence=3.0)} for i in range(6)]
+    stats = compute_conversation_stats(results)
+    md = build_markdown_report(results, stats)
+    assert "当前样本关系信息量较低" not in md
+    assert "（参考）" not in md
+
+
+def test_summary_uses_neutral_behavior_wording():
+    results = make_entries(6)
+    stats = compute_conversation_stats(results)
+    stats["intent_profiles"] = {"share_personal": 0.20, "continue_topic": 0.17,
+                                "tease": 0.12}
+    text = build_summary_text(results, stats)
+    assert "相对更常见的互动信号包括" in text
+    assert "为主" not in text
+
+
+def test_summary_uses_score_level_labels():
+    results = make_entries(6)
+    stats = compute_conversation_stats(results)
+    stats["warmth_avg"] = 1.7
+    stats["engagement_avg"] = 2.1
+    stats["special_attention_avg"] = 1.0
+    text = build_summary_text(results, stats)
+    assert "温暖程度一般" in text
+    assert "投入程度一般" in text
+    assert "特殊关注偏弱" in text
+
+
+def test_summary_mentions_ease_without_overreach():
+    results = make_entries(6)
+    stats = compute_conversation_stats(results)
+    stats["relational_ease_avg"] = 2.3
+    text = build_summary_text(results, stats)
+    assert "互动熟悉度自然熟悉" in text
+    assert "不等于浪漫兴趣或特殊关注" in text
