@@ -93,7 +93,8 @@ def _data_range(results: list[dict]) -> dict:
 
 
 def build_json_report(
-    results: list[dict], stats: dict, include_text: bool = False
+    results: list[dict], stats: dict, include_text: bool = False,
+    skipped_media: int = 0,
 ) -> dict:
     messages = []
     for e in sorted(results, key=lambda e: e["index"]):
@@ -134,6 +135,7 @@ def build_json_report(
             "ta_messages": stats["analyzed"],
             "effective_messages": stats["effective_messages"],
             "failed_messages": stats["failed"],
+            "skipped_media_messages": skipped_media,
             "data_range": _data_range(results),
             "include_text": include_text,
         },
@@ -208,7 +210,8 @@ def _trend_section(stats: dict) -> str:
 
 
 def build_markdown_report(
-    results: list[dict], stats: dict, include_text: bool = False
+    results: list[dict], stats: dict, include_text: bool = False,
+    skipped_media: int = 0,
 ) -> str:
     analyzed = stats["analyzed"]
     effective = stats["effective_messages"]
@@ -222,6 +225,11 @@ def build_markdown_report(
     lines.append(f"- Jev 模型：{DEFAULT_MODEL}")
     lines.append(f"- TA 消息数：{analyzed}")
     lines.append(f"- 有效关系消息：{effective}")
+    if skipped_media:
+        lines.append(
+            f"- 跳过非文本媒体：{skipped_media} 条"
+            "（复制文本只含媒体占位符，未含实际图片/视频内容，未参与分析）"
+        )
     dr = _data_range(results)
     lines.append(f"- 数据范围：{dr['first'] or '-'} ~ {dr['last'] or '-'}")
     lines.append(f"- 分析 schema：{SCHEMA_VERSION}")

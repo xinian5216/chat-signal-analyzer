@@ -3,8 +3,14 @@
 把从微信 / QQ 复制的纯文本解析为统一的消息列表::
 
     [
-        {"speaker": "me"|"them"|"unknown", "text": "...", "time": "...", "raw_speaker": "..."},
+        {"speaker": "me"|"them"|"unknown", "text": "...", "time": "...",
+         "raw_speaker": "...", "content_type": "text"|"media"|"mixed",
+         "media_kinds": [...]},
     ]
+
+``content_type="media"`` 表示纯媒体占位符消息（[图片] / [视频] / [动画表情] /
+[语音] / [文件]）：不作为 Jev target、不产生 API 请求、不计入任何统计，
+仅在预览与上下文中以中性 marker 出现。
 
 支持的格式（可混合出现）：
 
@@ -67,6 +73,113 @@ COLON_HEADER = re.compile(
 
 DEFAULT_ME_NAMES = {"我", "me", "Me", "ME", "自己", "本人"}
 DEFAULT_THEM_NAMES = {"TA", "ta", "Ta", "tA", "他", "她", "对方"}
+
+# ---------------------------------------------------------------------------
+# 非文本媒体占位符（微信 PC 端复制文本常见）
+#
+# Jev 不具备图像 / 视频输入能力，复制文本里也只有占位符而没有实际媒体内容，
+# 因此这些占位符**不能**当普通文本做情绪 / 意图 / 关系分析：
+# - 纯媒体消息 → content_type="media"，不作为 Jev target，不产生 API 请求；
+# - 处于其他消息上下文中的纯媒体消息 → 转换为中性 context marker，
+#   并明确禁止 Jev 据此猜测媒体内容或情绪；
+# - 普通 Unicode emoji（😂、😭、❤️）**不是**媒体占位符，原样保留。
+# ---------------------------------------------------------------------------
+
+MEDIA_KIND_IMAGE = "image"
+MEDIA_KIND_VIDEO = "video"
+MEDIA_KIND_STICKER = "sticker"
+MEDIA_KIND_VOICE = "voice"
+MEDIA_KIND_FILE = "file"
+
+# 中性 context marker（内容未知，禁止猜测）
+MEDIA_MARKERS: dict[str, str] = {
+    MEDIA_KIND_IMAGE: "[发送了一张图片，内容未知]",
+    MEDIA_KIND_VIDEO: "[发送了一个视频，内容未知]",
+    MEDIA_KIND_STICKER: "[发送了一个动画表情，内容未知]",
+    MEDIA_KIND_VOICE: "[发送了一条语音，内容未知]",
+    MEDIA_KIND_FILE: "[发送了一个文件，内容未知]",
+}
+
+MEDIA_KIND_LABELS: dict[str, str] = {
+    MEDIA_KIND_IMAGE: "图片",
+    MEDIA_KIND_VIDEO: "视频",
+    MEDIA_KIND_STICKER: "动画表情",
+    MEDIA_KIND_VOICE: "语音",
+    MEDIA_KIND_FILE: "文件",
+}
+
+# 占位符 + 其后紧跟的本地媒体文件名（如 “[图片] 微信图片_20260908.dat”）。
+# 文件名一律剥离：既不参与分析，也不进入报告。
+_MEDIA_EXT = (
+    r"(?:dat|mp4|mov|m4v|amr|silk|mp3|wav|jpg|jpeg|png|gif|webp|bmp"
+    r"|doc|docx|xls|xlsx|ppt|pptx|pdf|zip|txt)"
+)
+MEDIA_TOKEN = re.compile(
+    rf"\[(?P<kind>动画表情|表情包|表情|图片|视频|语音|文件)\]"
+    rf"(?:\s*(?:微信(?:图片|视频|动画表情|语音|文件)\S*|\S+\.{_MEDIA_EXT}\b))?",
+    re.IGNORECASE,
+)
+
+_STICKER_WORDS = {"动画表情", "表情包", "表情"}
+_KIND_BY_WORD = {
+    "图片": MEDIA_KIND_IMAGE,
+    "视频": MEDIA_KIND_VIDEO,
+    "语音": MEDIA_KIND_VOICE,
+    "文件": MEDIA_KIND_FILE,
+}
+
+
+def _kind_of(word: str) -> str:
+    if word in _STICKER_WORDS:
+        return MEDIA_KIND_STICKER
+    return _KIND_BY_WORD[word]
+
+
+def media_label(kinds: list[str]) -> str:
+    """媒体类型的展示名（如 “图片 / 视频”）。"""
+    return " / ".join(MEDIA_KIND_LABELS.get(k, k) for k in kinds)
+
+
+def classify_media(text: str) -> dict:
+    """识别消息中的非文本媒体占位符。
+
+    返回 {"content_type", "text", "media_kinds"}：
+
+    - ``media``：整条只有媒体占位符（+ 本地文件名），没有可分析文字。
+      ``text`` 为中性 marker 组合，仅供预览与上下文使用。
+    - ``mixed``：文字 + 媒体占位符。保留文字，占位符替换为中性 marker，
+      该条仍然可以分析。
+    - ``text``：普通文本，Unicode emoji 原样保留。
+    """
+    if not text or not text.strip():
+        return {"content_type": "text", "text": text or "", "media_kinds": []}
+
+    kinds: list[str] = []
+
+    def _replace(m: re.Match) -> str:
+        kind = _kind_of(m.group("kind"))
+        if kind not in kinds:
+            kinds.append(kind)
+        return MEDIA_MARKERS[kind]
+
+    with_markers = MEDIA_TOKEN.sub(_replace, text)
+
+    # 剥掉所有 marker 后若不留任何文字 → 纯媒体消息
+    residue = with_markers
+    for marker in MEDIA_MARKERS.values():
+        residue = residue.replace(marker, "")
+    if not re.sub(r"\s+", "", residue):
+        return {
+            "content_type": "media",
+            "text": " ".join(MEDIA_MARKERS[k] for k in kinds),
+            "media_kinds": kinds,
+        }
+
+    return {
+        "content_type": "mixed" if kinds else "text",
+        "text": with_markers.strip(),
+        "media_kinds": kinds,
+    }
 
 
 class ParseError(ValueError):
@@ -236,12 +349,15 @@ def parse_chat(
         if not content:
             continue
         speaker = resolve_speaker(b["raw"], my_name, them_name)
+        media = classify_media(content)
         messages.append(
             {
                 "speaker": speaker or "unknown",
-                "text": content,
+                "text": media["text"],
                 "time": b["time"],
                 "raw_speaker": b["raw"],
+                "content_type": media["content_type"],
+                "media_kinds": media["media_kinds"],
             }
         )
 

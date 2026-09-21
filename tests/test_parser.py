@@ -43,6 +43,8 @@ def test_time_name_format():
         "text": "你干嘛呢",
         "time": "22:31",
         "raw_speaker": "我",
+        "content_type": "text",
+        "media_kinds": [],
     }
     assert msgs[1]["speaker"] == "them"
     assert msgs[1]["time"] == "22:32"

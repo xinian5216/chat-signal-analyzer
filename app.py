@@ -17,7 +17,7 @@ from analyzer import (
     analyze_messages,
     create_client,
 )
-from parser import ParseError, detect_participants, parse_chat
+from parser import ParseError, detect_participants, media_label, parse_chat
 from privacy import mask_messages
 from scoring import (
     EFFECTIVE_MESSAGE_MIN_EVIDENCE,
@@ -83,6 +83,7 @@ def init_state() -> None:
         ("results", None),
         ("stats", None),
         ("run_error", None),
+        ("skipped_media", 0),
     ):
         if key not in st.session_state:
             st.session_state[key] = default
@@ -136,6 +137,11 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
         st.session_state["results"] = new_results
 
     st.session_state["stats"] = compute_conversation_stats(st.session_state["results"])
+    # 只统计“本会被分析但被跳过”的 TA 纯媒体消息（我方 / unknown 媒体本就不是 target）
+    st.session_state["skipped_media"] = sum(
+        1 for m in messages
+        if m.get("speaker") == "them" and m.get("content_type") == "media"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -295,9 +301,12 @@ def show_export(results: list[dict], stats: dict) -> None:
     summary_text = build_summary_text(results, stats)
     st.text_area("分析摘要（可复制）", value=summary_text, height=140)
 
-    md = build_markdown_report(results, stats, include_text=include_text)
+    skipped_media = st.session_state.get("skipped_media", 0)
+    md = build_markdown_report(results, stats, include_text=include_text,
+                               skipped_media=skipped_media)
     payload_json = json.dumps(
-        build_json_report(results, stats, include_text=include_text),
+        build_json_report(results, stats, include_text=include_text,
+                          skipped_media=skipped_media),
         ensure_ascii=False, indent=2,
     )
     c1, c2 = st.columns(2)
@@ -364,16 +373,21 @@ def show_summary(results: list[dict], stats: dict) -> None:
     st.divider()
     low_evidence = is_low_evidence_display(stats)
     coverage = information_coverage(stats)
+    skipped_media = st.session_state.get("skipped_media", 0)
+    media_caption = ("复制的聊天记录只包含媒体占位符，未包含实际图片/视频内容，"
+                     "因此不参与 Jev 分析。")
 
     if low_evidence:
         # ---- 低信息量模式：不用大号总分制造“关系只有 XX 分”的错觉 ----
         st.warning("⚠ 当前样本关系信息不足")
         st.caption("以下指数仅作参考，不建议据此判断整体关系亲近程度。")
-        c0, c1, c2 = st.columns(3)
+        c0, c1, c2, c3 = st.columns(4)
         c0.metric("参考指数",
                   f"{fmt(stats['overall'])} / 100" if stats["overall"] is not None else "—")
         c1.metric("有效消息", f"{stats['effective_messages']} / {stats['analyzed']}")
         c2.metric("关系信息量", total_evidence_label(stats["total_weight"]))
+        c3.metric("跳过非文本媒体", f"{skipped_media} 条")
+        st.caption(media_caption)
         if coverage is not None:
             st.caption(f"关系信息覆盖率：{coverage * 100:.0f}%"
                        "（本次聊天中有多少消息包含较明确的关系层面信息，不代表关系好坏）")
@@ -381,7 +395,7 @@ def show_summary(results: list[dict], stats: dict) -> None:
             st.info("当前样本缺少足够的关系层面信息，暂不生成可靠的互动亲近信号指数。")
     else:
         # ---- 正常模式 ----
-        c0, c1, c2, c3 = st.columns(4)
+        c0, c1, c2, c3, c4 = st.columns(5)
         if stats["overall"] is not None:
             c0.metric("互动亲近信号指数", f"{fmt(stats['overall'])} / 100")
         else:
@@ -390,6 +404,8 @@ def show_summary(results: list[dict], stats: dict) -> None:
         c1.metric("关系信息量", total_evidence_label(stats["total_weight"]))
         c2.metric("有效消息", f"{stats['effective_messages']} / {stats['analyzed']}")
         c3.metric("趋势", TREND_SHORT.get(stats["trend"], stats["trend"]))
+        c4.metric("跳过非文本媒体", f"{skipped_media} 条")
+        st.caption(media_caption)
         if coverage is not None:
             st.caption(f"关系信息覆盖率：{coverage * 100:.0f}%"
                        "（本次聊天中有多少消息包含较明确的关系层面信息，不代表关系好坏）")
@@ -503,15 +519,31 @@ def show_preview(messages: list[dict]) -> dict:
                 "#": idx + 1,
                 "发言人": SPEAKER_BADGE.get(m["speaker"], m["speaker"]),
                 "时间": m.get("time") or "-",
+                "类型": _content_type_badge(m),
                 "内容": text,
             }
         )
     st.dataframe(rows, use_container_width=True, hide_index=True)
+    media_n = sum(1 for m in messages if m.get("content_type") == "media")
     if len(messages) > 15:
         st.caption(f"仅预览前 15 条，共 {len(messages)} 条。预览内容已本地脱敏。")
     else:
         st.caption("预览内容已本地脱敏。unknown = 该行无法确定发言人（未根据内容猜测）。")
+    if media_n:
+        st.caption(
+            f"其中 {media_n} 条为纯媒体占位符（图片 / 视频 / 动画表情 / 语音 / 文件），"
+            "复制文本不含实际媒体内容，不会送给 Jev 分析。"
+        )
     return counts
+
+
+def _content_type_badge(m: dict) -> str:
+    """预览表中的内容类型徽标。"""
+    if m.get("content_type") == "media":
+        return f"{media_label(m.get('media_kinds') or [])}（内容未分析）"
+    if m.get("content_type") == "mixed":
+        return "文字+媒体"
+    return "文本"
 
 
 # ---------------------------------------------------------------------------

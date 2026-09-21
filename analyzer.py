@@ -22,7 +22,10 @@ ANALYSIS_RULE = (
     "Judge only observable signals in the conversation. "
     "Do not assume romantic interest from politeness or normal friendliness alone. "
     "Base every answer only on the target message and the conversation context "
-    "that precedes it, as if you just saw this message at that moment in the chat."
+    "that precedes it, as if you just saw this message at that moment in the chat. "
+    "Bracketed neutral markers such as [发送了一张图片，内容未知] mean the actual "
+    "media content is unknown and was not provided; never guess what the media "
+    "shows or what emotion it carries."
 )
 
 # ---------------------------------------------------------------------------
@@ -343,6 +346,10 @@ def analyze_messages(
     返回:
         与 messages 等长的结果列表；失败项带 "error" 字段，不会中断整体分析。
         每个元素: {"index", "speaker", "text", "time", "context", "result"|"error", "cached"}
+
+    注意:
+        ``content_type == "media"`` 的纯媒体占位符消息不作为 target：
+        不发起 API 请求，也不出现在结果列表中（不计入任何统计）。
     """
     results: list[dict] = []
     questions = build_questions()
@@ -351,7 +358,9 @@ def analyze_messages(
     targets = [
         (i, m)
         for i, m in enumerate(messages)
-        if m["speaker"] == "them" and m["text"].strip()
+        if m["speaker"] == "them"
+        and m["text"].strip()
+        and m.get("content_type") != "media"
     ]
     if only_indices is not None:
         targets = [(i, m) for i, m in targets if i in only_indices]
@@ -362,7 +371,15 @@ def analyze_messages(
             {"speaker": c["speaker"], "text": c["text"], "time": c.get("time")}
             for c in messages[:i]
         ]
-        state = build_state(context, {**m, "speaker": "them"})
+        # 只把 Jev 需要的字段放进 state：parser 新增的 content_type /
+        # media_kinds 等本地元数据不进入 state，因此不会无谓改变缓存 key。
+        target_state = {
+            "speaker": "them",
+            "text": m["text"],
+            "time": m.get("time"),
+            "raw_speaker": m.get("raw_speaker"),
+        }
+        state = build_state(context, target_state)
 
         base = {
             "index": i,
