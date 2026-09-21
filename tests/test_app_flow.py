@@ -67,9 +67,12 @@ def fake_response(evidence=2.4, ease=2.3):
 def counting_client(monkeypatch, tmp_path):
     """让 AppTest 加载的 app 使用 FakeClient + 临时缓存。
 
-    注意：AppTest 会**独立导入 app.py**，因此必须 patch 源模块
-    （analyzer.create_client / storage.Cache），patch app 模块本身无效。
-    这样测试既零真实 API，也不读写本地 .jev_cache，调用计数确定。
+    注意：
+    1. AppTest 会**独立导入 app.py**，因此必须 patch 源模块
+       （analyzer.create_client / storage.Cache），patch app 模块本身无效。
+    2. 必须显式提供占位 API Key：`run_analysis` 在创建 client 之前就检查
+       环境变量，CI 上没有 `.env`，否则会提前返回导致零调用。
+    3. 缓存隔离到 tmp_path，既不读写本地 .jev_cache，调用计数也确定。
     """
     calls = []
 
@@ -84,6 +87,7 @@ def counting_client(monkeypatch, tmp_path):
         def __init__(self, *a, **k):
             super().__init__(tmp_path / "cache.db")
 
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-not-a-real-secret")
     monkeypatch.setattr(analyzer, "create_client", lambda api_key: CountingClient())
     monkeypatch.setattr(storage, "Cache", TmpCache)
     return calls
@@ -257,6 +261,7 @@ def test_low_evidence_overview_uses_reference_mode(monkeypatch, tmp_path):
         def __init__(self, *a, **k):
             super().__init__(tmp_path / "cache.db")
 
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-not-a-real-secret")
     monkeypatch.setattr(analyzer, "create_client", lambda api_key: LowEvidenceClient())
     monkeypatch.setattr(st_mod, "Cache", TmpCache)
 
