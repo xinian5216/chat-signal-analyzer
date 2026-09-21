@@ -111,6 +111,8 @@ def init_state() -> None:
         ("show_media_events", False),
         ("sel_me", "（未指定）"),
         ("sel_ta", "（未指定）"),
+        ("applied_me", None),
+        ("applied_ta", None),
     ):
         if key not in st.session_state:
             st.session_state[key] = default
@@ -335,7 +337,7 @@ def show_message_card(entry: dict) -> None:
 # 阶段指示器
 # ---------------------------------------------------------------------------
 
-def show_steps(current: int) -> None:
+def steps_markdown(current: int) -> str:
     parts = []
     for i, label in enumerate(STEPS, start=1):
         if i == current:
@@ -344,7 +346,7 @@ def show_steps(current: int) -> None:
             parts.append(label)
         else:
             parts.append(f":grey[{label}]")
-    st.markdown(" → ".join(parts))
+    return " → ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -394,11 +396,11 @@ def show_confirm_stage(messages: list[dict]) -> None:
         c4.metric("待确认", f"{counts['unknown']} / {counts['me'] + counts['them']}")
 
         # ---- 昵称映射 ----
-        mapped = (
-            st.session_state.get("sel_me", "（未指定）") != "（未指定）"
-            or st.session_state.get("sel_ta", "（未指定）") != "（未指定）"
-        )
-        if not mapped:
+        # 映射结果保存在非 widget 专用键里：Streamlit 会在 widget 未被渲染时
+        # 清除其 state，若只依赖 sel_me/sel_ta，分析后映射显示会“回退”。
+        applied_me = st.session_state.get("applied_me")
+        applied_ta = st.session_state.get("applied_ta")
+        if not (applied_me or applied_ta):
             st.info("已识别聊天参与者，请确认谁是“我”，谁是“TA”。")
             options = ["（未指定）"] + participants
             c1, c2 = st.columns(2)
@@ -420,17 +422,29 @@ def show_confirm_stage(messages: list[dict]) -> None:
                     except ParseError as exc:
                         st.error(str(exc))
                     else:
+                        st.session_state["applied_me"] = (
+                            None if sel_me == "（未指定）" else sel_me
+                        )
+                        st.session_state["applied_ta"] = (
+                            None if sel_ta == "（未指定）" else sel_ta
+                        )
                         st.session_state["messages"] = mask_messages(parsed)
                         st.session_state["analysis_messages"] = None
                         st.session_state["results"] = None
                         st.session_state["stats"] = None
                         st.rerun()
         else:
+            mapping = " · ".join(
+                f"{side}：{name}" for side, name in
+                (("我", applied_me), ("TA", applied_ta)) if name
+            )
             st.success(
-                f"✓ 身份映射完成 — 我：{counts['me']} 条 · "
+                f"✓ 身份映射完成（{mapping}）— 我：{counts['me']} 条 · "
                 f"TA：{counts['them']} 条 · unknown：{counts['unknown']} 条"
             )
             if st.button("重新选择身份", key="remap"):
+                st.session_state["applied_me"] = None
+                st.session_state["applied_ta"] = None
                 st.session_state["sel_me"] = "（未指定）"
                 st.session_state["sel_ta"] = "（未指定）"
                 st.session_state["analysis_messages"] = None
@@ -536,11 +550,11 @@ def show_overview_tab(results: list[dict], stats: dict) -> None:
         c3.metric("趋势", trend_short(stats["trend"]))
     else:
         with st.container(border=True):
-            st.caption("互动亲近信号")
+            st.caption("互动亲近信号指数")
             st.markdown(f"### {fmt(stats['overall'])} / 100")
             c1, c2, c3 = st.columns(3)
             c1.metric("关系信息量", total_evidence_label(stats["total_weight"]))
-            c2.metric("有效消息", f"{stats['effective_messages']} / {stats['analyzed']}")
+            c2.metric("有效关系消息", f"{stats['effective_messages']} / {stats['analyzed']}")
             c3.metric("趋势", trend_short(stats["trend"]))
 
     _score_row(stats)
@@ -744,12 +758,12 @@ def main() -> None:
     results = st.session_state.get("results")
     stats = st.session_state.get("stats")
 
-    if not messages:
-        show_steps(1)
-    elif not (results and stats):
-        show_steps(2)
-    else:
-        show_steps(3)
+    # 步骤指示器用占位符预留顶部位置：分析在同一次 run 的后半段才完成，
+    # 若在顶部直接渲染，步骤会落后一个 run（需再交互一次才更新）。
+    steps_slot = st.empty()
+    steps_slot.markdown(steps_markdown(
+        4 if (results and stats) else (2 if messages else 1)
+    ))
 
     # ① 输入
     submitted_text = show_input_stage()
@@ -762,6 +776,8 @@ def main() -> None:
             st.session_state["analysis_messages"] = None
             st.session_state["results"] = None
             st.session_state["stats"] = None
+            st.session_state["applied_me"] = None
+            st.session_state["applied_ta"] = None
         else:
             st.session_state["raw_text"] = submitted_text
             st.session_state["messages"] = mask_messages(parsed)
@@ -769,9 +785,11 @@ def main() -> None:
             st.session_state["results"] = None
             st.session_state["stats"] = None
             st.session_state["skipped_media"] = 0
-            # 新文本：清空旧的昵称选择，避免误映射
+            # 新文本：清空旧的昵称选择与应用记录，避免误映射
             st.session_state["sel_me"] = "（未指定）"
             st.session_state["sel_ta"] = "（未指定）"
+            st.session_state["applied_me"] = None
+            st.session_state["applied_ta"] = None
 
     # ② 确认解析
     messages = st.session_state.get("messages")
@@ -782,6 +800,8 @@ def main() -> None:
     results = st.session_state.get("results")
     stats = st.session_state.get("stats")
     if results and stats:
+        # 分析已完成 → 步骤推进到 ④（同一次 run 内更新占位符）
+        steps_slot.markdown(steps_markdown(4))
         show_results(results, stats)
 
     show_sidebar()

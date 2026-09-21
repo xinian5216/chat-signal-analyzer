@@ -9,7 +9,7 @@ Repo-specific guidance for OpenCode / AI sessions. Everything here was verified 
 
 ## Commands
 
-- Tests: `.venv\Scripts\python -m pytest tests -q` — 160 tests, ~3s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
+- Tests: `.venv\Scripts\python -m pytest tests -q` — 165 tests, ~8s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
 - App: `.venv\Scripts\streamlit run app.py`. Needs `TYPESAFE_API_KEY` in the gitignored `.env`; without a key the UI shows a friendly hint and does not crash.
 - Real-API smoke test — **the only script that calls Jev** (5 constructed messages, then fully cached): `.venv\Scripts\python -X utf8 scripts\smoke_test.py`.
 
