@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SignalLens Rich Paste</title>
+<style>
+  :root {
+    --border: rgba(128,128,128,.4);
+    --muted: rgba(108,117,125,.95);
+    --accent: rgb(0,84,163);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 10px;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px; color: inherit; background: transparent;
+  }
+  #zone {
+    border: 2px dashed var(--border); border-radius: 10px;
+    padding: 18px 14px; text-align: center; cursor: text;
+    transition: border-color .15s, background .15s;
+  }
+  #zone.drag { border-color: var(--accent); background: rgba(0,84,163,.06); }
+  #zone .hint { font-size: 15px; font-weight: 600; }
+  #zone .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  #status { margin-top: 8px; font-size: 13px; white-space: pre-wrap; }
+  #status .ok { color: #1a7f37; }
+  #status .warn { color: #9a6700; }
+  #status .err { color: #cf222e; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  button {
+    font: inherit; padding: 4px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: transparent; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  #thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  #thumbs img {
+    max-height: 64px; max-width: 96px; border-radius: 6px;
+    border: 1px solid var(--border); object-fit: cover;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="zone" tabindex="0">
+  <div class="hint">在此 Ctrl+V 粘贴微信聊天</div>
+  <div class="sub">支持文字 + 静态图片；也可拖入或点击选择图片文件</div>
+</div>
+<div id="status"></div>
+<div class="row">
+  <button id="pick" type="button">选择图片文件…</button>
+  <button id="clear" type="button">清空</button>
+  <button id="export" type="button" style="display:none">导出诊断信息</button>
+  <span class="muted" id="counts"></span>
+</div>
+<div id="thumbs"></div>
+<div id="report" class="muted"></div>
+<input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/gif" multiple hidden />
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Streamlit 组件协议（手写最小实现，无 npm / 无框架）----
+  var params = new URLSearchParams(location.search);
+  // 不同 Streamlit 版本使用不同的查询参数名，两个都支持
+  var parentUrl = params.get("__streamlit_parentURL") || params.get("streamlitUrl") || "";
+  var parentOrigin = "*";
+  if (parentUrl) {
+    try { parentOrigin = new URL(parentUrl).origin; } catch (e) { parentOrigin = "*"; }
+  }
+  var lastArgs = null;
+
+  function postToStreamlit(payload) {
+    // 仅在能确定 parentOrigin 时收窄；不确定时广播，避免参数缺失导致静默失败。
+    var target = parentOrigin !== "*" ? parentOrigin : "*";
+    try {
+      window.parent.postMessage(Object.assign({
+        isStreamlitMessage: true,
+        stChainVersion: 1
+      }, payload), target);
+    } catch (e) { /* ignore */ }
+  }
+
+  function setValue(value) {
+    postToStreamlit({
+      type: "streamlit:setComponentValue",
+      value: value,
+      dataType: "json"
+    });
+  }
+
+  // 官方协议：componentReady 必须携带 apiVersion=1。
+  // 时序坑（已实测）：Streamlit 在 React useEffect 里才把 handler 挂到
+  // message 监听表上，而 iframe 的 load 往往更早——过早发送的 componentReady
+  // 会被**静默丢弃**（无任何警告），父端也永远不会回送 render，组件彻底失灵。
+  // 对策：load 后开始低频重试，直到收到父端 render（render 只在 ready 被接受
+  // 后才会发送，因此它就是“就绪确认”信号）。
+  var readyAccepted = false;
+  var readyAttempts = 0;
+  function announceReady() {
+    readyAttempts++;
+    postToStreamlit({ type: "streamlit:componentReady", apiVersion: 1 });
+  }
+  function startReadyLoop() {
+    announceReady();
+    var timer = setInterval(function () {
+      if (readyAccepted || readyAttempts >= 100) { clearInterval(timer); return; }
+      announceReady();
+    }, 200);
+  }
+  if (document.readyState === "complete") {
+    startReadyLoop();
+  } else {
+    window.addEventListener("load", startReadyLoop);
+  }
+
+  window.addEventListener("message", function (event) {
+    if (event.origin !== parentOrigin && parentOrigin !== "*") { return; }
+    var data = event.data;
+    if (!data || data.isStreamlitMessage !== true) { return; }
+    if (data.type === "streamlit:render") {
+      // 父端只在 ready 被接受后才会发送 render → 视为就绪确认，停止重试
+      readyAccepted = true;
+      lastArgs = data.args || {};
+      render(lastArgs);
+    } else if (data.type === "streamlit:setFrameHeight") {
+      /* 由下方 render() 主动上报高度 */
+    }
+  });
+
+  function reportHeight() {
+    var h = document.body.scrollHeight;
+    postToStreamlit({ type: "streamlit:setFrameHeight", height: h });
+  }
+
+  // ---- 限制（与 media.py 保持一致，超限在 JS 侧就拒绝，避免编码大文件）----
+  var MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  var MAX_IMAGES = 20;
+  var MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+  var ALLOWED = ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif"];
+
+  var zone = document.getElementById("zone");
+  var statusEl = document.getElementById("status");
+  var thumbsEl = document.getElementById("thumbs");
+  var countsEl = document.getElementById("counts");
+  var reportEl = document.getElementById("report");
+  var exportBtn = document.getElementById("export");
+  var fileInput = document.getElementById("file");
+
+  var captured = { images: [], rejected: [] };
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  function placeholderCount(text) {
+    var m = text.match(/\[(?:图片|动画表情|表情包|表情|视频|语音|文件)\]/g);
+    var imgs = text.match(/\[图片\]/g);
+    return {
+      media: m ? m.length : 0,
+      images: imgs ? imgs.length : 0
+    };
+  }
+
+  function sha256Hex(buffer) {
+    // 轻量同步 SHA256（仅用于资产标识 / 去重，不用于安全）
+    return crypto.subtle.digest("SHA-256", buffer).then(function (buf) {
+      return Array.prototype.map.call(new Uint8Array(buf), function (b) {
+        return ("00" + b.toString(16)).slice(-2);
+      }).join("");
+    });
+  }
+
+  function imageSize(blob) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(blob);
+      var img = new Image();
+      img.onload = function () { resolve({ w: img.naturalWidth, h: img.naturalHeight }); URL.revokeObjectURL(url); };
+      img.onerror = function () { resolve({ w: null, h: null }); URL.revokeObjectURL(url); };
+      img.src = url;
+    });
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () { resolve(fr.result); };
+      fr.onerror = reject;
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  function totalSize() {
+    return captured.images.reduce(function (s, i) { return s + i.size; }, 0);
+  }
+
+  function addBlob(blob, mime) {
+    if (!blob) { return Promise.resolve(); }
+    if (ALLOWED.indexOf(mime) < 0) {
+      captured.rejected.push({ mime: mime, size: blob.size, reason: "类型不支持" });
+      return Promise.resolve();
+    }
+    if (blob.size > MAX_IMAGE_BYTES) {
+      captured.rejected.push({
+        mime: mime, size: blob.size,
+        reason: "超过单图 " + Math.round(MAX_IMAGE_BYTES / 1048576) + " MB 上限"
+      });
+      return Promise.resolve();
+    }
+    if (captured.images.length >= MAX_IMAGES) {
+      captured.rejected.push({ mime: mime, size: blob.size, reason: "超过单次张数上限" });
+      return Promise.resolve();
+    }
+    if (totalSize() + blob.size > MAX_TOTAL_BYTES) {
+      captured.rejected.push({ mime: mime, size: blob.size, reason: "超过单次总量上限" });
+      return Promise.resolve();
+    }
+    return blob.arrayBuffer().then(function (buf) {
+      return sha256Hex(buf).then(function (digest) {
+        return imageSize(blob).then(function (dim) {
+          return blobToDataUrl(blob).then(function (dataUrl) {
+            captured.images.push({
+              mime: mime,
+              size: blob.size,
+              width: dim.w,
+              height: dim.h,
+              sha256: digest,
+              data: dataUrl
+            });
+          });
+        });
+      });
+    });
+  }
+
+  function send() {
+    var textPlain = captured.text_plain || "";
+    var textHtml = captured.text_html || "";
+    var counts = placeholderCount(textPlain);
+    var value = {
+      text_plain: textPlain,
+      text_html: textHtml,
+      images: captured.images,
+      formats: captured.formats || [],
+      items: captured.items || [],
+      rejected: captured.rejected,
+      media_placeholders: counts.media,
+      image_placeholders: counts.images,
+      order_evidence: counts.images > 0 && counts.images === captured.images.length,
+      timestamp: Date.now()
+    };
+    setValue(value);
+    renderStatus(value);
+    reportHeight();
+  }
+
+  function renderStatus(v) {
+    var lines = [];
+    if (v.text_plain) { lines.push('<span class="ok">text/plain ✅</span>'); }
+    if (v.text_html) { lines.push('<span class="ok">text/html ✅</span>'); }
+    if (v.images.length) {
+      lines.push('<span class="ok">图片 ' + v.images.length + ' 张 ✅</span>');
+    }
+    if (v.rejected.length) {
+      lines.push('<span class="warn">已忽略 ' + v.rejected.length + ' 项</span>');
+    }
+    statusEl.innerHTML = lines.join("　");
+    countsEl.textContent = v.images.length
+      ? ("已捕获 " + v.images.length + " 张 · 占位符 " + v.image_placeholders + " 个")
+      : "";
+    thumbsEl.innerHTML = v.images.map(function (i) {
+      var dim = (i.width && i.height) ? (i.width + "×" + i.height) : "尺寸未知";
+      return '<img alt="captured" src="' + esc(i.data) + '" title="' +
+        esc(i.mime + " · " + dim + " · " + Math.round(i.size / 1024) + "KB") + '" />';
+    }).join("");
+    renderReport(v);
+    reportHeight();
+  }
+
+  // ---- 自包含诊断报告（不依赖 Python 回传）----
+  function buildDiagnostics(v) {
+    return {
+      captured: true,
+      formats: v.formats || [],
+      items: (v.items || []).map(function (i) {
+        return { index: i.index, kind: i.kind, type: i.type };
+      }),
+      images: (v.images || []).map(function (i) {
+        return {
+          mime: i.mime, size: i.size, width: i.width, height: i.height,
+          sha256_prefix: String(i.sha256).slice(0, 12)
+        };
+      }),
+      rejected: v.rejected || [],
+      media_placeholders: v.media_placeholders || 0,
+      image_placeholders: v.image_placeholders || 0,
+      order_evidence: !!v.order_evidence
+    };
+  }
+
+  function renderReport(v) {
+    if (!v || (!v.text_plain && !v.images.length && !(v.items || []).length)) {
+      reportEl.textContent = "尚未粘贴。";
+      exportBtn.style.display = "none";
+      return;
+    }
+    var fileCount = (v.items || []).filter(function (i) { return i.kind === "file"; }).length;
+    var rows = [];
+    rows.push("<b>检测到</b>");
+    rows.push("text/plain：" + (v.text_plain ? "✅" : "—"));
+    rows.push("text/html：" + (v.text_html ? "✅" : "—"));
+    rows.push("图片：" + v.images.length + " 张");
+    rows.push("Files：" + fileCount + " 项");
+    rows.push("Clipboard items：" + (v.items || []).length + " 项");
+    rows.push("文本内媒体占位符：" + (v.media_placeholders || 0) +
+              " 个（图片占位符 " + (v.image_placeholders || 0) + " 个）");
+    rows.push("顺序证据（图片数 == 图片占位符数）：" + (v.order_evidence ? "✅" : "—"));
+    if ((v.items || []).length) {
+      rows.push("");
+      rows.push("<b>Clipboard items 顺序</b>");
+      (v.items || []).forEach(function (i) {
+        rows.push("#" + i.index + " " + esc(i.kind) + " " + esc(i.type));
+      });
+    }
+    if (v.images.length) {
+      rows.push("");
+      rows.push("<b>图片资产（仅元数据）</b>");
+      v.images.forEach(function (i, n) {
+        var dim = (i.width && i.height) ? (i.width + "×" + i.height) : "尺寸未知";
+        rows.push("#" + (n + 1) + " " + esc(i.mime) + " " + dim + " " +
+                  Math.round(i.size / 1024) + "KB sha256:" +
+                  esc(String(i.sha256).slice(0, 12)) + "…");
+      });
+    }
+    if ((v.rejected || []).length) {
+      rows.push("");
+      rows.push("<b>被忽略的项</b>");
+      v.rejected.forEach(function (r) {
+        rows.push(esc(r.mime) + " " + Math.round((r.size || 0) / 1024) +
+                  "KB — " + esc(r.reason));
+      });
+    }
+    reportEl.innerHTML = rows.join("<br>");
+    exportBtn.style.display = "";
+    exportBtn.onclick = function () {
+      var blob = new Blob([JSON.stringify(buildDiagnostics(v), null, 2)],
+                          { type: "application/json" });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "clipboard-diagnostics.json";
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    };
+    reportHeight();
+  }
+
+  // ---- paste ----
+  zone.addEventListener("paste", function (event) {
+    var cd = event.clipboardData;
+    if (!cd) { return; }
+    event.preventDefault();
+
+    captured = { images: [], rejected: [], formats: [], items: [] };
+    var formats = [];
+    var items = [];
+    var promises = [];
+
+    if (cd.items && cd.items.length) {
+      for (var i = 0; i < cd.items.length; i++) {
+        var it = cd.items[i];
+        formats.push(it.type);
+        items.push({ index: i + 1, kind: it.kind, type: it.type });
+        if (it.kind === "string" && it.type === "text/plain") {
+          promises.push(new Promise(function (res) {
+            cd.getData("text/plain") && res();
+          }));
+        } else if (it.kind === "file" && it.type.indexOf("image/") === 0) {
+          (function (item, mime) {
+            var blob = item.getAsFile();
+            if (blob) { promises.push(addBlob(blob, mime)); }
+          })(it, it.type);
+        }
+      }
+    } else if (cd.files && cd.files.length) {
+      for (var j = 0; j < cd.files.length; j++) {
+        var f = cd.files[j];
+        formats.push(f.type || "(unknown)");
+        items.push({ index: j + 1, kind: "file", type: f.type || "(unknown)" });
+        if (f.type.indexOf("image/") === 0) {
+          promises.push(addBlob(f, f.type));
+        }
+      }
+    }
+
+    captured.text_plain = cd.getData("text/plain") || "";
+    captured.text_html = cd.getData("text/html") || "";
+    captured.formats = formats;
+    captured.items = items;
+
+    Promise.all(promises).then(send);
+  });
+
+  // ---- 文件选择 fallback ----
+  document.getElementById("pick").addEventListener("click", function () {
+    fileInput.click();
+  });
+  fileInput.addEventListener("change", function () {
+    captured = { images: [], rejected: [], formats: [], items: [] };
+    var promises = [];
+    for (var i = 0; i < fileInput.files.length; i++) {
+      var f = fileInput.files[i];
+      if (f.type.indexOf("image/") === 0) { promises.push(addBlob(f, f.type)); }
+    }
+    Promise.all(promises).then(send);
+  });
+
+  // ---- 拖放 ----
+  ["dragenter", "dragover"].forEach(function (t) {
+    zone.addEventListener(t, function (e) { e.preventDefault(); zone.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (t) {
+    zone.addEventListener(t, function (e) { e.preventDefault(); zone.classList.remove("drag"); });
+  });
+  zone.addEventListener("drop", function (e) {
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) { return; }
+    captured = { images: [], rejected: [], formats: [], items: [] };
+    var promises = [];
+    for (var i = 0; i < files.length; i++) {
+      if (files[i].type.indexOf("image/") === 0) { promises.push(addBlob(files[i], files[i].type)); }
+    }
+    Promise.all(promises).then(send);
+  });
+
+  // ---- 清空 ----
+  document.getElementById("clear").addEventListener("click", function () {
+    captured = { images: [], rejected: [], formats: [], items: [] };
+    setValue({
+      text_plain: "", text_html: "", images: [], formats: [], items: [],
+      rejected: [], media_placeholders: 0, image_placeholders: 0,
+      order_evidence: false, timestamp: Date.now()
+    });
+    renderStatus({ images: [], rejected: [], items: [], formats: [] });
+    reportHeight();
+  });
+
+  function render(args) {
+    if (args && args.clear) {
+      captured = { images: [], rejected: [], formats: [], items: [] };
+      renderStatus({ images: [], rejected: [], items: [], formats: [] });
+    }
+    renderReport(null);
+    reportHeight();
+  }
+
+  setTimeout(function () { renderReport(null); reportHeight(); }, 50);
+})();
+</script>
+</body>
+</html>

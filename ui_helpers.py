@@ -113,7 +113,8 @@ def content_type_label(m: dict) -> str:
     return "文本"
 
 
-def preview_rows(messages: list[dict], limit: int = 15) -> list[dict]:
+def preview_rows(messages: list[dict], limit: int = 15,
+                 bindings: dict | None = None) -> list[dict]:
     """解析预览表行。媒体内容列使用中性脱敏展示，不暴露本地文件名。"""
     rows = []
     for idx, m in enumerate(messages[:limit]):
@@ -129,8 +130,20 @@ def preview_rows(messages: list[dict], limit: int = 15) -> list[dict]:
             "时间": m.get("time") or "-",
             "类型": content_type_label(m),
             "内容": content,
+            "媒体": media_binding_badge(idx, m, bindings or {}),
         })
     return rows
+
+
+def media_binding_badge(index: int, message: dict, bindings: dict) -> str:
+    """预览表“媒体”列：已绑定 / 未绑定 / 无图片占位符。"""
+    if "image" not in (message.get("media_kinds") or []):
+        return "—"
+    if bindings.get(index):
+        return "✅ 已绑定"
+    if message.get("content_type") == "media":
+        return "⚠ 未绑定"
+    return "—"
 
 
 def media_event_entry(m: dict) -> dict:

@@ -125,12 +125,19 @@ def _parse(at, chat):
     at.run()
 
 
+def _use_text_mode(at) -> None:
+    """AppTest 中无浏览器 iframe，组件返回 None；显式切到纯文本路径。"""
+    at.session_state["input_mode"] = "text"
+    at.run()
+
+
 def test_full_flow_mapping_persists_and_zero_api(counting_client):
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
     assert not at.exception
 
-    # ① 输入
+    # ① 输入（AppTest 无浏览器 iframe，切到纯文本路径）
+    _use_text_mode(at)
     _parse(at, CHAT)
     assert "确认聊天双方" in _texts(at)
 
@@ -178,6 +185,7 @@ def test_full_flow_mapping_persists_and_zero_api(counting_client):
 def test_tab_switch_keeps_mapping_and_results(counting_client):
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
+    _use_text_mode(at)
     _parse(at, CHAT)
     at.selectbox[0].select("我")
     at.run()
@@ -199,6 +207,7 @@ def test_tab_switch_keeps_mapping_and_results(counting_client):
 def test_media_chat_skips_media_and_shows_events(counting_client):
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
+    _use_text_mode(at)
     _parse(at, MEDIA_CHAT)
 
     # 解析预览：媒体计数与脱敏展示
@@ -267,6 +276,7 @@ def test_low_evidence_overview_uses_reference_mode(monkeypatch, tmp_path):
 
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
+    _use_text_mode(at)
     _parse(at, CHAT)
     at.selectbox[0].select("我")
     at.run()
@@ -286,9 +296,25 @@ def test_low_evidence_overview_uses_reference_mode(monkeypatch, tmp_path):
     assert not any("/ 100" in h for h in hero)
 
 
+def test_input_stage_has_text_and_optional_image_upload(counting_client):
+    """输入阶段 = 文本 + 可选图片上传（v0.2.0 形态；剪贴板直采见 Probe）。"""
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    labels = [b.label for b in at.button]
+    assert "解析并预览" in labels
+    # 不再有 rich/text 模式切换按钮
+    assert "富媒体粘贴不可用？切换到纯文本输入" not in labels
+    assert "切回富媒体粘贴" not in labels
+    # 文本域 + 文件上传器同时存在
+    assert len(at.text_area) == 1
+    assert len(at.file_uploader) == 1
+    assert len(counting_client) == 0
+
+
 def test_report_tab_export_zero_api(counting_client):
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
+    _use_text_mode(at)
     _parse(at, CHAT)
     at.selectbox[0].select("我")
     at.run()

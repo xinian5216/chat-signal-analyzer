@@ -55,6 +55,13 @@ exports/
 private/
 samples/private/
 
+# ===== 富媒体粘贴的本地临时缓存（可能含真实微信图片，禁止提交）=====
+.media_cache/
+*.png.tmp
+*.jpg.tmp
+clipboard_dump*
+probe_export*
+
 # ===== 操作系统 =====
 .DS_Store
 Thumbs.db

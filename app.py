@@ -25,6 +25,20 @@ from analyzer import (
 )
 from parser import ParseError, detect_participants, parse_chat
 from privacy import mask_messages
+from media import (
+    MediaAsset,
+    bind_media,
+    dedupe_assets,
+    image_placeholder_messages,
+)
+from rich_paste import (
+    assets_from_uploader,
+    component_available,
+    component_error,
+    get_component,
+)
+from vision import vision_status
+from tools.clipboard_probe.probe import format_probe_report
 from scoring import (
     EFFECTIVE_MESSAGE_MIN_EVIDENCE,
     INTENT_PROFILE_LABELS,
@@ -63,7 +77,6 @@ from ui_helpers import (
     evidence_short,
     visible_behaviors,
 )
-
 DISCLAIMER = (
     "“互动亲近信号指数”仅代表聊天文本中可以观察到的亲近、主动、投入、暧昧、"
     "疏离等信号的组合，**不代表对方真实心理状态**，更不是“TA 喜欢你的概率”。"
@@ -113,6 +126,12 @@ def init_state() -> None:
         ("sel_ta", "（未指定）"),
         ("applied_me", None),
         ("applied_ta", None),
+        # ---- v0.2.0 媒体资产（来自 file_uploader，仅内存）----
+        ("media_assets", []),            # list[MediaAsset]
+        ("media_bindings", {}),          # message_index -> asset_id
+        ("media_manual", {}),            # message_index -> asset_id | "" (不分析)
+        ("order_proven", False),         # 用户是否已实测确认顺序一致
+        ("probe_value", None),           # Probe 区组件返回值（若协议可用）
     ):
         if key not in st.session_state:
             st.session_state[key] = default
@@ -220,6 +239,175 @@ def show_media_event_card(entry: dict) -> None:
         st.markdown(f"**{who}{time_part}**")
         st.markdown(media_badge(entry.get("media_kinds") or []))
         st.caption("内容未分析")
+
+
+# ---------------------------------------------------------------------------
+# v0.2.0 富媒体粘贴：输入阶段 / 绑定 / 手动匹配
+# ---------------------------------------------------------------------------
+
+def _asset_by_id(asset_id: str) -> MediaAsset | None:
+    for a in st.session_state.get("media_assets") or []:
+        if a.id == asset_id:
+            return a
+    return None
+
+
+def _bound_asset(message_index: int) -> MediaAsset | None:
+    asset_id = (st.session_state.get("media_bindings") or {}).get(message_index)
+    if asset_id:
+        return _asset_by_id(asset_id)
+    manual = (st.session_state.get("media_manual") or {}).get(message_index)
+    if manual:
+        return _asset_by_id(manual)
+    return None
+
+
+def _asset_thumb(asset: MediaAsset, width: int = 220):
+    """渲染缩略图（仅本地内存二进制，不上传、不落盘）。"""
+    if not asset or not asset.data:
+        return None
+    import base64
+
+    b64 = base64.b64encode(asset.data).decode("ascii")
+    st.image(f"data:{asset.mime_type};base64,{b64}",
+             caption=f"{asset.mime_type} · {asset.size / 1024:.0f} KB",
+             width=width)
+    return asset
+
+
+def show_input_stage() -> tuple[str | None, list | None]:
+    """① 粘贴聊天记录：文本 + 可选图片上传。
+
+    返回 (待解析文本, 上传的图片文件列表)；未点击提交返回 (None, None)。
+
+    说明：浏览器剪贴板的富媒体直采依赖 Streamlit 自定义组件协议，该协议在
+    当前 Streamlit 版本下无法把二进制可靠回传到 Python（已实测）。因此本阶段：
+    - 文本走 text_area（与 v0.1.1 完全一致）；
+    - 图片走原生 file_uploader（点击 / 拖拽，稳定可靠）；
+    - “剪贴板诊断”侧栏项用组件自包含展示剪贴板真实格式，用于后续阶段决策。
+    """
+    with st.container(border=True):
+        st.markdown("#### ① 粘贴聊天记录")
+        st.caption("支持微信 / QQ 等复制文本。图片、视频、动画表情等媒体占位符"
+                   "不会被当作文本分析。")
+        show_api_key_hint()
+
+        with st.form("input_form"):
+            raw_text = st.text_area(
+                "聊天文本",
+                height=220,
+                label_visibility="collapsed",
+                placeholder="支持三种格式（可混合）：\n"
+                            "我: 你刚才怎么一直没回我\n"
+                            "22:31 我\n你干嘛呢\n"
+                            "昵称A\n2026年09月08日 0:09\n消息内容\n"
+                            "昵称B\n2026年09月08日 0:10\n消息内容",
+            )
+            uploaded = st.file_uploader(
+                "添加图片（可选）——用于绑定文本中的 [图片] 占位符",
+                type=["png", "jpg", "jpeg", "webp", "bmp", "gif"],
+                accept_multiple_files=True,
+                help="从微信保存或截图后拖入；仅存于本机内存，不发送给 Jev，"
+                     "不写入报告。",
+            )
+            submitted = st.form_submit_button("解析并预览", type="primary")
+
+        if uploaded:
+            st.caption(f"已选择 {len(uploaded)} 张图片（仅本机内存，"
+                       "不会发送给 Jev，也不写入报告）。")
+            cols = st.columns(min(len(uploaded), 4))
+            for i, f in enumerate(uploaded[:4]):
+                with cols[i]:
+                    st.image(f, width=110)
+
+    if submitted:
+        return raw_text, list(uploaded or [])
+    return None, None
+
+
+def reset_media_state() -> None:
+    """解析新聊天时清空媒体资产与绑定（图片属于上一次粘贴）。"""
+    st.session_state["media_assets"] = []
+    st.session_state["media_bindings"] = {}
+    st.session_state["media_manual"] = {}
+
+
+def show_api_key_hint() -> None:
+    """未配置 API Key 时给出友好配置说明（不崩溃、不索要明文 Key）。"""
+    if os.environ.get("TYPESAFE_API_KEY", "").strip():
+        return
+    st.info(
+        "**尚未配置 TypeSafe API Key**\n\n"
+        "1. 复制项目里的 `.env.example` 为 `.env`\n"
+        "2. 编辑 `.env`，填入 `TYPESAFE_API_KEY=你的Key`\n"
+        "3. 重启 SignalLens\n\n"
+        "Key 只保存在本机 `.env` 中，不会写入代码、日志或报告。"
+    )
+
+
+def apply_media_bindings(messages: list[dict]) -> object:
+    """把已捕获图片绑定到占位符；返回 BindingResult。
+
+    顺序证据目前只能来自 Clipboard Probe 的人工确认（order_proven），
+    因为组件值回传在 Streamlit 1.64 下尚不可用。
+    """
+    assets = st.session_state.get("media_assets") or []
+    order_verified = bool(st.session_state.get("order_proven"))
+    result = bind_media(messages, assets, order_verified=order_verified)
+    st.session_state["media_bindings"] = dict(result.auto)
+    st.session_state["media_manual"] = {}
+    return result
+
+
+def show_media_binding_panel(messages: list[dict]) -> None:
+    """② 阶段：媒体捕获 + 绑定状态 + 手动匹配。"""
+    assets = st.session_state.get("media_assets") or []
+    if not assets:
+        return
+
+    placeholders = image_placeholder_messages(messages)
+    auto = st.session_state.get("media_bindings") or {}
+    manual = st.session_state.get("media_manual") or {}
+
+    st.markdown("**🖼 图片绑定**")
+    if auto:
+        st.success(f"已自动绑定 {len(auto)} 张图片（保守策略：仅在唯一对应或"
+                   "顺序已验证时自动绑定）。")
+    unbound = [i for i in placeholders if i not in auto and i not in manual]
+    if unbound:
+        st.warning(
+            f"检测到 {len(placeholders)} 个图片占位符、{len(assets)} 张图片，"
+            "自动对应关系不确定。请手动匹配（也可以标记“不分析”）。"
+        )
+
+    for idx in unbound:
+        m = messages[idx]
+        time_part = f" · {m.get('time')}" if m.get("time") else ""
+        with st.container(border=True):
+            st.markdown(f"**聊天图片 #{idx + 1}**　TA{time_part}")
+            st.caption(f"消息内容：{m.get('text', '')[:60]}")
+            options = ["（不分析）"] + [
+                f"图片 #{n}（{a.mime_type}，{a.size / 1024:.0f} KB）"
+                for n, a in enumerate(assets, start=1)
+            ]
+            choice = st.selectbox(
+                "请选择图片：", options, key=f"media_match_{idx}",
+            )
+            cols = st.columns(min(len(assets), 4))
+            for n, a in enumerate(assets[:4]):
+                with cols[n]:
+                    _asset_thumb(a, width=110)
+            if choice and choice != "（不分析）":
+                n = int(choice.split("#")[1].split("（")[0]) - 1
+                st.session_state["media_manual"][idx] = assets[n].id
+                st.caption("已手动绑定（仅本机显示，不进入分析）。")
+            elif choice == "（不分析）":
+                st.session_state["media_manual"][idx] = ""
+                st.caption("已标记为不分析。")
+
+    bound_total = len(auto) + len([v for v in manual.values() if v])
+    st.caption(f"已绑定 {bound_total} / {len(placeholders)} 个图片占位符 · "
+               f"图片分析：{vision_status()}")
 
 
 def show_message_card(entry: dict) -> None:
@@ -350,31 +538,6 @@ def steps_markdown(current: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# ① 输入
-# ---------------------------------------------------------------------------
-
-def show_input_stage() -> str | None:
-    """返回用户点击提交时的原始文本（未提交返回 None）。"""
-    with st.container(border=True):
-        st.markdown("#### ① 粘贴聊天记录")
-        st.caption("支持微信 / QQ 等复制文本。图片、视频、动画表情等媒体占位符"
-                   "不会被当作文本分析。")
-        with st.form("input_form"):
-            raw_text = st.text_area(
-                "聊天文本",
-                height=260,
-                label_visibility="collapsed",
-                placeholder="支持三种格式（可混合）：\n"
-                            "我: 你刚才怎么一直没回我\n"
-                            "22:31 我\n你干嘛呢\n"
-                            "昵称A\n2026年09月08日 0:09\n消息内容\n"
-                            "昵称B\n2026年09月08日 0:10\n消息内容",
-            )
-            submitted = st.form_submit_button("解析并预览", type="primary")
-    return raw_text if submitted else None
-
-
-# ---------------------------------------------------------------------------
 # ② 确认解析
 # ---------------------------------------------------------------------------
 
@@ -461,8 +624,14 @@ def show_confirm_stage(messages: list[dict]) -> None:
             st.caption("复制记录中只有媒体占位符，没有实际图片或视频内容，"
                        "因此不会推测媒体内容。")
 
+        # ---- 富媒体图片绑定 / 手动匹配 ----
+        show_media_binding_panel(messages)
+
         # ---- 预览表（安全门禁，保留）----
-        st.dataframe(preview_rows(messages), use_container_width=True, hide_index=True)
+        st.dataframe(
+            preview_rows(messages, bindings=st.session_state.get("media_bindings") or {}),
+            use_container_width=True, hide_index=True,
+        )
         if len(messages) > 15:
             st.caption(f"仅预览前 15 条，共 {len(messages)} 条。预览内容已本地脱敏；"
                        "unknown = 无法确定发言人（未根据内容猜测）。")
@@ -741,6 +910,52 @@ def show_sidebar() -> None:
                 "互动熟悉度（relational_ease）衡量互动的自然与默契程度，"
                 "不计入指数，也不等于浪漫兴趣或特殊关注。"
             )
+        with st.expander("▶ 剪贴板诊断（Clipboard Probe）"):
+            show_clipboard_probe()
+
+
+def show_clipboard_probe() -> None:
+    """剪贴板诊断（Clipboard Probe）——iframe 内自包含，不依赖 Python 回传。
+
+    在微信 PC 选中聊天 → Ctrl+C → 在下面 Ctrl+V，组件内会直接显示：
+    clipboardData.items / files、MIME、图片数量与尺寸、item 顺序、
+    文本内媒体占位符数量，并可导出仅含元数据的诊断 JSON。
+
+    说明：Streamlit 1.64 下自定义组件协议暂不能把二进制可靠回传 Python
+    （已实测：ready 握手与消息投递均正常，但组件值不会出现在 Python 侧），
+    因此 Probe 采用自包含设计；主流程的图片输入使用 file_uploader。
+    """
+    st.caption(
+        "从微信复制一段包含文字 / 普通图片 / 动画表情 / 视频的聊天，"
+        "在下面 Ctrl+V，即可看到实际收到的剪贴板格式。"
+    )
+    st.caption(
+        "诊断结果在下方组件内直接显示；点“导出诊断信息”可下载"
+        "（只含 MIME / 数量 / 尺寸 / 顺序，不含聊天文本、图片内容或文件路径）。"
+    )
+    if not component_available():
+        st.warning("富媒体组件不可用，无法进行剪贴板诊断。")
+        if component_error():
+            st.caption(f"组件错误：{component_error()}")
+        return
+
+    component = get_component()
+    value = component(key="rich_paste_probe")
+    if value and value != st.session_state.get("probe_value"):
+        st.session_state["probe_value"] = value
+
+    # 若某天组件协议可用，这里附带给出版本；否则自包含 iframe 已满足诊断。
+    value = st.session_state.get("probe_value")
+    if value:
+        st.success("组件值已回传到 Python（协议可用）——以下为 Python 侧视图：")
+        st.markdown(format_probe_report(value))
+        st.checkbox(
+            "我已确认剪贴板图片顺序与文本占位符顺序一致（启用 N:N 顺序绑定）",
+            key="order_proven",
+        )
+    else:
+        st.caption("尚未粘贴（或当前 Streamlit 版本不支持组件值回传，"
+                   "以上方组件内显示为准）。")
 
 
 # ---------------------------------------------------------------------------
@@ -766,7 +981,7 @@ def main() -> None:
     ))
 
     # ① 输入
-    submitted_text = show_input_stage()
+    submitted_text, uploaded = show_input_stage()
     if submitted_text is not None:
         try:
             parsed = parse_chat(submitted_text)
@@ -778,6 +993,7 @@ def main() -> None:
             st.session_state["stats"] = None
             st.session_state["applied_me"] = None
             st.session_state["applied_ta"] = None
+            reset_media_state()
         else:
             st.session_state["raw_text"] = submitted_text
             st.session_state["messages"] = mask_messages(parsed)
@@ -790,6 +1006,14 @@ def main() -> None:
             st.session_state["sel_ta"] = "（未指定）"
             st.session_state["applied_me"] = None
             st.session_state["applied_ta"] = None
+            # 媒体资产：来自本次上传的图片（仅内存）
+            reset_media_state()
+            assets, errors = assets_from_uploader(uploaded)
+            st.session_state["media_assets"] = dedupe_assets(assets)
+            for err in errors:
+                st.warning(err)
+            # 保守绑定到 [图片] 占位符
+            apply_media_bindings(st.session_state["messages"])
 
     # ② 确认解析
     messages = st.session_state.get("messages")

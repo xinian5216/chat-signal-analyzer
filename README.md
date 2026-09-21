@@ -96,6 +96,21 @@ streamlit run app.py
 
 浏览器自动打开 <http://localhost:8501>。
 
+### Windows 一键启动（推荐）
+
+不想记命令的用户：
+
+```
+1. 双击 launcher\install.bat   （首次：创建 .venv 并安装依赖）
+2. 双击 launcher\start.bat     （每次：启动并自动打开浏览器）
+```
+
+- `install.bat`：自动寻找 Python 3.11+，在项目内创建 `.venv`，
+  安装 `requirements.txt`；**不要求管理员权限，不修改系统 Python**。
+- `start.bat`：只监听 `127.0.0.1:8501`，无头模式，等待端口就绪后自动打开
+  浏览器；**已在运行时不会启动第二个实例**；项目路径含空格也能正常工作
+  （脚本使用自身目录定位，不依赖当前工作目录）。
+
 ## 6. 输入格式示例
 
 支持三种格式（可混合），也支持全角冒号与多行消息：
@@ -168,8 +183,32 @@ TA: 对哈哈
   记录 `skipped_media_messages`。
 - 本项目**不引入视觉模型、不读取 .dat/.mp4、不做 OCR**。
 
-## 7. 隐私说明
+### Clipboard Probe：浏览器实际能拿到什么（v0.2.0 第一阶段）
 
+微信复制的富媒体数据在浏览器里到底能拿到多少，需要实测。左侧栏
+**高级 → 剪贴板诊断（Clipboard Probe）** 提供一个自包含的诊断区：
+
+1. 在微信 PC 选中聊天 → `Ctrl+C`
+2. 在 Probe 区 `Ctrl+V`
+3. 组件内直接显示：`clipboardData.items` / `files`、MIME、图片数量与尺寸、
+   item 顺序、文本内媒体占位符数量，并可导出**仅含元数据**的诊断 JSON
+   （不含聊天文本、图片内容、文件路径）。
+
+**当前实现状态（重要，请勿误解）**：
+
+- Probe 的诊断结果在 **iframe 内自包含展示**。原因是 Streamlit 1.64 下
+  自定义组件协议可以把消息投递到父窗口，但**组件值无法稳定回传到 Python**
+  （已实测：ready 握手与消息投递正常，`setComponentValue` 后 Python 侧仍
+  收到 `None`）。本轮因此不宣称“微信复制的图片自动进入 SignalLens”。
+- 主流程的图片输入使用**原生 file_uploader**（点击或拖拽），作为普通用户
+  的 fallback：上传的图片仅存于本机内存，不发送给 Jev，不写入报告。
+- 绑定逻辑（`media.py`）对两种来源一致：1 占位符 + 1 图自动绑定；
+  N:N 需要顺序经过 Probe 实测确认；数量不匹配一律交给用户手动匹配。
+- 图片语义识别**尚未实现**（`vision.py` 仅预留接口，默认禁用）。
+- 待完成真实微信 Probe 实测后，再决定下一阶段的前端桥接方案
+  （Streamlit components v2 / 本地小助手等）。
+
+## 7. 隐私说明
 - Jev 是云端 API。**任何内容发出前都会先本地脱敏**：
   手机号、邮箱、身份证、IP 地址、URL（连 token 一起）、明显的 API Key、
   银行卡号形式的长数字，分别替换为 `<PHONE>` `<EMAIL>` `<ID>` `<IP>`
@@ -365,15 +404,23 @@ Python 3.11 上运行同一套测试，**不需要任何 API Key**。
 ## 项目结构
 
 ```
-├─ app.py            # Streamlit UI（含报告导出）
+├─ app.py            # Streamlit UI（四阶段 + 报告导出）
 ├─ analyzer.py       # Jev 调用（每消息一次请求取全部指标）+ 错误分类
-├─ parser.py         # 聊天文本解析
+├─ parser.py         # 聊天文本解析 + 非文本媒体占位符识别
+├─ media.py          # MediaAsset / 资源限制 / 占位符→图片保守绑定
+├─ rich_paste.py     # 富媒体组件封装（含 file_uploader → MediaAsset 桥接）
+├─ vision.py         # 视觉识别接口预留（默认禁用，尚未实现）
 ├─ report.py         # 报告导出（Markdown / JSON / 摘要，纯本地无 API）
 ├─ scoring.py        # 指数公式、聚合统计、置信度标签（阈值集中配置）
 ├─ privacy.py        # 本地脱敏
 ├─ storage.py        # SQLite 缓存（SHA256 key，短连接线程安全）
+├─ ui_helpers.py     # 纯展示层辅助（短标签 / 徽章 / 过滤）
+├─ components/rich_paste/index.html   # 剪贴板诊断组件（原生 JS，无依赖）
+├─ tools/clipboard_probe/             # Clipboard Probe 报告格式化 + 实测清单
+├─ launcher/         # Windows 一键启动（install.bat / start.bat）
 ├─ scripts/smoke_test.py
-└─ tests/            # parser / privacy / scoring / storage / analyzer / report（mock）
+└─ tests/            # parser / privacy / scoring / storage / analyzer /
+                     # report / media / launcher / ui / app flow（全部 mock）
 ```
 
 ## License

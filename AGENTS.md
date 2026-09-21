@@ -9,7 +9,7 @@ Repo-specific guidance for OpenCode / AI sessions. Everything here was verified 
 
 ## Commands
 
-- Tests: `.venv\Scripts\python -m pytest tests -q` — 165 tests, ~8s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
+- Tests: `.venv\Scripts\python -m pytest tests -q` — 211 tests, ~10s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
 - App: `.venv\Scripts\streamlit run app.py`. Needs `TYPESAFE_API_KEY` in the gitignored `.env`; without a key the UI shows a friendly hint and does not crash.
 - Real-API smoke test — **the only script that calls Jev** (5 constructed messages, then fully cached): `.venv\Scripts\python -X utf8 scripts\smoke_test.py`.
 
@@ -30,6 +30,12 @@ Single Streamlit app, flat modules, no package:
 - `storage.py` — SQLite result cache
 - `report.py` — Markdown / JSON / summary export
 - `ui_helpers.py` — pure display helpers only (short labels, media badges, message filtering, overview layout data); **no scoring/business logic may live here**
+- `media.py` — `MediaAsset`, upload/clipboard limits, conservative placeholder→image binding. **Image binaries must never enter Jev state, SQLite, or reports**
+- `rich_paste.py` — rich-paste component wrapper + `assets_from_uploader` fallback bridge
+- `vision.py` — vision interface stub, **disabled by default** (no vendor chosen yet)
+- `components/rich_paste/index.html` — vanilla-JS Streamlit custom component for the Clipboard Probe. Note: on Streamlit 1.64 the component value **cannot** reliably reach Python (verified), so the Probe is **self-contained inside the iframe**; do not re-litigate the protocol without new evidence
+- `tools/clipboard_probe/` — probe report formatting + the real-device WeChat test checklist
+- `launcher/` — Windows `install.bat` / `start.bat` (script-relative paths, single-instance guard, localhost only)
 - `app.py` — Streamlit UI: 4 stages (input → confirm → analyze → results tabs), all API calls happen only inside `run_analysis`
 
 ## Hard constraints (change only with explicit user approval)
