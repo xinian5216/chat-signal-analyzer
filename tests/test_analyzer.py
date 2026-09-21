@@ -1,0 +1,148 @@
+"""analyzer 测试：使用 mock 响应，绝不调用真实 Jev API。"""
+
+from types import SimpleNamespace
+
+import analyzer
+from analyzer import analyze_messages, build_state, extract_answers
+from privacy import mask_messages
+
+
+class FakeAnswer:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def make_fake_response():
+    answers = {
+        "emotion": FakeAnswer(choice="calm", probabilities={"calm": 0.6, "teasing": 0.4}, confidence=0.7),
+        "intent": FakeAnswer(choice="explain", probabilities={"explain": 0.8, "other": 0.2}, confidence=0.8),
+        "warmth": FakeAnswer(score=2.0, probabilities={"0": 0.1, "1": 0.2, "2": 0.7}, confidence=0.75),
+        "engagement": FakeAnswer(score=1.0, probabilities={"0": 0.1, "1": 0.9}, confidence=0.6),
+        "special_attention": FakeAnswer(score=0.5, probabilities={"0": 0.5, "1": 0.5}, confidence=0.5),
+        "relationship_evidence_strength": FakeAnswer(
+            score=2.0, probabilities={"0": 0.0, "1": 0.2, "2": 0.8}, confidence=0.7
+        ),
+        "romantic_signal": FakeAnswer(noul=0.1),
+        "distancing_signal": FakeAnswer(noul=0.9),
+    }
+    return SimpleNamespace(answers=answers, model="jev-test")
+
+
+class FakeClient:
+    def __init__(self, fail_on=None):
+        self.calls = 0
+        self.fail_on = fail_on or set()  # 消息下标集合，这些下标抛异常
+
+    def system_one(self, state, questions):
+        # 用目标消息文本来推断下标（测试数据里文本唯一）
+        text = state["target_message"]["text"]
+        self.calls += 1
+        if text in self.fail_on:
+            raise RuntimeError("模拟网络中断")
+        return make_fake_response()
+
+
+def sample_messages():
+    raw = [
+        {"speaker": "me", "text": "在干嘛", "time": "22:30"},
+        {"speaker": "them", "text": "刚下班", "time": "22:31"},
+        {"speaker": "me", "text": "累不累", "time": "22:32"},
+        {"speaker": "them", "text": "有点，哈哈", "time": "22:33"},
+    ]
+    return mask_messages(raw)
+
+
+def test_state_uses_only_past_context():
+    msgs = sample_messages()
+    state = build_state(msgs[:3], msgs[3])
+    assert len(state["conversation_context"]) == 3
+    assert state["target_message"]["text"] == "有点，哈哈"
+    assert "analysis_rule" in state
+
+
+def test_state_context_capped_at_5():
+    msgs = sample_messages()
+    long_context = [{"speaker": "me", "text": f"m{i}"} for i in range(10)]
+    state = build_state(long_context, msgs[1])
+    assert len(state["conversation_context"]) == 5
+    assert state["conversation_context"][-1]["text"] == "m9"  # 取最近 5 条
+
+
+def test_extract_answers_shape():
+    out = extract_answers(make_fake_response())
+    assert out["emotion"]["choice"] == "calm"
+    assert out["warmth"]["probabilities"]["2"] == 0.7
+    assert out["relationship_evidence_strength"]["score"] == 2.0
+    assert out["romantic_signal"] == 0.1
+    assert out["distancing_signal"] == 0.9
+
+
+def test_schema_v2_includes_evidence_and_invalidates_v1_cache():
+    """v2 question schema 必须包含新 Score，且旧 v1 缓存 key 不能命中新结果。"""
+    from storage import make_cache_key
+
+    schema_v2 = analyzer.build_questions_schema()
+    assert "relationship_evidence_strength" in schema_v2
+
+    # 模拟 v1 时代的 schema（无 evidence 问题）与版本号
+    schema_v1 = {k: v for k, v in schema_v2.items() if k != "relationship_evidence_strength"}
+    state = {"conversation_context": [], "target_message": {"speaker": "them", "text": "哦"}}
+    key_v1 = make_cache_key(state, schema_v1, "jev-latest", "chat-signal-v1")
+    key_v2 = make_cache_key(state, schema_v2, "jev-latest", analyzer.SCHEMA_VERSION)
+    assert key_v1 != key_v2
+
+
+def test_analyze_only_them_messages_and_single_call_each():
+    client = FakeClient()
+    results = analyze_messages(client, sample_messages())
+    assert client.calls == 2  # 只有 2 条 TA 消息
+    assert len(results) == 2
+    assert all(e["speaker"] == "them" for e in results)
+    assert all("result" in e for e in results)
+    assert [e["index"] for e in results] == [1, 3]
+
+
+def test_single_failure_does_not_abort_others():
+    client = FakeClient(fail_on={"刚下班"})
+    results = analyze_messages(client, sample_messages())
+    assert results[0]["error"]  # 第 1 条失败
+    assert "result" in results[1]  # 第 2 条成功
+
+
+def test_cache_avoids_repeat_api_calls(tmp_path):
+    from storage import Cache
+
+    cache = Cache(tmp_path / "cache.db")
+    client = FakeClient()
+
+    r1 = analyze_messages(client, sample_messages(), cache=cache)
+    assert client.calls == 2
+    assert all(e["cached"] is False for e in r1)
+
+    client2 = FakeClient()
+    r2 = analyze_messages(client2, sample_messages(), cache=cache)
+    assert client2.calls == 0  # 全部命中缓存
+    assert all(e["cached"] is True for e in r2)
+    assert r1[0]["result"] == r2[0]["result"]
+
+
+def test_only_indices_for_retry():
+    client = FakeClient(fail_on={"刚下班"})
+    messages = sample_messages()
+    cacheless_results = analyze_messages(client, messages)
+    failed = {e["index"] for e in cacheless_results if e.get("error")}
+
+    retry_client = FakeClient()
+    retried = analyze_messages(
+        retry_client, messages, only_indices=failed
+    )
+    assert retry_client.calls == 1
+    assert "result" in retried[0]
+
+
+def test_classify_error_never_leaks_headers():
+    # SDK 未安装异常类型时应安全降级；已安装时应映射为中文提示
+    msg = analyzer.classify_error(RuntimeError("boom"))
+    assert isinstance(msg, str) and msg
+    assert "Authorization" not in msg and "Bearer" not in msg
