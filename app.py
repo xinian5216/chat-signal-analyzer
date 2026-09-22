@@ -477,11 +477,10 @@ def show_input_stage() -> tuple[str | None, list, str]:
                 height=220,
                 key="chat_input",
                 label_visibility="collapsed",
-                placeholder="支持三种格式（可混合）：\n"
-                            "我: 你刚才怎么一直没回我\n"
-                            "22:31 我\n你干嘛呢\n"
-                            "昵称A\n2026年09月08日 0:09\n消息内容\n"
-                            "昵称B\n2026年09月08日 0:10\n消息内容",
+                placeholder="每次粘贴请使用一种格式，例如：\n"
+                            "① 我: 你刚才怎么一直没回我\n"
+                            "② 22:31 我\n   你干嘛呢\n"
+                            "③ 昵称A\n   2026年09月08日 0:09\n   消息内容",
             )
             uploaded = st.file_uploader(
                 "添加图片（可选）——用于绑定文本中的 [图片] 占位符",
