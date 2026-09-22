@@ -40,8 +40,8 @@ SignalLens 是第三方未签名开源程序。首次运行时 Windows 可能显
 数据与隐私
 ----------
 
-* API Key 只保存在本机 data/settings.env，不会上传、不会写进
-  报告或日志。
+* API Key 仅用于直接向 TypeSafe API 鉴权；选择保存时只写入本机
+  data/settings.env，不会进入聊天内容、分析缓存、报告或日志。
 * 聊天内容在本地脱敏后，仅把目标消息与最多 5 条上下文发送给
-  TypeSafe Jev；分析缓存、报告导出都在本地完成。
+  TypeSafe Jev；原始昵称不会发送，分析缓存与报告导出在本地完成。
 * 删除 data 文件夹即可完全清除 SignalLens 在本机的所有数据。

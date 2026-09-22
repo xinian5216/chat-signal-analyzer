@@ -217,23 +217,24 @@ def test_media_fields_never_enter_jev_state():
          "content_type": m["content_type"], "media_kinds": m["media_kinds"],
          "media_asset_ids": ["deadbeef"]},
     )
-    assert set(state["target_message"]) == {
-        "speaker", "text", "time", "raw_speaker",
-        "content_type", "media_kinds", "media_asset_ids",
-    } or "content_type" not in state["target_message"]
-    # 真实路径：app 只投影 4 个字段
+    assert set(state["target_message"]) == {"speaker", "text", "time"}
+    # 即使调用方误传本地 metadata，build_state 也会按白名单剥离
+    for key in ("raw_speaker", "content_type", "media_kinds", "media_asset_ids"):
+        assert key not in state["target_message"]
+    # 真实路径：app 只投影必要字段
     projected = {"speaker": "them", "text": m["text"], "time": m.get("time"),
                  "raw_speaker": m.get("raw_speaker")}
     state2 = analyzer.build_state(
         [{"speaker": "me", "text": "在忙吗", "time": None}], projected)
-    assert set(state2["target_message"]) == {"speaker", "text", "time", "raw_speaker"}
-    # 纯文本消息的 state 形状不变；版本号随 Context Builder v2（上下文选择语义
-    # 变更）bump 到 v2.2，问题 schema 本身与 v2.1 完全一致
+    assert set(state2["target_message"]) == {"speaker", "text", "time"}
+    # 白名单 + v2.2：raw_speaker 不进入 state；版本号随 Context Builder v2
+    # （上下文选择语义）与出站白名单（本地 metadata 剥离）变更而 bump，
+    # 问题 schema 本身与 v2.1 完全一致
     assert analyzer.SCHEMA_VERSION == "chat-signal-v2.2"
 
 
 def test_pure_text_cache_key_unchanged():
-    """纯文本路径的缓存 key 与 v0.1.1 完全一致（媒体资产不参与）。"""
+    """纯文本缓存 key 稳定，媒体资产与原始昵称均不参与。"""
     msgs = parse(CHAT_PLAIN)
     ctx = [{"speaker": c["speaker"], "text": c["text"], "time": c.get("time")}
            for c in msgs[:1]]

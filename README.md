@@ -4,9 +4,10 @@
   <b>A privacy-conscious, Jev-powered analyzer for observable emotional, conversational, and relationship signals in chat messages.</b>
 </p>
 
-SignalLens 是一个**本地单机**的 Streamlit 工具：粘贴一段聊天文本，使用
-[TypeSafe Jev](https://typesafe.ai/)（System One 决策模型）对 TA 的每一条消息做
-结构化分析，并按固定公式聚合出「互动亲近信号指数」。
+SignalLens 是一个**本地优先**的 Streamlit 工具：聊天解析、隐私脱敏、缓存和报告
+均在本机完成；脱敏后的必要上下文会发送给
+[TypeSafe Jev](https://typesafe.ai/)（System One 决策模型）进行结构化判断，
+再由本地固定公式聚合出「互动亲近信号指数」。
 
 ---
 
@@ -346,14 +347,21 @@ interrupted）。如果一次新的 rerun 开始时仍看到 `running`，说明�
   （Streamlit components v2 / 本地小助手等）。
 
 ## 7. 隐私说明
-- Jev 是云端 API。**任何内容发出前都会先本地脱敏**：
+- Jev 是云端 API；界面、解析、脱敏、缓存和报告导出在本机运行。
+- **任何聊天内容发出前都会先本地脱敏**：
   手机号、邮箱、身份证、IP 地址、URL（连 token 一起）、明显的 API Key、
   银行卡号形式的长数字，分别替换为 `<PHONE>` `<EMAIL>` `<ID>` `<IP>`
   `<URL>` `<SECRET>` `<CARD>`。
+- 每次请求只发送目标消息、Context Builder v2 选出的有界上下文
+  （最多 8 个对话 turn / 12 条消息 / 4000 字符，只含目标消息之前的历史）、
+  规范化角色（我 / TA）、可选时间和分析规则；解析器保留的原始昵称
+  `raw_speaker` 不发送给 Jev。
 - 真实姓名**不自动猜测**（避免误替换），请自行确认文本中是否含真实姓名。
 - 脱敏是 MVP 级启发式规则，**不能替代人工检查**——粘贴前请自行确认。
-- 本地缓存（`.jev_cache/cache.db`）保存的是**脱敏后**内容的分析结果，
-  已被 `.gitignore` 排除。
+- TypeSafe API Key 仅用于直接向 TypeSafe API 鉴权，不进入聊天内容、分析缓存、
+  报告或日志；选择保存时仅写入本机配置文件。
+- 本地 SQLite 只缓存结构化分析结果；聊天 state 只参与 SHA256 cache key 计算，
+  不以明文写入缓存表。缓存文件已被 `.gitignore` 排除。
 - 更完整的隐私模型见 [PRIVACY.md](PRIVACY.md)。
 
 ## 8. Jev 调用了哪些 primitives
@@ -383,7 +391,8 @@ interrupted）。如果一次新的 rerun 开始时仍看到 `running`，说明�
     target**、不产生独立请求、不产生 relationship score；
   - 不做语义检索 / 关键词召回（避免 cherry-picking），也不用回复速度直接推断感情。
 - **缓存 schema 版本 v2 → v2.1 → v2.2**：v2.1 新增 `relational_ease` 问题；v2.2 的 9 个
-  问题与 v2.1 完全一致，变更的是上下文选择语义（previous 5 → Context Builder v2），
+  问题与 v2.1 完全一致，变更的是上下文选择语义（previous 5 → Context Builder v2）
+  与出站字段白名单（`raw_speaker` 等本地 metadata 不再进入 state），
   因此 bump 版本使旧分析缓存**自然失效**（不删除缓存文件，只自然 miss）。
   缓存 key 由（state + 问题 schema + 模型 + schema 版本）的 SHA256 构成，
   旧版本条目不会冒充新语义结果。
@@ -525,7 +534,7 @@ mock 基击（100ms 延迟 / 20 个未命中）：串行 2.3s，并发 4 → 0.5
 
 隐私选项：
 
-- **☑ 报告中包含原始聊天内容**（默认**关闭**）。关闭时导出匿名报告：
+- **☑ 报告中包含本地脱敏后的聊天文本**（默认**关闭**）。关闭时导出匿名报告：
   Markdown 中只显示“TA 消息 #N”，JSON 的 `text` 字段为 `null`。
 - 默认文件名不含昵称。导出内容不含 API Key、缓存路径、异常堆栈。
 
@@ -548,7 +557,9 @@ mock 基击（100ms 延迟 / 20 个未命中）：串行 2.3s，并发 4 → 0.5
   can only be used in that same thread`。
 - 连接使用 `timeout=5.0` + `PRAGMA busy_timeout=5000` + `PRAGMA journal_mode=WAL`，
   降低并发锁竞争；数据量小，不需要连接池。
-- 缓存 key / schema / 数据与旧版完全兼容，既有缓存文件可直接读取。
+- 缓存文件格式与旧版兼容；为避免原始昵称进入 state，cache key 不再包含
+  `raw_speaker`，旧 key 会自然不命中，但不会被自动删除（v2.2 起语境选择
+  改为 Context Builder v2，旧缓存同样自然失效）。
 
 ## 测试与冒烟
 

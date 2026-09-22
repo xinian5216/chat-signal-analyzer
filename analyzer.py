@@ -18,16 +18,19 @@ from context_builder import select_context
 from parser import has_media_marker
 from storage import make_cache_key
 
-# 缓存 schema 版本。v2.2：9 个 Jev 问题**未变**，变的是 conversation_context
-# 的选择语义（previous 5 → Context Builder v2 turn-aware 有界预算），因此
-# 主动 bump 使旧分析缓存条目自然失效（不删除 .jev_cache，只自然 miss）。
+# 缓存 schema 版本。v2.2：9 个 Jev 问题**未变**，但 state 的两处语义都变了——
+# (1) conversation_context 的选择方式（previous 5 → Context Builder v2
+# turn-aware 有界预算），(2) 出站白名单（raw_speaker 等本地 metadata
+# 不再进入 state / cache key）。bump 使旧分析缓存条目自然失效
+# （不删除 .jev_cache，只自然 miss）。
 SCHEMA_VERSION = "chat-signal-v2.2"
 DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
 
 # 基础分析规则（各版本一致；媒体条款见下）。v2.2 起上下文的**选择方式**改变
-# （Context Builder v2），所有消息的 cache key 随之变化（SCHEMA_VERSION 已 bump）。
+# （Context Builder v2）且出站字段由白名单剥离，所有消息的 cache key 随
+# 之变化（SCHEMA_VERSION 已 bump）。
 ANALYSIS_RULE = (
     "Judge only observable signals in the conversation. "
     "Do not assume romantic interest from politeness or normal friendliness alone. "
@@ -261,12 +264,27 @@ def build_state(context: list[dict], target: dict) -> dict:
     不包含任何未来消息——模拟“当时看到这句话时能判断出什么”。
     target 自身不受任何上下文预算约束，永远完整保留。
 
+    这里也是发送到 Jev 前的最后一道字段白名单：只保留规范化角色、
+    已脱敏文本与可选时间。解析器内部使用的 ``raw_speaker``（原始昵称）
+    以及其它本地 metadata 一律不得进入远端请求或缓存 key。
+
     ``analysis_rule`` 按 state 实际内容生成：仅当上下文 / 目标中存在媒体中性
     marker 时才追加媒体条款。
     """
     state = {
-        "conversation_context": select_context(context),
-        "target_message": target,
+        "conversation_context": [
+            {
+                "speaker": item.get("speaker"),
+                "text": item.get("text", ""),
+                "time": item.get("time"),
+            }
+            for item in select_context(context)
+        ],
+        "target_message": {
+            "speaker": target.get("speaker"),
+            "text": target.get("text", ""),
+            "time": target.get("time"),
+        },
     }
     state["analysis_rule"] = analysis_rule_for(state)
     return state
@@ -556,12 +574,12 @@ def analyze_messages(
                 {"speaker": c["speaker"], "text": c["text"], "time": c.get("time")}
                 for c in prefix
             ]
-            # 只把 Jev 需要的字段放进 state：本地元数据不进入 state / 缓存 key
+            # 本地元数据绝不进入 state：build_state 内部按出站白名单剥离
+            # （raw_speaker 等 parser 内部字段不属于远端请求 / 缓存 key）
             target_state = {
                 "speaker": "them",
                 "text": m["text"],
                 "time": m.get("time"),
-                "raw_speaker": m.get("raw_speaker"),
             }
             state = build_state(prefix_view, target_state)
             window = state["conversation_context"]
