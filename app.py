@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -88,6 +90,47 @@ STEPS = ["① 粘贴聊天", "② 确认双方", "③ Jev 分析", "④ 查看 /
 
 SPEAKER_BADGE = {"me": "我", "them": "TA", "unknown": "待确认"}
 
+# ---------------------------------------------------------------------------
+# 轻量计时诊断（默认关闭）
+#
+# 设置环境变量 SIGNALLENS_DEBUG_TIMING=1 后，每次 rerun 结束时会往 console
+# 打印各阶段耗时（解析 / 分析 / 聚合 / 各结果视图渲染 / 侧栏 / 总耗时）。
+# 只打印阶段名与毫秒数，**绝不记录聊天正文、昵称、API Key 或媒体内容**。
+# ---------------------------------------------------------------------------
+
+DEBUG_TIMING = os.environ.get("SIGNALLENS_DEBUG_TIMING", "").strip().lower() \
+    not in ("", "0", "false", "no", "off")
+
+_RERUN_T0 = time.perf_counter()
+_TIMINGS: list[tuple[str, float]] = []
+
+
+class _Stage:
+    """计时上下文：仅在 DEBUG_TIMING 开启时有开销（一次 perf_counter 调用）。"""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __enter__(self) -> "_Stage":
+        if DEBUG_TIMING:
+            self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if DEBUG_TIMING:
+            _TIMINGS.append((self.name, (time.perf_counter() - self.t0) * 1000))
+
+
+def dump_timings() -> None:
+    """打印本次 rerun 的阶段耗时（仅在 DEBUG_TIMING 开启时）。"""
+    if not DEBUG_TIMING:
+        return
+    total = (time.perf_counter() - _RERUN_T0) * 1000
+    parts = [f"{name}={ms:.1f}ms" for name, ms in _TIMINGS]
+    print("[timing] rerun total=%.1fms | %s" % (total, " ".join(parts)),
+          file=sys.stderr, flush=True)
+
+
 # 少量 CSS：只用于主内容宽度与轻量排版（不覆盖 Streamlit 内部结构、无 JS）
 st.set_page_config(page_title="SignalLens · 聊天互动信号分析", page_icon="🔭",
                    layout="centered")
@@ -118,26 +161,75 @@ def init_state() -> None:
         ("raw_text", ""),
         ("raw_chunks", []),              # 多片段追加：每段的原始文本（仅本机）
         ("append_stats", None),          # 最近一次追加的本地统计
+        ("input_notice", None),          # {"level": ..., "text": ...}（跨 rerun 的提示）
+        ("chat_input", ""),              # 聊天输入 textarea（显式 key，便于安全清空）
+        ("pending_clear_input", False),  # 下一次 rerun 在 widget 创建前清空输入
         ("analysis_messages", None),
         ("results", None),
         ("stats", None),
         ("run_error", None),
         ("skipped_media", 0),
         ("msg_filter_mode", "全部消息"),
+        ("msg_filter_last", None),       # 上一次的过滤模式（变化时回到第 1 页）
+        ("msg_page", 0),                 # 全部消息分页
         ("show_media_events", False),
         ("sel_me", "（未指定）"),
         ("sel_ta", "（未指定）"),
         ("applied_me", None),
         ("applied_ta", None),
+        # ---- 分析状态机（UI 生命周期）----
+        # idle / pending / running / complete / error / interrupted
+        ("analysis_state", "idle"),
+        ("pending_target", None),        # pending 阶段待分析的消息列表
+        ("result_view", "概览"),          # 结果视图导航（懒渲染）
+        ("report_cache", None),          # 报告 memo（结果未变则复用）
         # ---- v0.2.0 媒体资产（来自 file_uploader，仅内存）----
         ("media_assets", []),            # list[MediaAsset]
         ("media_bindings", {}),          # message_index -> asset_id
         ("media_manual", {}),            # message_index -> asset_id | "" (不分析)
         ("order_proven", False),         # 用户是否已实测确认顺序一致
         ("probe_value", None),           # Probe 区组件返回值（若协议可用）
+        ("probe_open", False),           # Clipboard Probe 是否已显式打开（默认不加载）
     ):
         if key not in st.session_state:
             st.session_state[key] = default
+
+
+def recover_analysis_state() -> None:
+    """把上一轮遗留的 ``running`` 恢复成 ``interrupted``。
+
+    分析是同步执行的：如果一个**新的 rerun 已经开始**，上一轮的分析就
+    不可能还在运行。此时仍看到 ``running``，只可能是用户点了 Stop、
+    页面被刷新 / 热重载、或异常终止。若不恢复，UI 会被永久困在忙状态。
+    """
+    if st.session_state.get("analysis_state") == "running":
+        st.session_state["analysis_state"] = "interrupted"
+
+
+def run_analysis_guarded(messages: list[dict], only_failed: bool = False) -> None:
+    """同步分析的状态机包装：任何退出路径都不会留下 ``running``。"""
+    st.session_state["analysis_state"] = "running"
+    try:
+        run_analysis(messages, only_failed=only_failed)
+    except Exception:
+        st.session_state["analysis_state"] = "error"
+        raise
+    finally:
+        if st.session_state["analysis_state"] == "running":
+            st.session_state["analysis_state"] = (
+                "error" if st.session_state.get("run_error") else "complete"
+            )
+
+
+def run_pending_analysis() -> None:
+    """执行上一轮点击排下的分析（pending → running → complete/error）。"""
+    if st.session_state.get("analysis_state") != "pending":
+        return
+    target = st.session_state.get("pending_target")
+    if target is None:
+        target = st.session_state.get("messages")
+    st.session_state["pending_target"] = None
+    run_analysis_guarded(target)
 
 
 def get_cache() -> Cache:
@@ -190,7 +282,10 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
         else:
             st.session_state["results"] = new_results
 
-        st.session_state["stats"] = compute_conversation_stats(st.session_state["results"])
+        with _Stage("analysis:stats"):
+            st.session_state["stats"] = compute_conversation_stats(
+                st.session_state["results"]
+            )
         st.session_state["skipped_media"] = skipped_media_count(messages)
 
         cached_n = sum(1 for e in st.session_state["results"] if e.get("cached"))
@@ -291,6 +386,11 @@ def show_input_stage() -> tuple[str | None, list, str]:
 
     追加与去重全部在本机完成，**不会调用 Jev API**。
     """
+    # 必须在 text_area 实例化之前清空（widget 创建后禁止再改它的 state）
+    if st.session_state.get("pending_clear_input"):
+        st.session_state["pending_clear_input"] = False
+        st.session_state["chat_input"] = ""
+
     with st.container(border=True):
         st.markdown("#### ① 粘贴聊天记录")
         st.caption("支持微信 / QQ 等复制文本。图片、视频、动画表情等媒体占位符"
@@ -301,6 +401,7 @@ def show_input_stage() -> tuple[str | None, list, str]:
             raw_text = st.text_area(
                 "聊天文本",
                 height=220,
+                key="chat_input",
                 label_visibility="collapsed",
                 placeholder="支持三种格式（可混合）：\n"
                             "我: 你刚才怎么一直没回我\n"
@@ -355,10 +456,36 @@ def _reset_chat_state() -> None:
     st.session_state["raw_text"] = ""
     st.session_state["raw_chunks"] = []
     st.session_state["append_stats"] = None
+    st.session_state["input_notice"] = None
+    st.session_state["analysis_state"] = "idle"
+    st.session_state["pending_target"] = None
+    st.session_state["report_cache"] = None
     st.session_state["sel_me"] = "（未指定）"
     st.session_state["sel_ta"] = "（未指定）"
     st.session_state["applied_me"] = None
     st.session_state["applied_ta"] = None
+
+
+def set_input_notice(level: str, text: str) -> None:
+    """记下一条要跨 rerun 显示的提示（成功路径会立即 rerun，直接渲染会丢失）。"""
+    st.session_state["input_notice"] = {"level": level, "text": text}
+
+
+def finish_input_action() -> None:
+    """成功处理输入后：清空输入框并立即干净重渲染。
+
+    清空通过 ``pending_clear_input`` 在**下一次 rerun 创建 widget 之前**
+    生效——这是 Streamlit 状态模型允许修改 widget 值的唯一时机，因此不碰
+    DOM、不用 JS，也不会在 widget 实例化后非法改写它的 state。
+    """
+    st.session_state["pending_clear_input"] = True
+    st.rerun()
+
+
+def _warn_media_errors(errors) -> None:
+    """图片上传错误改成提示（成功路径会 rerun，直接渲染会丢失）。"""
+    for err in errors:
+        set_input_notice("warning", err)
 
 
 def rebuild_messages_from_chunks(my_name: str | None,
@@ -400,10 +527,11 @@ def handle_replace_chunk(text: str, uploaded: list) -> None:
     st.session_state["messages"] = mask_messages(parsed)
     st.session_state["skipped_media"] = 0
     assets, errors = assets_from_uploader(uploaded)
-    for err in errors:
-        st.warning(err)
     st.session_state["media_assets"] = dedupe_assets(assets)
+    _warn_media_errors(errors)
     apply_media_bindings(st.session_state["messages"])
+    # 只有成功才清空输入框（失败时用户原样保留可修正）
+    finish_input_action()
 
 
 def handle_append_chunk(text: str, uploaded: list) -> None:
@@ -438,6 +566,8 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
     st.session_state["analysis_messages"] = None
     st.session_state["results"] = None
     st.session_state["stats"] = None
+    st.session_state["analysis_state"] = "idle"
+    st.session_state["report_cache"] = None
 
     # 身份映射：参与者集合不变 → 保留；出现新参与者 → 要求重新确认
     had_mapping = bool(
@@ -453,19 +583,21 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
         st.session_state["sel_ta"] = "（未指定）"
         # 映射已清空：显式传 None，按“未知发言人”重建（不猜身份）
         st.session_state["messages"] = rebuild_messages_from_chunks(None, None)
-        st.warning(
+        set_input_notice(
+            "warning",
             "追加的片段里出现新的参与者：" + "、".join(new_participants)
-            + "。请重新确认谁是“我”、谁是“TA”（不会自动把第三方归为 TA）。"
+            + "。请重新确认谁是“我”、谁是“TA”（不会自动把第三方归为 TA）。",
         )
 
     # 媒体资产：保留已上传图片，并入本次新上传的（仍只在本机内存）
     assets, errors = assets_from_uploader(uploaded)
-    for err in errors:
-        st.warning(err)
     st.session_state["media_assets"] = dedupe_assets(
         list(st.session_state.get("media_assets") or []) + assets
     )
+    _warn_media_errors(errors)
     apply_media_bindings(st.session_state["messages"])
+    # 追加成功 → 清空输入框，用户可直接 Ctrl+V 下一段
+    finish_input_action()
 
 
 def show_api_key_hint() -> None:
@@ -695,6 +827,23 @@ def show_confirm_stage(messages: list[dict]) -> None:
             f"当前总消息 {appended.total} 条（全部本机处理，未调用 Jev）"
         )
 
+    # 输入处理的提示（替换 / 追加成功后 rerun，提示需跨 rerun 显示一次）
+    notice = st.session_state.get("input_notice")
+    if notice:
+        st.session_state["input_notice"] = None
+        level = notice.get("level")
+        text = notice.get("text") or ""
+        if level == "error":
+            st.error(text)
+        elif level == "info":
+            st.info(text)
+        else:
+            st.warning(text)
+
+    if st.session_state.get("analysis_state") == "interrupted":
+        st.info("上次分析被中断（可能点击了 Stop、刷新或热重载）。可重新开始；"
+                "已缓存成功的消息不会重复请求。")
+
     with st.container(border=True):
         st.markdown("#### ② 确认聊天双方")
         c0, c1, c2, c3, c4 = st.columns(5)
@@ -811,18 +960,26 @@ def show_confirm_stage(messages: list[dict]) -> None:
             f"跳过 {skipped_media_count(messages)} 条 TA 非文本媒体 · "
             "缓存命中不会重复请求 API"
         )
-        if st.button("开始 Jev 分析", type="primary", disabled=not can_run):
+        if st.button("开始 Jev 分析", type="primary",
+                     disabled=(not can_run)
+                     or st.session_state.get("analysis_state") == "running"):
             target = (
                 [m for m in messages if m["speaker"] in ("me", "them")]
                 if (unknown_n and ignore_unknown)
                 else messages
             )
             st.session_state["analysis_messages"] = target
-            run_analysis(target)
-            if st.session_state["run_error"]:
-                st.error(st.session_state["run_error"])
-                st.session_state["results"] = None
-                st.session_state["stats"] = None
+            # 两段式：先 pending + rerun，下一轮再真正执行分析。
+            # 这样一个新 rerun 里看到的 "running" 只可能是上一轮被中断。
+            st.session_state["pending_target"] = target
+            st.session_state["analysis_state"] = "pending"
+            st.session_state["result_view"] = "概览"
+            st.session_state["msg_page"] = 0
+            st.rerun()
+
+    # 上一轮点击排下的分析：在本轮渲染结束后同步执行
+    # （状态框出现在按钮附近；完成后本轮继续渲染结果，脚本随即结束）
+    run_pending_analysis()
 
 
 # ---------------------------------------------------------------------------
@@ -912,7 +1069,8 @@ def show_overview_tab(results: list[dict], stats: dict) -> None:
         ids = "、".join(str(e["index"] + 1) for e in failed)
         st.warning(f"第 {ids} 条分析失败，可重新分析。")
         if st.button("重新分析失败项", key="retry_failed"):
-            run_analysis(st.session_state["analysis_messages"], only_failed=True)
+            run_analysis_guarded(st.session_state["analysis_messages"],
+                                 only_failed=True)
             st.rerun()
 
 
@@ -943,6 +1101,11 @@ def show_key_messages_tab(results: list[dict]) -> None:
             st.markdown(f"关系信号 **{m['base_score'] * 100:.0f} / 100**")
 
 
+# 全部消息视图每页条数：分页渲染，避免一次创建上百个 expander / progress。
+# 切页只读 session_state 里已有的 results，0 次 Jev API。
+MESSAGES_PER_PAGE = 25
+
+
 def show_all_messages_tab(results: list[dict], stats: dict) -> None:
     st.markdown("#### 全部消息")
     c1, c2 = st.columns([2, 3])
@@ -956,40 +1119,67 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
         st.checkbox("显示媒体事件", key="show_media_events")
 
     skipped = st.session_state.get("skipped_media", 0)
-    st.caption(
-        f"TA 文本消息 {stats['analyzed']} · 有效关系消息 {stats['effective_messages']} · "
-        f"跳过 TA 媒体 {skipped} · 分析失败 {stats['failed']}"
-    )
+    mode = st.session_state.get("msg_filter_mode", "全部消息")
+    # 过滤条件变化时回到第 1 页（避免停在一个越界页）
+    if st.session_state.get("msg_filter_last") != mode:
+        st.session_state["msg_filter_last"] = mode
+        st.session_state["msg_page"] = 0
 
     visible = filter_entries(
         results,
-        mode=st.session_state.get("msg_filter_mode", "全部消息"),
+        mode=mode,
         include_media=st.session_state.get("show_media_events", False),
         messages=st.session_state.get("analysis_messages") or [],
     )
     if not visible:
         st.caption("当前过滤条件下没有可显示的消息。")
         return
-    for entry in visible:
+
+    # 分页：每次只渲染一页详细卡片，不一次创建几百个 expander / progress
+    pages = max(1, -(-len(visible) // MESSAGES_PER_PAGE))
+    page = max(0, min(int(st.session_state.get("msg_page") or 0), pages - 1))
+    st.session_state["msg_page"] = page
+    st.caption(
+        f"TA 文本消息 {stats['analyzed']} · 有效关系消息 {stats['effective_messages']} · "
+        f"跳过 TA 媒体 {skipped} · 分析失败 {stats['failed']} · "
+        f"第 {page + 1} / {pages} 页（每页 {MESSAGES_PER_PAGE} 条）"
+    )
+
+    start = page * MESSAGES_PER_PAGE
+    for entry in visible[start:start + MESSAGES_PER_PAGE]:
         if entry.get("media_event"):
             show_media_event_card(entry)
         else:
             show_message_card(entry)
 
+    if pages > 1:
+        c1, c2, c3 = st.columns(3)
+        if c1.button("◀ 上一页", key="msg_prev_page",
+                     disabled=(page == 0), use_container_width=True):
+            st.session_state["msg_page"] = page - 1
+            st.rerun()
+        c2.markdown(f"第 {page + 1} / {pages} 页")
+        if c3.button("下一页 ▶", key="msg_next_page",
+                     disabled=(page >= pages - 1), use_container_width=True):
+            st.session_state["msg_page"] = page + 1
+            st.rerun()
 
-def show_report_tab(results: list[dict], stats: dict) -> None:
-    st.markdown("#### 报告导出")
-    st.caption("导出完全基于本次已完成的本地分析结果，不会发起任何 TypeSafe API 请求。")
 
-    st.text_area("分析摘要（可复制）", value=build_summary_text(results, stats),
-                 height=150)
+def _build_or_reuse_reports(results: list[dict], stats: dict,
+                            include_text: bool) -> tuple[str, str]:
+    """报告只在进入“报告”视图时构建；结果未变则复用 session_state 里的成品。
 
-    include_text = st.checkbox(
-        "报告中包含原始聊天文本",
-        value=False,
-        help="关闭时导出匿名报告：只保留统计与消息编号，不含聊天原文。",
-    )
+    导出仍是纯本地数据处理（0 次 Jev API）；memo 只是避免在同一视图里反复
+    rerun 时重复拼接 Markdown / JSON。
+    """
     skipped = st.session_state.get("skipped_media", 0)
+    cache_key = (len(results), int(include_text), int(skipped),
+                 sum(1 for e in results if e.get("error")),
+                 stats.get("analyzed"), stats.get("overall"))
+    cache = st.session_state.get("report_cache") or {}
+    if cache.get("key") == cache_key:
+        return cache["md"], cache["json"]
+
     md = build_markdown_report(results, stats, include_text=include_text,
                                skipped_media=skipped)
     payload_json = json.dumps(
@@ -997,6 +1187,22 @@ def show_report_tab(results: list[dict], stats: dict) -> None:
                           skipped_media=skipped),
         ensure_ascii=False, indent=2,
     )
+    st.session_state["report_cache"] = {"key": cache_key, "md": md,
+                                        "json": payload_json}
+    return md, payload_json
+
+
+def show_report_tab(results: list[dict], stats: dict) -> None:
+    st.markdown("#### 报告导出")
+    st.caption("导出完全基于本次已完成的本地分析结果，不会发起任何 TypeSafe API 请求。")
+    st.text_area("分析摘要（可复制）", value=build_summary_text(results, stats),
+                 height=150)
+    include_text = st.checkbox(
+        "报告中包含原始聊天文本",
+        value=False,
+        help="关闭时导出匿名报告：只保留统计与消息编号，不含聊天原文。",
+    )
+    md, payload_json = _build_or_reuse_reports(results, stats, include_text)
     c1, c2 = st.columns(2)
     with c1:
         st.download_button("下载 Markdown", data=md,
@@ -1007,16 +1213,44 @@ def show_report_tab(results: list[dict], stats: dict) -> None:
     st.caption("需要 PDF？使用浏览器 Ctrl+P → 另存为 PDF。")
 
 
+RESULT_VIEWS = ["概览", "关键消息", "全部消息", "报告"]
+
+
 def show_results(results: list[dict], stats: dict) -> None:
-    tabs = st.tabs(["概览", "关键消息", "全部消息", "报告"])
-    with tabs[0]:
-        show_overview_tab(results, stats)
-    with tabs[1]:
-        show_key_messages_tab(results)
-    with tabs[2]:
-        show_all_messages_tab(results, stats)
-    with tabs[3]:
-        show_report_tab(results, stats)
+    """结果视图导航：**server-side lazy**。
+
+    Streamlit 的 ``st.tabs`` 并不是懒执行——所有 tab 的 Python 都会在每次
+    rerun 里跑一遍，于是用户停在“概览”时，隐藏的“全部消息”（上百个
+    expander + progress）和“报告”（完整 Markdown/JSON）仍在后台把脚本拖住，
+    表现为“结果已经出现，但右上角 Stop 迟迟不消失、控件一直灰”。
+
+    这里改用 ``st.segmented_control`` + if/elif：每次 rerun 只渲染当前视图。
+    切换视图只是读 session_state 里已有的 results / stats，0 次 Jev API。
+    """
+    view = st.segmented_control(
+        "结果视图", RESULT_VIEWS, key="result_view",
+        default="概览", label_visibility="collapsed",
+    )
+    if view == "关键消息":
+        with _Stage("results:key_messages"):
+            show_key_messages_tab(results)
+    elif view == "全部消息":
+        with _Stage("results:all_messages"):
+            show_all_messages_tab(results, stats)
+    elif view == "报告":
+        with _Stage("results:report"):
+            show_report_tab(results, stats)
+    else:
+        with _Stage("results:overview"):
+            show_overview_tab(results, stats)
+
+
+def dump_timings_safe() -> None:
+    """诊断输出（默认关闭）。"""
+    try:
+        dump_timings()
+    except Exception:  # 诊断绝不影响主流程
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1037,6 +1271,14 @@ def show_sidebar() -> None:
         if st.button("清除本地分析缓存", use_container_width=True):
             get_cache().clear()
             st.toast("本地缓存已清除。")
+        if st.session_state.get("analysis_state") in ("running", "interrupted"):
+            st.divider()
+            st.caption("界面状态")
+            if st.button("恢复界面状态", use_container_width=True,
+                         key="reset_ui_state"):
+                st.session_state["analysis_state"] = "idle"
+                st.session_state["pending_target"] = None
+                st.rerun()
         st.divider()
         st.caption("高级")
         with st.expander("▶ 隐私说明"):
@@ -1069,7 +1311,24 @@ def show_clipboard_probe() -> None:
     说明：Streamlit 1.64 下自定义组件协议暂不能把二进制可靠回传 Python
     （已实测：ready 握手与消息投递均正常，但组件值不会出现在 Python 侧），
     因此 Probe 采用自包含设计；主流程的图片输入使用 file_uploader。
+
+    Probe 只在用户显式点“打开 Clipboard Probe”后才创建组件——折叠 expander
+    并不代表其中的 Python 不执行。本阶段 Probe 由人工微信实测，不应影响主
+    流程的任何一次 rerun；其内部也没有 while / sleep / 轮询 / 重试握手。
     """
+    if not st.session_state.get("probe_open"):
+        if st.button("打开 Clipboard Probe", key="probe_open_btn",
+                     use_container_width=True):
+            st.session_state["probe_open"] = True
+            st.rerun()
+        st.caption("默认不加载，不影响主流程；需要诊断浏览器剪贴板实际能"
+                   "拿到什么格式时再打开。")
+        return
+
+    if st.button("收起 Clipboard Probe", key="probe_close_btn",
+                 use_container_width=True):
+        st.session_state["probe_open"] = False
+        st.rerun()
     st.caption(
         "从微信复制一段包含文字 / 普通图片 / 动画表情 / 视频的聊天，"
         "在下面 Ctrl+V，即可看到实际收到的剪贴板格式。"
@@ -1109,6 +1368,9 @@ def show_clipboard_probe() -> None:
 
 def main() -> None:
     init_state()
+    # 新 rerun 已开始 → 上一轮的同步分析不可能还在跑：遗留的 running
+    # 只可能是 Stop / 刷新 / 热重载 / 异常，恢复成 interrupted（UI 解锁）
+    recover_analysis_state()
     st.title("SignalLens")
     st.markdown("**聊天互动信号分析** · Powered by TypeSafe Jev")
     st.caption("分析聊天文本中可观察到的情绪、意图、投入、熟悉度、特殊关注等互动信号。")
@@ -1126,17 +1388,20 @@ def main() -> None:
     ))
 
     # ① 输入（解析并替换 / 追加片段，全部本地完成）
-    submitted_text, uploaded, input_mode = show_input_stage()
+    with _Stage("input"):
+        submitted_text, uploaded, input_mode = show_input_stage()
     if submitted_text is not None:
-        if input_mode == "append":
-            handle_append_chunk(submitted_text, uploaded)
-        else:
-            handle_replace_chunk(submitted_text, uploaded)
+        with _Stage("input:handle"):
+            if input_mode == "append":
+                handle_append_chunk(submitted_text, uploaded)
+            else:
+                handle_replace_chunk(submitted_text, uploaded)
 
     # ② 确认解析
     messages = st.session_state.get("messages")
     if messages:
-        show_confirm_stage(messages)
+        with _Stage("confirm"):
+            show_confirm_stage(messages)
 
     # ③④ 结果
     results = st.session_state.get("results")
@@ -1146,7 +1411,10 @@ def main() -> None:
         steps_slot.markdown(steps_markdown(4))
         show_results(results, stats)
 
-    show_sidebar()
+    with _Stage("sidebar"):
+        show_sidebar()
+
+    dump_timings_safe()
 
 
 if __name__ == "__main__":

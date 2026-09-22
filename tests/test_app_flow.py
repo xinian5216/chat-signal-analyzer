@@ -199,6 +199,12 @@ def _apply_mapping(at) -> None:
     at.run()
 
 
+def _switch_view(at, view: str) -> None:
+    """切换结果视图（懒渲染导航，0 Jev API）。"""
+    at.segmented_control[0].set_value(view)
+    at.run()
+
+
 def test_full_flow_mapping_persists_and_zero_api(counting_client):
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
@@ -229,23 +235,23 @@ def test_full_flow_mapping_persists_and_zero_api(counting_client):
     assert len(counting_client) == 5           # 5 条 TA 文本消息
     assert at.session_state["skipped_media"] == 0
 
-    # ④ 结果 tabs 出现，且阶段指示器到 ④
-    assert [t.label for t in at.tabs] == ["概览", "关键消息", "全部消息", "报告"]
+    # ④ 结果视图导航出现，且阶段指示器到 ④
+    assert [s.label for s in at.segmented_control] == ["结果视图"]
+    assert [o for o in at.segmented_control[0].options] == [
+        "概览", "关键消息", "全部消息", "报告"
+    ]
     steps = [str(e.value) for e in at.markdown if "① 粘贴聊天" in str(e.value)]
     assert steps and ":blue[④ 查看 / 导出结果]" in steps[0], steps
     assert "互动亲近信号指数" in _texts(at)
-    assert "有效关系消息" in _texts(at)
+    assert "关系信息量" in _texts(at)     # 概览视图自身就有（reference / normal 两种模式）
 
     # ---- UI 操作必须 0 额外 API ----
     n = len(counting_client)
-    at.tabs[1].run()           # 关键消息
-    at.run()
+    _switch_view(at, "关键消息")
     assert len(counting_client) == n
-    at.tabs[2].run()           # 全部消息
-    at.run()
+    _switch_view(at, "全部消息")
     assert len(counting_client) == n
-    at.tabs[3].run()           # 报告
-    at.run()
+    _switch_view(at, "报告")
     assert len(counting_client) == n
     assert not at.exception
 
@@ -263,10 +269,9 @@ def test_tab_switch_keeps_mapping_and_results(counting_client):
     at.run()
     n = len(counting_client)
 
-    # 来回切 tab 五次
-    for idx in (1, 2, 3, 0, 2):
-        at.tabs[idx].run()
-        at.run()
+    # 来回切换视图五次（懒渲染导航，0 额外 API）
+    for view in ("关键消息", "全部消息", "报告", "概览", "全部消息"):
+        _switch_view(at, view)
         assert len(counting_client) == n
         assert "身份映射完成" in _texts(at)
     assert not at.exception
@@ -294,9 +299,8 @@ def test_media_chat_skips_media_and_shows_events(counting_client):
     assert at.session_state["skipped_media"] == 2
     assert len(counting_client) == 2
 
-    # 全部消息 tab：默认不显示媒体事件，勾选后显示
-    at.tabs[2].run()
-    at.run()
+    # 全部消息视图：默认不显示媒体事件，勾选后显示
+    _switch_view(at, "全部消息")
     n = len(counting_client)
     body = _texts(at)
     before = body.count("内容未分析")     # 仅②阶段预览表里的媒体行
@@ -393,8 +397,7 @@ def test_report_tab_export_zero_api(counting_client):
     at.run()
     n = len(counting_client)
 
-    at.tabs[3].run()
-    at.run()
+    _switch_view(at, "报告")
     assert len(counting_client) == n
     # 勾选“包含原文”也不得触发 API
     at.checkbox[0].check()

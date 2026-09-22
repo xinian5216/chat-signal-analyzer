@@ -37,7 +37,7 @@ Single Streamlit app, flat modules, no package:
 - `components/rich_paste/index.html` — vanilla-JS Streamlit custom component for the Clipboard Probe. Note: on Streamlit 1.64 the component value **cannot** reliably reach Python (verified), so the Probe is **self-contained inside the iframe**; do not re-litigate the protocol without new evidence
 - `tools/clipboard_probe/` — probe report formatting + the real-device WeChat test checklist
 - `launcher/` — Windows `install.bat` / `start.bat` (script-relative paths, single-instance guard, localhost only)
-- `app.py` — Streamlit UI: 4 stages (input → confirm → analyze → results tabs), all API calls happen only inside `run_analysis`
+- `app.py` — Streamlit UI: 4 stages (input → confirm → analyze → results), all API calls happen only inside `run_analysis`. Results are rendered through **server-side lazy navigation** (`st.segmented_control` + if/elif), never `st.tabs`: tabs execute every tab's Python on each rerun, which kept the script "running" for seconds after results were visible. “全部消息” is paginated (25/page); reports are built only when the report view is open. `analysis_state` is an explicit state machine (idle/pending/running/complete/error/interrupted) — a fresh rerun that still sees `running` means the previous run was interrupted, and is recovered automatically
 
 ## Hard constraints (change only with explicit user approval)
 
