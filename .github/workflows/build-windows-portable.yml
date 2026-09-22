@@ -1,0 +1,102 @@
+name: build-windows-portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_release:
+        description: "上传到 GitHub Release（仅在 tag 触发的流程里允许）"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYINSTALLER_VERSION: "6.22.3"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install "pyinstaller==$env:PYINSTALLER_VERSION"
+
+      - name: Show resolved distributions
+        run: |
+          python -c "import importlib.metadata as m; [print(d.metadata['Name'], d.version) for d in m.distributions()]"
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Build portable (PyInstaller onedir)
+        run: python -m PyInstaller --noconfirm --clean SignalLens.spec
+
+      - name: Frozen smoke test
+        run: python scripts/frozen_smoke.py
+        env:
+          SIGNALLENS_FROZEN_EXE: dist/SignalLens/SignalLens.exe
+
+      - name: Package ZIP + SHA256
+        run: python scripts/package_portable.py
+
+      - name: Verify packaged artifact
+        run: |
+          $env:SIGNALLENS_FROZEN_EXE = "${{ github.workspace }}\SignalLens-v$((Get-Content VERSION).Trim())-Windows-x64-portable.zip"
+          if (-not (Test-Path $env:SIGNALLENS_FROZEN_EXE)) { throw "ZIP 不存在" }
+          python scripts/package_portable.py --build-dir dist/SignalLens --out-dir "${{ runner.temp }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SignalLens-Windows-x64-portable
+          path: |
+            SignalLens-*-Windows-x64-portable.zip
+            SignalLens-*-Windows-x64-portable.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      # 仅 tag 推送时才创建 / 更新 Release；workflow_dispatch 只上传 artifact。
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            SignalLens-*-Windows-x64-portable.zip
+            SignalLens-*-Windows-x64-portable.zip.sha256
+          generate_release_notes: true
+          body: |
+            ## SignalLens Windows Portable
+
+            * 平台：Windows 10 / 11 x64
+            * 无需安装 Python、无需 PowerShell：解压 ZIP 后双击 `SignalLens.exe`
+            * 只监听本机 `127.0.0.1`，不收集使用统计
+            * 首次运行需要 TypeSafe API Key（保存在 `data/settings.env`）
+            * 升级前请备份 `data` 文件夹
+
+            ## 校验
+
+            ZIP 的 SHA256 见同页 `SignalLens-v*-Windows-x64-portable.zip.sha256`。
+
+            > 第三方未签名程序：首次运行可能出现 Windows SmartScreen 提示，
+            > 点“更多信息”→“仍要运行”即可。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

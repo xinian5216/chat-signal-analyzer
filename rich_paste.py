@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from media import (
@@ -17,6 +18,20 @@ from media import (
     make_asset,
 )
 COMPONENT_DIR = Path(__file__).resolve().parent / "components" / "rich_paste"
+
+
+def _component_dir() -> Path:
+    """组件目录：PyInstaller frozen 下优先用 bundle 内（sys._MEIPASS）路径。
+
+    frozen 时 ``__file__`` 指向 ``_internal``，静态资源按 spec 里的目标目录
+    打包，因此先按 bundle 根目录解析；开发模式行为不变。
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidate = Path(meipass) / "components" / "rich_paste"
+        if candidate.exists():
+            return candidate
+    return COMPONENT_DIR
 
 _component = None
 _component_failed = False
@@ -33,7 +48,7 @@ def get_component():
     try:
         from streamlit.components.v1 import declare_component
 
-        _component = declare_component("rich_paste", path=str(COMPONENT_DIR))
+        _component = declare_component("rich_paste", path=str(_component_dir()))
     except Exception as exc:  # noqa: BLE001 — 组件不可用不能拖垮整个应用
         _component_failed = True
         _component_error = f"{type(exc).__name__}: {exc}"

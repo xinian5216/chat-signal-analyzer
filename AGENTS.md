@@ -9,8 +9,9 @@ Repo-specific guidance for OpenCode / AI sessions. Everything here was verified 
 
 ## Commands
 
-- Tests: `.venv\Scripts\python -m pytest tests -q` — 358 tests, ~45s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
-- App: `.venv\Scripts\streamlit run app.py`. Needs `TYPESAFE_API_KEY` in the gitignored `.env`; without a key the UI shows a friendly hint and does not crash.
+- Tests: `.venv\Scripts\python -m pytest tests -q` — 387 tests, ~54s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
+- App: `.venv\Scripts\streamlit run app.py` (dev mode).
+- Portable build: `.venv\Scripts\python -m PyInstaller --noconfirm --clean SignalLens.spec` → `.venv\Scripts\python scripts/frozen_smoke.py` → `.venv\Scripts\python scripts/package_portable.py`. Needs `TYPESAFE_API_KEY` in the gitignored `.env`; without a key the UI shows a friendly hint and does not crash.
 - Real-API smoke test — **the only script that calls Jev** (5 constructed messages, then fully cached): `.venv\Scripts\python -X utf8 scripts\smoke_test.py`.
 
 ## Testing rules (hard)
@@ -36,7 +37,10 @@ Single Streamlit app, flat modules, no package:
 - `vision.py` — vision interface stub, **disabled by default** (no vendor chosen yet)
 - `components/rich_paste/index.html` — vanilla-JS Streamlit custom component for the Clipboard Probe. Note: on Streamlit 1.64 the component value **cannot** reliably reach Python (verified), so the Probe is **self-contained inside the iframe**; do not re-litigate the protocol without new evidence
 - `tools/clipboard_probe/` — probe report formatting + the real-device WeChat test checklist
-- `launcher/` — Windows `install.bat` / `start.bat` (script-relative paths, single-instance guard, localhost only)
+- `paths.py` — single place for mutable data locations: dev mode keeps the legacy repo paths (`.jev_cache/cache.db`, `.env`, `.media_cache/`, `logs/`); portable (frozen or `SIGNALLENS_DATA_DIR`) puts everything under `data/` next to the exe (`cache.sqlite3`, `settings.env`, `media_cache/`, `logs/`, `runtime.json`). A non-writable data dir raises a friendly `DataDirError` — it must never fall back to AppData/TEMP
+- `settings_store.py` — local config (API Key only) with priority: process env > `data/settings.env` > dev-mode repo `.env`. Never logs/prints/returns the key itself
+- `portable_launcher.py` + `SignalLens.spec` — PyInstaller **onedir** Windows portable entry: exe-relative data dir, port 8765~8785 bound to 127.0.0.1 only, single instance validated by PID + port + `/healthz`, bounded startup poll + `webbrowser.open`, child Streamlit always reaped, console kept on purpose (no secrets printed)
+- `launcher/` — Windows `install.bat` / `start.bat` (developer/fallback tools, script-relative paths, single-instance guard, localhost only); the normal-user path is the portable ZIP
 - `app.py` — Streamlit UI: 4 stages (input → confirm → analyze → results), all API calls happen only inside `run_analysis`. Results are rendered through **server-side lazy navigation** (`st.segmented_control` + if/elif), never `st.tabs`: tabs execute every tab's Python on each rerun, which kept the script "running" for seconds after results were visible. “全部消息” is paginated (25/page); reports are built only when the report view is open. `analysis_state` is an explicit state machine (idle/pending/running/complete/error/interrupted) — a fresh rerun that still sees `running` means the previous run was interrupted, and is recovered automatically
 
 ## Hard constraints (change only with explicit user approval)

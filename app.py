@@ -14,9 +14,13 @@ import sys
 import time
 
 import streamlit as st
-from dotenv import load_dotenv
 
-load_dotenv()  # 从项目目录的 .env 读取 TYPESAFE_API_KEY（若存在）
+# 配置加载优先级：进程环境变量 > data/settings.env（portable）> 开发模式仓库 .env。
+# 新版本（portable）用户不需要手工创建 .env。
+import paths
+import settings_store
+
+settings_store.load_settings()
 
 from analyzer import (
     DEFAULT_MODEL,
@@ -247,9 +251,27 @@ def run_pending_analysis() -> None:
     run_analysis_guarded(target)
 
 
+def ensure_runtime_dirs() -> None:
+    """启动时确保数据目录层级存在（cache / media_cache / logs）。
+
+    只做本地目录操作，0 次 Jev API。不可写时给出友好提示而不崩溃。
+    """
+    try:
+        paths.ensure_runtime_dirs()
+    except paths.DataDirError as exc:
+        st.error(str(exc))
+    except OSError as exc:
+        st.error(f"无法创建本机数据目录：{type(exc).__name__}")
+
+
 def get_cache() -> Cache:
+    """本地缓存：路径由 paths 统一管理。
+
+    portable 模式下是 ``data/cache.sqlite3``（跟随 SignalLens 文件夹）；
+    开发模式下仍然是 ``.jev_cache/cache.db``。
+    """
     if "cache" not in st.session_state:
-        st.session_state["cache"] = Cache()
+        st.session_state["cache"] = Cache(paths.cache_db_path())
     return st.session_state["cache"]
 
 
@@ -448,7 +470,6 @@ def show_input_stage() -> tuple[str | None, list, str]:
         st.markdown("#### ① 粘贴聊天记录")
         st.caption("支持微信 / QQ 等复制文本。图片、视频、动画表情等媒体占位符"
                    "不会被当作文本分析。")
-        show_api_key_hint()
 
         with st.form("input_form"):
             raw_text = st.text_area(
@@ -649,17 +670,100 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
     finish_input_action()
 
 
-def show_api_key_hint() -> None:
-    """未配置 API Key 时给出友好配置说明（不崩溃、不索要明文 Key）。"""
-    if os.environ.get("TYPESAFE_API_KEY", "").strip():
-        return
-    st.info(
-        "**尚未配置 TypeSafe API Key**\n\n"
-        "1. 复制项目里的 `.env.example` 为 `.env`\n"
-        "2. 编辑 `.env`，填入 `TYPESAFE_API_KEY=你的Key`\n"
-        "3. 重启 SignalLens\n\n"
-        "Key 只保存在本机 `.env` 中，不会写入代码、日志或报告。"
-    )
+def show_first_run_setup() -> bool:
+    """首次运行的 API Key 配置页（无 key 时显示）。
+
+    返回 True 表示“已经配置好，可以继续”。
+
+    安全约束：
+
+    - 使用 password widget，页面不回显完整 key；
+    - key 只写入 ``data/settings.env``（开发模式为仓库 ``.env``）；
+    - **不写日志、不进报告 / 缓存 / Clipboard Probe**。
+    """
+    if settings_store.has_api_key():
+        return True
+
+    st.markdown("### SignalLens 首次设置")
+    st.caption("需要一个 TypeSafe API Key 才能开始分析。"
+               "Key 只保存在本机，不会上传、不会写入报告或日志。")
+    settings_path = paths.settings_env_path()
+    st.caption(f"保存位置：{settings_path}")
+
+    with st.form("first_run_api_key"):
+        key = st.text_input(
+            "TypeSafe API Key",
+            type="password",
+            label_visibility="collapsed",
+            placeholder="tsk_...",
+        )
+        remember = st.checkbox(
+            f"保存到当前 SignalLens 的 data 文件夹（{settings_path.name}）",
+            value=True,
+        )
+        submitted = st.form_submit_button("保存并继续", type="primary")
+        if submitted:
+            if not key.strip():
+                st.error("API Key 不能为空。")
+                return False
+            if not remember:
+                # 不落盘：只对当前进程生效（重启后需重新输入）
+                os.environ[settings_store.API_KEY_ENV] = key.strip()
+                st.warning("未保存到文件：重启 SignalLens 后需重新输入。")
+                st.rerun()
+            try:
+                settings_store.save_api_key(key)
+            except (ValueError, paths.DataDirError) as exc:
+                st.error(str(exc))
+                return False
+            st.success("已保存。")
+            st.rerun()
+    return False
+
+
+def show_api_key_settings() -> None:
+    """侧边栏高级：TypeSafe API 设置（状态 / 修改 / 清除）。
+
+    不显示完整 key；清除只删配置，不删聊天、缓存或其它数据。
+    """
+    summary = settings_store.settings_summary()
+    if summary["configured"]:
+        st.caption("TypeSafe API Key：已配置")
+    else:
+        st.caption("TypeSafe API Key：未配置（分析之前需先填写）")
+    st.caption(f"配置位置：{summary['settings_path']}")
+
+    # 上一轮保存 / 清除的反馈（rerun 会丢弃本轮元素，因此走 session_state）
+    notice = st.session_state.pop("api_key_notice", None)
+    if notice == "updated":
+        st.toast("API Key 已更新。")
+    elif notice == "cleared":
+        st.toast("已清除本地 API Key。")
+
+    with st.form("api_key_settings"):
+        new_key = st.text_input(
+            "修改 API Key",
+            type="password",
+            label_visibility="collapsed",
+            placeholder="留空并点“保存”只是查看状态",
+        )
+        saved = st.form_submit_button("保存新 Key")
+        if saved:
+            if not new_key.strip():
+                st.error("请输入新的 API Key，或使用下方的“清除”。")
+            else:
+                try:
+                    settings_store.save_api_key(new_key)
+                except (ValueError, paths.DataDirError) as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state["api_key_notice"] = "updated"
+                    st.rerun()
+
+    if st.button("清除本地 API Key", key="clear_api_key"):
+        settings_store.clear_api_key()
+        st.session_state["api_key_notice"] = "cleared"
+        st.rerun()
 
 
 def apply_media_bindings(messages: list[dict]) -> object:
@@ -1340,6 +1444,8 @@ def show_sidebar() -> None:
                 st.rerun()
         st.divider()
         st.caption("高级")
+        with st.expander("▶ TypeSafe API 设置"):
+            show_api_key_settings()
         with st.expander("▶ 隐私说明"):
             st.caption(DISCLAIMER)
             st.caption(
@@ -1431,6 +1537,18 @@ def main() -> None:
     # 只可能是 Stop / 刷新 / 热重载 / 异常，恢复成 interrupted（UI 解锁）
     recover_analysis_state()
     st.title("SignalLens")
+    st.markdown("**聊天互动信号分析** · Powered by TypeSafe Jev")
+
+    # 首次使用：还没有 API Key 时只显示友好的配置页
+    # （不白屏、不 traceback；保存后 st.rerun() 即可继续，无需重启 EXE）
+    ensure_runtime_dirs()
+
+    if not show_first_run_setup():
+        st.divider()
+        st.caption("配置好 API Key 之后就可以开始粘贴微信聊天记录。")
+        st.caption(f"本机数据位置：{paths.data_dir()}")
+        return
+
     st.markdown("**聊天互动信号分析** · Powered by TypeSafe Jev")
     st.caption("分析聊天文本中可观察到的情绪、意图、投入、熟悉度、特殊关注等互动信号。")
     st.caption(DISCLAIMER_SHORT)

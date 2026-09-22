@@ -10,7 +10,67 @@ SignalLens 是一个**本地单机**的 Streamlit 工具：粘贴一段聊天文
 
 ---
 
+## Windows Portable（普通用户）
+
+**下载 → 解压 → 双击 SignalLens.exe → 使用**。不需要 Python、pip、venv、
+PowerShell、CMD，也不用手工创建 `.env` 或执行 `streamlit run`。
+
+1. 到 GitHub Releases 下载 `SignalLens-v0.2.0-Windows-x64-portable.zip`
+   （用页面给出的 SHA256 校验完整性）；
+2. 解压整个 ZIP 到**可写**目录（桌面、文档等；不要放进 Program Files，
+   也不要直接在压缩包里运行）；
+3. 双击 `SignalLens.exe`——浏览器会自动打开 `http://127.0.0.1:8765`；
+4. 第一次运行会要求填写 TypeSafe API Key（保存在同目录 `data/settings.env`）；
+5. 关闭 SignalLens 控制台窗口即可退出。
+
+```
+SignalLens/
+├─ SignalLens.exe          # 双击运行
+├─ _internal/              # 程序运行时文件（不用管）
+├─ data/                   # 你的本地数据（API Key、缓存、日志）
+├─ README-启动说明.txt
+├─ LICENSE
+└─ VERSION
+```
+
+- SignalLens 只监听本机 `127.0.0.1`，不对外开放，也不收集使用统计；
+- 升级：先复制 `data` 文件夹作为备份，再用新版本覆盖程序文件、保留 `data` 即可；
+- 端口首选 8765，被占用时自动在 8765~8785 里挑一个；已经有一个实例在运行时，
+  再次双击只会打开已有页面，不会启动第二个服务；
+- 首次运行第三方未签名程序时，Windows 可能显示 SmartScreen 提示：
+  点“更多信息”→“仍要运行”。
+
+### 本机数据位置
+
+| 内容 | 路径 |
+| --- | --- |
+| API Key | `data/settings.env` |
+| 分析缓存（SQLite） | `data/cache.sqlite3` |
+| 媒体临时缓存 | `data/media_cache/` |
+| 启动日志 | `data/logs/` |
+| 单实例信息 | `data/runtime.json` |
+
+数据目录跟着 SignalLens 文件夹走；如果目录不可写，SignalLens 会直接提示
+“请把文件夹解压到可写目录”，**不会**偷偷改存到 AppData 或临时目录。
+
+### 从源码构建 Portable（开发者）
+
+```powershell
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\pip install "pyinstaller==6.22.3"
+.venv\Scripts\python -m PyInstaller --noconfirm --clean SignalLens.spec
+.venv\Scripts\python scripts/frozen_smoke.py       # 真跑 exe：health/单实例/无残留
+.venv\Scripts\python scripts/package_portable.py   # 产出 ZIP + SHA256
+```
+
+GitHub Actions 的 `build-windows-portable` workflow（`workflow_dispatch` 或 tag）
+会自动完成：装依赖 → pytest → PyInstaller onedir 构建 → frozen smoke →
+打包 ZIP + SHA256 → 上传 Actions artifact；只有 tag 推送才会创建 Release。
+
 ## English Quick Start
+
+See the Windows Portable section above for the normal user path
+(download ZIP, unzip, double-click `SignalLens.exe`).
 
 - **What it is** — a local Streamlit app that uses TypeSafe Jev to classify
   emotion and intent, score warmth / engagement / special attention, and

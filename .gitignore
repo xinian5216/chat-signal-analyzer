@@ -1,7 +1,19 @@
+# ===== Portable / 构建产物 =====
+data/
+dist/
+build/
+!SignalLens.spec
+*.manifest
+*.spec.bak
+portable_logs/
+SignalLens-*.zip
+SignalLens-*.zip.sha256
+
 # ===== 环境变量与密钥 =====
 .env
 .env.*
 !.env.example
+data/settings.env
 
 # ===== Python =====
 __pycache__/
@@ -10,9 +22,7 @@ __pycache__/
 .venv/
 venv/
 ENV/
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -26,7 +36,7 @@ wheels/
 .installed.cfg
 *.egg
 
-# ===== 测试 / 覆盖率 =====
+# ===== 测试 / 覆盖 =====
 .pytest_cache/
 .coverage
 .coverage.*
@@ -45,7 +55,8 @@ coverage.xml
 *.sqlite
 *.sqlite3
 
-# ===== 日志 =====
+# ===== 运行状态 / 日志 =====
+runtime.json
 *.log
 logs/
 
