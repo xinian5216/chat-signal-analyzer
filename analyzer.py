@@ -253,13 +253,30 @@ def build_state(
 
     不包含任何未来消息——模拟“当时看到这句话时能判断出什么”。
 
+    这里也是发送到 Jev 前的最后一道字段白名单：只保留规范化角色、
+    已脱敏文本与可选时间。解析器内部使用的 ``raw_speaker``（原始昵称）
+    以及其它本地 metadata 一律不得进入远端请求或缓存 key。
+
     ``analysis_rule`` 按 state 实际内容生成：仅当上下文 / 目标中存在媒体中性
     marker 时才追加媒体条款，因此纯文本消息的 state（及缓存 key）与
-    引入媒体过滤之前完全一致。
+    引入媒体过滤之前保持相同分析语义。
     """
+    safe_context = [
+        {
+            "speaker": item.get("speaker"),
+            "text": item.get("text", ""),
+            "time": item.get("time"),
+        }
+        for item in context[-max_context:]
+    ]
+    safe_target = {
+        "speaker": target.get("speaker"),
+        "text": target.get("text", ""),
+        "time": target.get("time"),
+    }
     state = {
-        "conversation_context": context[-max_context:],
-        "target_message": target,
+        "conversation_context": safe_context,
+        "target_message": safe_target,
     }
     state["analysis_rule"] = analysis_rule_for(state)
     return state
@@ -551,7 +568,6 @@ def analyze_messages(
                 "speaker": "them",
                 "text": m["text"],
                 "time": m.get("time"),
-                "raw_speaker": m.get("raw_speaker"),
             }
             state = build_state(context, target_state)
             plans.append({

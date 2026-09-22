@@ -685,8 +685,10 @@ def show_first_run_setup() -> bool:
         return True
 
     st.markdown("### SignalLens 首次设置")
-    st.caption("需要一个 TypeSafe API Key 才能开始分析。"
-               "Key 只保存在本机，不会上传、不会写入报告或日志。")
+    st.caption(
+        "需要一个 TypeSafe API Key 才能开始分析。Key 仅用于直接向 TypeSafe API "
+        "鉴权，不会写入聊天内容、分析缓存、报告或日志；选择保存时仅写入本机。"
+    )
     settings_path = paths.settings_env_path()
     st.caption(f"保存位置：{settings_path}")
 
@@ -1361,9 +1363,9 @@ def show_report_tab(results: list[dict], stats: dict) -> None:
     st.text_area("分析摘要（可复制）", value=build_summary_text(results, stats),
                  height=150)
     include_text = st.checkbox(
-        "报告中包含原始聊天文本",
+        "报告中包含本地脱敏后的聊天文本",
         value=False,
-        help="关闭时导出匿名报告：只保留统计与消息编号，不含聊天原文。",
+        help="关闭时导出匿名报告：只保留统计与消息编号，不含聊天文本。",
     )
     md, payload_json = _build_or_reuse_reports(results, stats, include_text)
     c1, c2 = st.columns(2)

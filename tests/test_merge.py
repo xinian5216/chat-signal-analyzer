@@ -177,7 +177,8 @@ def test_metadata_never_enters_jev_state():
               "raw_speaker": "用户B"}
     context = [{"speaker": "me", "text": "在吗", "time": None}]
     state = analyzer.build_state(context, target)
-    assert set(state["target_message"]) == {"speaker", "text", "time", "raw_speaker"}
+    assert set(state["target_message"]) == {"speaker", "text", "time"}
+    assert "raw_speaker" not in state["target_message"]
     assert "fingerprint" not in state["target_message"]
     assert "chunk_id" not in state["target_message"]
     assert "duration_seconds" not in state["target_message"]

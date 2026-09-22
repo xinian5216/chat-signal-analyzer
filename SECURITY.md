@@ -22,12 +22,15 @@ public disclosure.
 
 1. Immediately revoke / rotate the key on the TypeSafe side
    (<https://console.typesafe.ai/>) and generate a new one.
-2. Update your local `.env` (which is gitignored and must never be committed).
+2. Update your local `data/settings.env` (Portable) or `.env` (source mode).
+   Both are gitignored and must never be committed.
 3. If the key was committed to a public repository, treat it as compromised
    even after deleting the file — Git history retains it.
 
 ## Scope
 
-SignalLens runs entirely on your machine. This policy covers the application
-code in this repository only; the TypeSafe Jev API service is operated by
-TypeSafe and is out of scope.
+SignalLens runs its interface, parsing, redaction, caching, and report export
+locally. Redacted analysis state is sent to the TypeSafe Jev API for structured
+judgment, using the API key for authentication. This policy covers the
+application code in this repository only; the TypeSafe service and its data
+processing are out of scope.
