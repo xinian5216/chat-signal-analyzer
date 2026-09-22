@@ -489,7 +489,7 @@ def test_append_metadata_never_enters_jev_state(counting_client):
     assert counting_client                # 确实分析了几条
     for state in counting_client:
         assert set(state["target_message"]) == {
-            "speaker", "text", "time", "raw_speaker"
+            "speaker", "text", "time"
         }
         for key in ("fingerprint", "chunk_id", "source", "duration_seconds"):
             assert key not in state["target_message"]

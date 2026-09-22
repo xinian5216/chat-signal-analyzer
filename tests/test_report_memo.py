@@ -127,7 +127,7 @@ def _run_chat(at, chat):
 def _open_report(at):
     at.segmented_control[0].set_value("报告")
     at.run()
-    at.checkbox[0].check()      # 报告中包含原始聊天文本
+    at.checkbox[0].check()      # 报告中包含本地脱敏后的聊天文本
     at.run()
 
 

@@ -190,10 +190,33 @@ def test_voice_duration_never_enters_jev_state():
     client, messages, results = _analyze(VOICE_CHAT)
     for target in client.targets:
         assert "duration_seconds" not in target
-        assert set(target) == {"speaker", "text", "time", "raw_speaker"}
+        assert set(target) == {"speaker", "text", "time"}
     for ctx in client.contexts:
         for c in ctx:
             assert set(c) == {"speaker", "text", "time"}
+
+
+def test_raw_speaker_never_enters_jev_state_or_cache_key():
+    """原始昵称只供本地映射；远端 state 与 cache key 都不得依赖它。"""
+    context = [{"speaker": "me", "text": "在忙吗", "time": None,
+                "raw_speaker": "本地昵称A"}]
+    target_a = {"speaker": "them", "text": "在啊", "time": None,
+                "raw_speaker": "本地昵称B"}
+    target_b = {**target_a, "raw_speaker": "另一个昵称"}
+
+    state_a = analyzer.build_state(context, target_a)
+    state_b = analyzer.build_state(context, target_b)
+    assert state_a == state_b
+    assert set(state_a["target_message"]) == {"speaker", "text", "time"}
+    assert set(state_a["conversation_context"][0]) == {"speaker", "text", "time"}
+
+    from storage import make_cache_key
+    schema = analyzer.build_questions_schema()
+    key_a = make_cache_key(state_a, schema, analyzer.DEFAULT_MODEL,
+                           analyzer.SCHEMA_VERSION)
+    key_b = make_cache_key(state_b, schema, analyzer.DEFAULT_MODEL,
+                           analyzer.SCHEMA_VERSION)
+    assert key_a == key_b
 
 
 def test_voice_state_gets_media_clause():
