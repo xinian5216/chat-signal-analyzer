@@ -361,23 +361,22 @@ def _reset_chat_state() -> None:
     st.session_state["applied_ta"] = None
 
 
-def rebuild_messages_from_chunks() -> list[dict]:
-    """按当前昵称映射，从所有已追加的片段重新解析并本地合并。
+def rebuild_messages_from_chunks(my_name: str | None,
+                                 them_name: str | None) -> list[dict]:
+    """用**显式传入**的昵称映射，从所有已追加的片段重新解析并本地合并。
 
-    纯本地操作（解析 + 合并去重），不调用 Jev API。用于“重新选择身份”后
-    重建消息列表：与逐段追加的结果保持一致（重复片段同样会被去掉）。
+    纯本地操作（解析 + 合并去重），不调用 Jev API。
+
+    注意：昵称必须由调用方显式传入，不能在函数内部读 ``applied_me`` /
+    ``applied_ta`` —— 调用点（“应用昵称映射并重新解析”）是在把新选择写入
+    session_state **之前**调用本函数的，若在内部读取只会拿到上一轮 / 空的
+    映射，导致所有消息都变成 unknown。
     """
     merged: list[dict] = []
     for chunk in st.session_state.get("raw_chunks") or []:
         if not chunk or not chunk.strip():
             continue
-        parsed = mask_messages(
-            parse_chat(
-                chunk,
-                st.session_state.get("applied_me"),
-                st.session_state.get("applied_ta"),
-            )
-        )
+        parsed = mask_messages(parse_chat(chunk, my_name, them_name))
         if not merged:
             merged = parsed
         else:
@@ -452,7 +451,8 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
         st.session_state["applied_ta"] = None
         st.session_state["sel_me"] = "（未指定）"
         st.session_state["sel_ta"] = "（未指定）"
-        st.session_state["messages"] = rebuild_messages_from_chunks()
+        # 映射已清空：显式传 None，按“未知发言人”重建（不猜身份）
+        st.session_state["messages"] = rebuild_messages_from_chunks(None, None)
         st.warning(
             "追加的片段里出现新的参与者：" + "、".join(new_participants)
             + "。请重新确认谁是“我”、谁是“TA”（不会自动把第三方归为 TA）。"
@@ -722,8 +722,11 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 if sel_me != "（未指定）" and sel_me == sel_ta:
                     st.error("“我”和“TA”不能选择同一个昵称。")
                 else:
+                    me_name = None if sel_me == "（未指定）" else sel_me
+                    ta_name = None if sel_ta == "（未指定）" else sel_ta
                     try:
-                        merged = rebuild_messages_from_chunks()
+                        # 昵称必须显式传入：此时 session_state 里的 applied_* 还是旧值
+                        merged = rebuild_messages_from_chunks(me_name, ta_name)
                     except ParseError as exc:
                         st.error(str(exc))
                     else:

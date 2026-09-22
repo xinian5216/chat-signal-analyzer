@@ -66,6 +66,31 @@ CHAT_B_NEW_PARTICIPANT = """TA
 2026年08月21日 21:20
 第三方也说一句"""
 
+# 合成昵称样本（虚构）：带句点的昵称 + 句点昵称的映射链路回归
+NICKNAME_CHAT = """陌寒.
+2026年08月14日 11:33
+她我觉得挺好的
+
+赵老狗
+2026年08月14日 11:34
+行
+
+赵老狗
+2026年08月14日 11:34
+我看下学期的老师都不太认识
+
+陌寒.
+2026年08月14日 11:34
+挺负责的"""
+
+NICKNAME_CHAT_B = """赵老狗
+2026年08月14日 11:40
+好的
+
+陌寒.
+2026年08月14日 11:41
+行 16:30到商场？"""
+
 
 class FakeAnswer:
     def __init__(self, **kw):
@@ -467,6 +492,73 @@ def test_append_metadata_never_enters_jev_state(counting_client):
             assert key not in state["target_message"]
         for c in state["conversation_context"]:
             assert set(c) == {"speaker", "text", "time"}
+
+
+def test_apply_nickname_mapping_maps_all_messages(counting_client):
+    """回归（f16625b）：应用“我 / TA”映射后不得全部变成 unknown。
+
+    修复前：participants 正常（2 个），但 rebuild 读的是尚未写入的
+    applied_me/applied_ta，导致 我 0 条 / TA 0 条 / unknown 全部。
+    """
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _use_text_mode(at)
+    _parse(at, NICKNAME_CHAT)
+
+    # 初次解析：raw_speaker 正确，speaker 全 unknown（还没指定昵称）
+    before = at.session_state["messages"]
+    assert [m["raw_speaker"] for m in before] == [
+        "陌寒.", "赵老狗", "赵老狗", "陌寒."
+    ]
+    assert all(m["speaker"] == "unknown" for m in before)
+
+    at.selectbox[0].select("陌寒.")
+    at.selectbox[1].select("赵老狗")
+    at.run()
+    _button_by_label(at, "应用昵称映射并重新解析").click()
+    at.run()
+    assert not at.exception
+
+    after = at.session_state["messages"]
+    assert [m["raw_speaker"] for m in after] == [
+        "陌寒.", "赵老狗", "赵老狗", "陌寒."
+    ]
+    assert [m["speaker"] for m in after] == ["me", "them", "them", "me"]
+
+    body = _texts(at)
+    assert "身份映射完成" in body
+    assert "我：2 条" in body and "TA：2 条" in body and "unknown：0 条" in body
+    assert "unknown：4 条" not in body
+    assert len(counting_client) == 0          # 映射阶段 0 次 API
+
+
+def test_append_keeps_mapping_and_no_unknown(counting_client):
+    """回归（f16625b）：追加片段后原消息不得全部变 unknown，映射必须保留。"""
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _use_text_mode(at)
+    _parse(at, NICKNAME_CHAT)
+    at.selectbox[0].select("陌寒.")
+    at.selectbox[1].select("赵老狗")
+    at.run()
+    _button_by_label(at, "应用昵称映射并重新解析").click()
+    at.run()
+    assert [m["speaker"] for m in at.session_state["messages"]] == [
+        "me", "them", "them", "me"
+    ]
+
+    _append(at, NICKNAME_CHAT_B)
+    assert not at.exception
+    msgs = at.session_state["messages"]
+    assert len(msgs) == 6
+    assert [m["speaker"] for m in msgs] == [
+        "me", "them", "them", "me", "them", "me"
+    ]
+    assert [m for m in msgs if m["speaker"] == "unknown"] == []
+    assert at.session_state["applied_me"] == "陌寒."
+    assert at.session_state["applied_ta"] == "赵老狗"
+    # URL / 16:30 正文与语音链路依旧正常
+    assert "行 16:30到商场？" in [m["text"] for m in msgs]
 
 
 def test_replace_button_resets_chat(counting_client):
