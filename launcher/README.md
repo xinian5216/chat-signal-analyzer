@@ -1,6 +1,6 @@
-# SignalLens Windows 启动器
+# SignalLens 源码模式 Windows 启动器
 
-零命令行启动方式：
+这是给**从源码运行**的 Windows 用户准备的零命令行启动方式：
 
 ```
 1. 双击 install.bat   （首次：创建 .venv 并安装依赖）
@@ -28,6 +28,7 @@
 
 ## 说明
 
-本轮**没有**打包 `SignalLens.exe`：把整个 Python + Streamlit 打成单文件 EXE
-会显著增加复杂度、Defender 误报风险与调试难度。`install.bat` + `start.bat`
-已经把体验从“打开 PowerShell 敲命令”变成“双击两次”，足够第一阶段使用。
+普通用户应优先从 [GitHub Releases](https://github.com/xinian5216/chat-signal-analyzer/releases)
+下载 Windows Portable，解压后直接运行 `SignalLens.exe`，不需要 Python 或
+这两个批处理脚本。`install.bat` 和 `start.bat` 仅用于源码仓库，方便开发、
+调试或自行修改代码。

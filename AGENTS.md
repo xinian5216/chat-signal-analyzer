@@ -63,4 +63,6 @@ Single Streamlit app, flat modules, no package:
 
 ## Releases
 
-- Releases are manual: hand-built `SignalLens-vX.Y.Z.zip` (source + tests only; no `.git`, `.venv`, `.jev_cache`, `*.db`) plus a `.sha256` sidecar, attached to an annotated tag.
+- `VERSION` is the release version source. Keep it aligned with the `vX.Y.Z` tag.
+- `.github/workflows/build-windows-portable.yml` owns release packaging: it runs tests, builds the Windows Portable app, performs the frozen smoke test, and produces the ZIP plus `.sha256` sidecar.
+- `workflow_dispatch` uploads a temporary Actions artifact only. Pushing a `v*` tag creates or updates the GitHub Release and attaches the generated Portable artifacts; do not hand-build or attach a source ZIP as the application release.
