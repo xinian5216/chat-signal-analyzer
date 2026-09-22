@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import os
+import sys
+import threading
+import time
 
 from parser import has_media_marker
 from storage import make_cache_key
@@ -351,31 +354,163 @@ def classify_error(exc: Exception) -> str:
     return f"未预期的错误：{type(exc).__name__}"
 
 
+# ---------------------------------------------------------------------------
+# 并发与诊断配置
+#
+# 每条 TA 消息互相独立，但**一个 message 仍然只发一次 system_one**（9 个问题
+# 一起在同一请求里），这里只并发这些互相独立的调用，不拆问题、不做 batch 语义。
+# ---------------------------------------------------------------------------
+
+JEV_CONCURRENCY_ENV = "SIGNALLENS_JEV_CONCURRENCY"
+JEV_MAX_WORKERS = 4            # 默认并发（1 = 串行，便于调试）
+JEV_CONCURRENCY_LIMIT = 8      # 上限：避免压垮 API / 触发 429
+
+DEBUG_TIMING = os.environ.get("SIGNALLENS_DEBUG_TIMING", "").strip().lower() \
+    not in ("", "0", "false", "no", "off")
+
+# 最近一次 analyze_messages 的统计（只含计数与延迟，绝不含聊天内容）
+LAST_RUN_STATS: dict = {}
+
+
+def effective_workers(requested: int | str | None = None) -> int:
+    """实际并发度：显式参数 > 环境变量 > 默认 4，夹在 1~8 之间。"""
+    raw = requested if requested is not None else os.environ.get(
+        JEV_CONCURRENCY_ENV, JEV_MAX_WORKERS
+    )
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = JEV_MAX_WORKERS
+    return max(1, min(value, JEV_CONCURRENCY_LIMIT))
+
+
+def error_kind(exc: BaseException) -> str:
+    """把 SDK 异常归类成计数用的短标签（429 / timeout / 5xx / ...）。
+
+    只用于统计，不含异常文本，绝不记录请求内容。
+    """
+    try:
+        from typesafe_sdk import (
+            TypeSafeAPIError,
+            TypeSafeAPIConnectionError,
+            TypeSafeAPIResponseValidationError,
+            TypeSafeAPITimeoutError,
+            TypeSafeAuthenticationError,
+            TypeSafeInternalServerError,
+            TypeSafeRateLimitError,
+        )
+    except ImportError:  # SDK 未安装时安全降级
+        return "other"
+
+    if isinstance(exc, TypeSafeRateLimitError):
+        return "rate_limit"
+    if isinstance(exc, TypeSafeAPITimeoutError):
+        return "timeout"
+    if isinstance(exc, TypeSafeInternalServerError):
+        return "server"
+    if isinstance(exc, TypeSafeAuthenticationError):
+        return "auth"
+    if isinstance(exc, TypeSafeAPIConnectionError):
+        return "connection"
+    if isinstance(exc, TypeSafeAPIResponseValidationError):
+        return "validation"
+    if isinstance(exc, TypeSafeAPIError):
+        return "api"
+    return "other"
+
+
+def _percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    k = (len(ordered) - 1) * pct
+    low = int(k)
+    high = min(low + 1, len(ordered) - 1)
+    frac = k - low
+    return ordered[low] * (1 - frac) + ordered[high] * frac
+
+
+def _dump_run_stats(stats: dict) -> None:
+    """DEBUG 时把本次运行的统计打到 stderr（只有计数与延迟，无任何内容）。"""
+    if not DEBUG_TIMING:
+        return
+    print(
+        "[jev] targets=%d cache_hits=%d api_calls=%d workers=%d "
+        "api_wall=%.2fs avg=%.0fms p50=%.0fms p95=%.0fms max=%.0fms "
+        "errors=%s rate_limit=%d" % (
+            stats.get("targets", 0), stats.get("cache_hits", 0),
+            stats.get("api_calls", 0), stats.get("workers", 1),
+            stats.get("api_wall_seconds", 0.0) or 0.0,
+            (stats.get("avg_latency_ms") or 0.0),
+            (stats.get("p50_latency_ms") or 0.0),
+            (stats.get("p95_latency_ms") or 0.0),
+            (stats.get("max_latency_ms") or 0.0),
+            stats.get("error_kinds", {}), stats.get("rate_limit", 0),
+        ),
+        file=sys.stderr, flush=True,
+    )
+
+
+def _is_sdk_client(obj) -> bool:
+    """是否为官方 TypeSafeClient 实例（用于线程安全判断）。"""
+    try:
+        from typesafe_sdk import TypeSafeClient
+    except ImportError:  # SDK 未安装（测试环境）
+        return False
+    return isinstance(obj, TypeSafeClient)
+
+
+def debug_target_view(entry: dict) -> dict:
+    """测试 / 调试辅助：查看某个 target 最终构造的 target_text 与上下文。
+
+    只在测试或显式调试时调用；**绝不自动打印、不写日志**，避免泄露私人聊天
+    内容。返回纯结构，不含任何模型指标。
+    """
+    context = entry.get("context") or []
+    return {
+        "index": entry.get("index"),
+        "target_text": entry.get("text"),
+        "conversation_context": [c.get("text") for c in context],
+        "context_speakers": [c.get("speaker") for c in context],
+    }
+
+
 def analyze_messages(
     client,
     messages: list[dict],
     cache=None,
     only_indices: set[int] | None = None,
     progress_cb=None,
+    max_workers: int | None = None,
+    client_factory=None,
 ) -> list[dict]:
-    """逐条分析 TA 的消息。
+    """分析 TA 的消息（先查缓存，再对未命中的消息做**有限并发**请求）。
 
     参数:
         client: TypeSafeClient（或其测试替身）。
         messages: parser 解析并脱敏后的消息列表。
         cache: 可选的 storage.Cache 实例。
         only_indices: 只分析这些消息在 messages 中的下标（用于“重新分析失败项”）。
-        progress_cb: 可选回调(done, total)。
+        progress_cb: 可选回调(done, total, info=None)；只在主线程调用。
+        max_workers: 并发度（默认取 ``SIGNALLENS_JEV_CONCURRENCY``，否则 4）。
+        client_factory: 可选，worker 线程里创建独立 client 的工厂。
+            官方 SDK 未承诺线程安全，因此并发时**不共享**同一个 client。
 
     返回:
-        与 messages 等长的结果列表；失败项带 "error" 字段，不会中断整体分析。
+        与 targets 对应的结果列表（顺序与原 TA targets 完全一致，不受并发
+        完成顺序影响）；失败项带 "error" 字段，不会中断整体分析。
         每个元素: {"index", "speaker", "text", "time", "context", "result"|"error", "cached"}
 
     注意:
-        ``content_type == "media"`` 的纯媒体占位符消息不作为 target：
-        不发起 API 请求，也不出现在结果列表中（不计入任何统计）。
+        - ``content_type == "media"`` 的纯媒体占位符消息不作为 target：
+          不发起 API 请求，也不出现在结果列表中（不计入任何统计）。
+        - 一个 message = 一次 system_one（9 个问题一起），并发只发生在
+          “不同 message”之间，不拆分问题、不改变分析语义。
+        - parser 新增的 content_type / media_kinds / duration_seconds 等本地
+          元数据不进入 state，因此不会无谓改变缓存 key。
     """
-    results: list[dict] = []
     questions = build_questions()
     questions_schema = build_questions_schema()
 
@@ -390,52 +525,205 @@ def analyze_messages(
         targets = [(i, m) for i, m in targets if i in only_indices]
 
     total = len(targets)
-    for done, (i, m) in enumerate(targets, start=1):
-        context = [
-            {"speaker": c["speaker"], "text": c["text"], "time": c.get("time")}
-            for c in messages[:i]
-        ]
-        # 只把 Jev 需要的字段放进 state：parser 新增的 content_type /
-        # media_kinds 等本地元数据不进入 state，因此不会无谓改变缓存 key。
-        target_state = {
-            "speaker": "them",
-            "text": m["text"],
-            "time": m.get("time"),
-            "raw_speaker": m.get("raw_speaker"),
-        }
-        state = build_state(context, target_state)
+    if total == 0:
+        LAST_RUN_STATS.clear()
+        LAST_RUN_STATS.update({"targets": 0, "cache_hits": 0, "api_calls": 0,
+                               "workers": effective_workers(max_workers),
+                               "failed": 0, "error_kinds": {}, "rate_limit": 0,
+                               "api_wall_seconds": 0.0, "latencies_ms": [],
+                               "avg_latency_ms": None, "p50_latency_ms": None,
+                               "p95_latency_ms": None, "max_latency_ms": None})
+        return []
 
-        base = {
-            "index": i,
-            "speaker": "them",
-            "text": m["text"],
-            "time": m.get("time"),
-            "context": context,
-        }
+    target_indices = {i for i, _ in targets}
 
-        key = None
-        if cache is not None:
-            key = make_cache_key(
-                state, questions_schema, DEFAULT_MODEL, SCHEMA_VERSION
-            )
-            cached = cache.get(key)
-            if cached is not None:
-                results.append({**base, "result": cached, "cached": True})
-                if progress_cb:
-                    progress_cb(done, total)
-                continue
+    # ---- 阶段 1：为每条 target 构造 Jev state / cache key（纯本地，串行）----
+    plans: list[dict] = []
+    prefix: list[dict] = []
+    for i, m in enumerate(messages):
+        if i in target_indices:
+            context = [
+                {"speaker": c["speaker"], "text": c["text"], "time": c.get("time")}
+                for c in prefix
+            ]
+            # 只把 Jev 需要的字段放进 state：本地元数据不进入 state / 缓存 key
+            target_state = {
+                "speaker": "them",
+                "text": m["text"],
+                "time": m.get("time"),
+                "raw_speaker": m.get("raw_speaker"),
+            }
+            state = build_state(context, target_state)
+            plans.append({
+                "index": i,
+                "message": m,
+                "state": state,
+                "context": context,
+                "key": None if cache is None else make_cache_key(
+                    state, questions_schema, DEFAULT_MODEL, SCHEMA_VERSION
+                ),
+                "base": {
+                    "index": i,
+                    "speaker": "them",
+                    "text": m["text"],
+                    "time": m.get("time"),
+                    "context": context,
+                },
+            })
+        prefix.append({
+            "speaker": m["speaker"], "text": m["text"], "time": m.get("time")
+        })
 
-        try:
-            response = client.system_one(state=state, questions=questions)
-            extracted = extract_answers(response)
-        except Exception as exc:  # 单条失败不影响其余消息
-            results.append({**base, "error": classify_error(exc), "cached": False})
+    # ---- 阶段 2：先查本地缓存；命中的**不**进入并发 API 队列 ----
+    results_by_index: dict[int, dict] = {}
+    misses: list[dict] = []
+    cache_hits = 0
+    for plan in plans:
+        cached = None
+        if cache is not None and plan["key"] is not None:
+            cached = cache.get(plan["key"])
+        if cached is not None:
+            cache_hits += 1
+            results_by_index[plan["index"]] = {
+                **plan["base"], "result": cached, "cached": True
+            }
+            if progress_cb:
+                progress_cb(len(results_by_index), total,
+                            {"cached": cache_hits, "misses": len(misses),
+                             "done_misses": 0, "phase": "cache"})
         else:
-            if cache is not None and key is not None:
-                cache.set(key, extracted)
-            results.append({**base, "result": extracted, "cached": False})
+            misses.append(plan)
 
-        if progress_cb:
-            progress_cb(done, total)
+    workers = effective_workers(max_workers)
+    shared_client = False
+    if workers > 1 and client_factory is None and _is_sdk_client(client):
+        # 没有 client_factory 就无法为每个 worker 建独立 client；
+        # 官方 SDK 未承诺线程安全，因此刽而串行，而不把同一个
+        # transport 给多个线程共享。app.py 一直传 client_factory，所以不会走这条降级路径。
+        workers = 1
+        shared_client = True
+    latencies: list[float] = []
+    error_kinds: dict[str, int] = {}
+    api_calls = 0
+    rate_limited = 0
+    api_start = time.perf_counter()
 
+    # ---- worker-local client：SDK 未承诺线程安全，不跨线程共享同一个实例 ----
+    factory = client_factory or (lambda: client)
+    local = threading.local()
+    created_clients: list = []
+    clients_lock = threading.Lock()
+
+    def _worker_client():
+        instance = getattr(local, "client", None)
+        if instance is None:
+            instance = factory()
+            local.client = instance
+            with clients_lock:
+                created_clients.append(instance)
+        return instance
+
+    def _call(plan: dict):
+        started = time.perf_counter()
+        try:
+            response = _worker_client().system_one(
+                state=plan["state"], questions=questions
+            )
+        finally:
+            plan["latency"] = (time.perf_counter() - started) * 1000
+        return extract_answers(response)
+
+    def _record_error(plan: dict, exc: BaseException) -> None:
+        kind = error_kind(exc)
+        error_kinds[kind] = error_kinds.get(kind, 0) + 1
+        results_by_index[plan["index"]] = {
+            **plan["base"], "error": classify_error(exc), "cached": False
+        }
+
+    def _record_success(plan: dict, extracted: dict) -> None:
+        if cache is not None and plan["key"] is not None:
+            cache.set(plan["key"], extracted)
+        results_by_index[plan["index"]] = {
+            **plan["base"], "result": extracted, "cached": False
+        }
+
+    try:
+        if workers <= 1 or len(misses) <= 1:
+            # 串行路径（与历史行为完全一致，便于调试 / 单条消息时复用）
+            for plan in misses:
+                try:
+                    extracted = _call(plan)
+                except Exception as exc:  # 单条失败不影响其余消息
+                    _record_error(plan, exc)
+                else:
+                    _record_success(plan, extracted)
+                finally:
+                    latencies.append(plan.get("latency") or 0.0)
+                    api_calls += 1
+                    if progress_cb:
+                        progress_cb(
+                            len(results_by_index), total,
+                            {"cached": cache_hits, "misses": len(misses),
+                             "done_misses": api_calls, "phase": "api",
+                             "workers": 1},
+                        )
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_call, plan): plan for plan in misses}
+                for future in as_completed(futures):
+                    plan = futures[future]
+                    api_calls += 1
+                    try:
+                        extracted = future.result()
+                    except Exception as exc:  # 单条失败不影响其余消息
+                        _record_error(plan, exc)
+                    else:
+                        _record_success(plan, extracted)
+                    finally:
+                        latencies.append(plan.get("latency") or 0.0)
+                        # 进度回调只在主线程调用（Streamlit widget 非线程安全）
+                        if progress_cb:
+                            progress_cb(
+                                len(results_by_index), total,
+                                {"cached": cache_hits, "misses": len(misses),
+                                 "done_misses": api_calls, "phase": "api",
+                                 "workers": workers},
+                            )
+    finally:
+        api_wall = time.perf_counter() - api_start
+        for instance in created_clients:
+            if instance is client:
+                continue
+            close = getattr(instance, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    # ---- 阶段 4：按原始 target 顺序组装（并发完成顺序不影响结果）----
+    results = [results_by_index[plan["index"]] for plan in plans]
+
+    failed = sum(1 for e in results if e.get("error"))
+    rate_limited = error_kinds.get("rate_limit", 0)
+    LAST_RUN_STATS.clear()
+    LAST_RUN_STATS.update({
+        "targets": total,
+        "cache_hits": cache_hits,
+        "api_calls": api_calls,
+        "workers": workers if (len(misses) > 1 and workers > 1) else 1,
+        "shared_client": shared_client,
+        "failed": failed,
+        "error_kinds": error_kinds,
+        "rate_limit": rate_limited,
+        "api_wall_seconds": api_wall,
+        "latencies_ms": latencies,
+        "avg_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
+        "p50_latency_ms": _percentile(latencies, 0.50),
+        "p95_latency_ms": _percentile(latencies, 0.95),
+        "max_latency_ms": max(latencies) if latencies else None,
+    })
+    _dump_run_stats(LAST_RUN_STATS)
     return results

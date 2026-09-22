@@ -66,8 +66,11 @@ def main() -> None:
     messages = mask_messages(parse_chat(SAMPLE_CHAT))
     cache = Cache()
     client = create_client(api_key=api_key)
+    # worker-local client：与 app 一致，避免多线程共享同一个 SDK client
+    client_factory = lambda: create_client(api_key=api_key)
 
-    results = analyze_messages(client, messages, cache=cache)
+    results = analyze_messages(client, messages, cache=cache,
+                               client_factory=client_factory)
     stats = compute_conversation_stats(results)
 
     print("=== 逐条结果（关注关系信息量）===")
@@ -121,7 +124,8 @@ def main() -> None:
 
     # 第二次运行应全部命中缓存
     client2 = create_client(api_key=api_key)
-    again = analyze_messages(client2, messages, cache=cache)
+    again = analyze_messages(client2, messages, cache=cache,
+                               client_factory=client_factory)
     cached_hits = sum(1 for e in again if e.get("cached"))
     print(f"\n缓存命中：{cached_hits}/{len(again)}（应为 {len(again)}，即 0 次额外 API 请求）")
     cache.close()

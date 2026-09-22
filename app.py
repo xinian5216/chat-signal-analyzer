@@ -22,6 +22,7 @@ from analyzer import (
     DEFAULT_MODEL,
     EMOTION_LABELS,
     INTENT_OPTIONS,
+    LAST_RUN_STATS,
     analyze_messages,
     create_client,
 )
@@ -274,18 +275,41 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
         st.session_state["run_error"] = f"初始化 TypeSafe 客户端失败：{exc}"
         return
 
+    # 并发时每个 worker 线程独立创建 client：官方 SDK 未承诺线程安全，
+    # 不让多个线程共享同一个 transport。
+    def _client_factory():
+        return create_client(api_key=api_key)
+
     with st.status("正在分析聊天…", expanded=True) as status:
         bar = st.progress(0.0)
         line = st.empty()
 
-        def cb(done: int, total: int) -> None:
+        def cb(done: int, total: int, info: dict | None = None) -> None:
+            info = info or {}
             bar.progress(done / max(total, 1))
-            line.caption(f"正在分析第 {done} / {total} 条 TA 消息")
+            misses = info.get("misses") or 0
+            if misses:
+                line.caption(
+                    f"正在分析：{misses} 个未缓存消息·"
+                    f"并发 {info.get('workers') or 1}·"
+                    f"已完成 {info.get('done_misses') or 0} / {misses}"
+                )
+            else:
+                line.caption(f"正在分析第 {done} / {total} 条 TA 消息")
             status.update(label=f"正在分析聊天… {done} / {total}")
 
-        new_results = analyze_messages(
-            client, messages, cache=cache, only_indices=only_indices, progress_cb=cb
-        )
+        try:
+            new_results = analyze_messages(
+                client, messages, cache=cache, only_indices=only_indices,
+                progress_cb=cb, client_factory=_client_factory,
+            )
+        finally:
+            # 并发路径里的 worker client 由 analyzer 负责关闭；
+            # 这个主 client（串行路径使用）由本次分析关闭。
+            try:
+                client.close()
+            except Exception:
+                pass
         bar.empty()
         line.empty()
 
@@ -305,12 +329,26 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
 
         cached_n = sum(1 for e in st.session_state["results"] if e.get("cached"))
         failed_n = sum(1 for e in st.session_state["results"] if e.get("error"))
+        # 完成摘要（本地统计，不含任何聊天内容）
+        run_stats = LAST_RUN_STATS
+        api_calls = run_stats.get("api_calls") or 0
+        parts = [
+            f"分析 {len(st.session_state['results'])} 条",
+            f"缓存命中 {cached_n} 条",
+            f"新请求 {api_calls} 条",
+        ]
+        if api_calls:
+            wall = run_stats.get("api_wall_seconds") or 0.0
+            avg = run_stats.get("avg_latency_ms")
+            parts.append(f"耗时 {wall:.1f}s")
+            if avg:
+                parts.append(f"平均延迟 {avg:.0f}ms")
+            if run_stats.get("rate_limit"):
+                parts.append(f"429 {run_stats['rate_limit']} 次")
+        parts.append(f"跳过媒体 {st.session_state['skipped_media']} 条")
+        parts.append(f"失败 {failed_n} 条")
         status.update(
-            label=(
-                f"✓ 分析完成 · 分析 {len(st.session_state['results'])} 条 · "
-                f"缓存命中 {cached_n} 条 · 跳过媒体 {st.session_state['skipped_media']} 条 · "
-                f"失败 {failed_n} 条"
-            ),
+            label="✓ 分析完成 · " + " · ".join(parts),
             state="complete",
         )
 

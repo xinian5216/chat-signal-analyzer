@@ -433,15 +433,50 @@ def _at_body_start(block: dict | None) -> bool:
     return block is not None and block["time"] is not None and not block["lines"]
 
 
-def _detect_block_mode(nonblank: list[str]) -> bool:
-    """是否启用微信三行块解析（普通行 + 下一有效行整行时间 = 消息头）。
+FORMAT_WECHAT_BLOCKS = "wechat_blocks"
+FORMAT_LEGACY_COLON = "legacy_colon"
+FORMAT_TIME_NAME = "time_name"
+FORMAT_UNKNOWN = "unknown"
 
-    只在结构证据充分时启用，避免把“时间戳独占一行”的旧格式里的正文行
-    误判成昵称。证据（满足其一即启用）：
 
-    - 同一个候选昵称在多处“昵称 + 时间”位置重复出现；
-    - 聊天以“昵称 + 时间”开头（微信复制总是这样开头）；
-    - 候选昵称紧跟在另一个具名消息头之后（如冒号格式之后紧跟三行块）。
+def detect_format(text: str) -> str:
+    """保守检测整份输入使用的是哪种格式（决定用哪个 parser 模式）。
+
+    返回 ``FORMAT_*`` 之一：
+
+    - ``wechat_blocks``：微信三行块（SENDER / TIMESTAMP / BODY…）；
+    - ``legacy_colon``：``我: 你好`` 冒号格式；
+    - ``time_name``：``22:31 我`` 时间 + 昵称同行；
+    - ``unknown``：没有任何可靠结构。
+
+    检测保守：不会因为“一行普通文本 + 一行像时间”就冒然进入微信模式；
+    但也不要求昵称重复出现（每人只发一条的短聊天同样支持）。
+    """
+    nonblank = [ln.strip() for ln in (text or "").replace("\r\n", "\n")
+                .replace("\r", "\n").split("\n") if ln.strip()]
+    if not nonblank:
+        return FORMAT_UNKNOWN
+    if _has_wechat_block_evidence(nonblank):
+        return FORMAT_WECHAT_BLOCKS
+    if any(_colon_header(line) is not None for line in nonblank):
+        return FORMAT_LEGACY_COLON
+    if any(_same_line_header(line) is not None for line in nonblank):
+        return FORMAT_TIME_NAME
+    return FORMAT_UNKNOWN
+
+
+def _has_wechat_block_evidence(nonblank: list[str]) -> bool:
+    """是否存在可靠的微信三行块结构。
+
+    证据（满足其一即认定为微信块模式）：
+
+    - 至少 2 个合法 ``sender candidate + 完整 timestamp`` 消息头
+      （真实微信复制总是成对出现；每人只发一条的短聊天也有 2 个头）；
+    - 或者聊天以“昵称 + 时间”开头；
+    - 或者某个候选昵称紧跟在另一个具名消息头之后。
+
+    这些证据同时把“时间戳独占一行”的旧格式排除在外：那种格式以时间戳
+    开头、候选昵称不重复、且候选前面是时间戳而不是具名消息头。
     """
     if len(nonblank) < 2:
         return False
@@ -508,10 +543,14 @@ def parse_chat(
     nonblank = [ln.strip() for ln in lines if ln.strip()]
     if not nonblank:
         raise ParseError("聊天内容为空，请先粘贴聊天文本。")
-    use_block = _detect_block_mode(nonblank)
+    mode = detect_format(text)
+    wechat_mode = mode == FORMAT_WECHAT_BLOCKS
 
     blocks: list[dict] = []  # {"raw": 名字|"", "time": str|None, "lines": [...]}
     current: dict | None = None
+    # 微信块结构是否已开始：一旦开始，BODY 内不再运行任何
+    # legacy 逐行推断（冒号头 / 时间+昵称）。
+    wechat_started = False
 
     pos = 0
     n = len(nonblank)
@@ -521,7 +560,7 @@ def parse_chat(
         # 1) 整行时间戳独占一行
         ts = timestamp_of_line(line)
         if ts is not None:
-            if use_block and current is not None:
+            if wechat_mode and current is not None:
                 # 微信块内部：正文里出现的 "16:30" 只是正文，不开启新 speaker
                 current["lines"].append(line)
             else:
@@ -530,11 +569,15 @@ def parse_chat(
             pos += 1
             continue
 
-        # 微信块第一行正文：紧跟时间戳，只可能是正文
-        body_start = use_block and _at_body_start(current)
+        # 微信块已开始后，只允许“合法 sender candidate + 下一有效行整行
+        # 时间”结束当前消息；其余全部是 BODY（URL / 代码 / 冒号 /
+        # 中文冒号 / JSON / Markdown / 空行…都不会开启新 speaker）。
+        # 开始之前（还没有任何微信块）仍然允许 legacy 格式，
+        # 以兼容“冒号格式 + 微信块”混糊的输入。
+        allow_legacy = not (wechat_mode and wechat_started)
 
         # 2) “日期 时间 昵称”或“时间 昵称”同一行 → 新块
-        if not body_start:
+        if allow_legacy:
             header = _same_line_header(line)
             if header is not None:
                 current = {"raw": header[0], "time": header[1], "lines": []}
@@ -543,7 +586,7 @@ def parse_chat(
                 continue
 
         # 3) “昵称: 内容” → 新块（内容同行，后续行并入）
-        if not body_start:
+        if allow_legacy:
             colon = _colon_header(line)
             if colon is not None:
                 current = {
@@ -555,18 +598,22 @@ def parse_chat(
                 pos += 1
                 continue
 
+        # 紧跟时间戳的第一行只能是正文：防止“会议改到
+        # 16:30 吧”这种正文里的时间行把上一行正文变成发送者。
+        body_start = wechat_mode and _at_body_start(current)
+
         # 4) 微信三行块：合法 sender candidate + 下一有效行整行时间 → 新块。
-        #    普通正文行（URL / 时间句子 / 多个空行之后的内容）不会命中，
-        #    因此默认继续属于上一条消息的 BODY。
-        if use_block and not body_start and pos + 1 < n:
+        #    这是微信模式下唯一允许开启新消息的结构。
+        if wechat_mode and not body_start and pos + 1 < n:
             next_ts = timestamp_of_line(nonblank[pos + 1])
             if next_ts is not None and looks_like_sender_name(line):
                 current = {"raw": line, "time": next_ts, "lines": []}
                 blocks.append(current)
+                wechat_started = True
                 pos += 2
                 continue
 
-        # 5) 其余 → 当前消息的内容行（支持多行消息）
+        # 5) 其余 → 当前消息的内容行（支持任意多行正文）
         if current is None:
             raise ParseError(
                 "开头第 1 行无法识别为消息（需要“名字: 内容”、“时间 名字”"

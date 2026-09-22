@@ -207,6 +207,12 @@ def test_three_line_without_blank_lines():
 
 
 def test_mixed_formats():
+    """冒号格式 + 微信三行块混糊输入。
+
+    模式隔离后：第一个微信块头之前仍然识别冒号格式；
+    一旦微信块结构开始，BODY 内不再运行冒号解析（否则正文里的
+    ``已知现状：`` 之类的标题会被抠成发言人）。
+    """
     text = (
         "我: 中午吃啥\n"
         "TA: 随便\n"
@@ -216,8 +222,10 @@ def test_mixed_formats():
         "阿强: 分我点"
     )
     msgs = parse_chat(text, my_name="阿强", them_name="小雨")
-    assert [m["speaker"] for m in msgs] == ["me", "them", "them", "me"]
+    assert [m["speaker"] for m in msgs] == ["me", "them", "them"]
     assert msgs[2]["time"] == "2026-09-08 12:00"
+    # 第三条消息的正文完整保留（包括看起来像冒号格式的那一行）
+    assert msgs[2]["text"] == "我带了饭\n阿强: 分我点"
 
 
 def test_never_guess_speaker_from_content():
