@@ -64,12 +64,19 @@ def test_state_uses_only_past_context():
     assert "analysis_rule" in state
 
 
-def test_state_context_capped_at_5():
+def test_state_context_is_turn_bounded_not_fixed_five():
+    """previous 5 机械截断已被 Context Builder v2 替换：按 turn 回溯。"""
     msgs = sample_messages()
-    long_context = [{"speaker": "me", "text": f"m{i}"} for i in range(10)]
+    long_context = [
+        {"speaker": "me" if i % 2 == 0 else "them", "text": f"m{i}"}
+        for i in range(20)
+    ]
     state = build_state(long_context, msgs[1])
-    assert len(state["conversation_context"]) == 5
-    assert state["conversation_context"][-1]["text"] == "m9"  # 取最近 5 条
+    ctx = state["conversation_context"]
+    # 20 条交替消息 = 20 个 turn → 取最近 CONTEXT_MAX_TURNS 个完整 turn
+    assert len(ctx) == 8
+    assert [c["text"] for c in ctx] == [f"m{i}" for i in range(12, 20)]
+    assert [c["text"] for c in ctx] != [f"m{i}" for i in range(15, 20)]  # 不是最近 5 条
 
 
 def test_extract_answers_shape():
@@ -83,21 +90,27 @@ def test_extract_answers_shape():
     assert out["distancing_signal"] == 0.9
 
 
-def test_schema_v21_includes_ease_and_invalidates_v2_cache():
-    """v2.1 question schema 必须包含 relational_ease，且旧 v2 缓存 key 不能命中。"""
+def test_schema_v22_questions_unchanged_context_semantics_bumped():
+    """v2.2：9 个问题与 v2.1 完全一致；变的是上下文选择语义 → 版本 bump。
+
+    旧 v2 / v2.1 缓存 key 都不能与 v2.2 混用（自然失效）。
+    """
     from storage import make_cache_key
 
-    schema_v21 = analyzer.build_questions_schema()
-    assert "relational_ease" in schema_v21
-    assert len(schema_v21) == 9
+    schema_v22 = analyzer.build_questions_schema()
+    assert "relational_ease" in schema_v22
+    assert len(schema_v22) == 9  # 问题集合自 v2.1 未变
+
+    state = {"conversation_context": [], "target_message": {"speaker": "them", "text": "哦"}}
 
     # 模拟 v2 时代的 schema（无 relational_ease 问题）与版本号
-    schema_v2 = {k: v for k, v in schema_v21.items() if k != "relational_ease"}
-    state = {"conversation_context": [], "target_message": {"speaker": "them", "text": "哦"}}
+    schema_v2 = {k: v for k, v in schema_v22.items() if k != "relational_ease"}
     key_v2 = make_cache_key(state, schema_v2, "jev-latest", "chat-signal-v2")
-    key_v21 = make_cache_key(state, schema_v21, "jev-latest", analyzer.SCHEMA_VERSION)
-    assert key_v2 != key_v21
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v2.1"
+    key_v21 = make_cache_key(state, schema_v22, "jev-latest", "chat-signal-v2.1")
+    key_v22 = make_cache_key(state, schema_v22, "jev-latest", analyzer.SCHEMA_VERSION)
+    assert key_v2 != key_v21 != key_v22
+    assert key_v21 != key_v22  # 同问题、同 state：仅版本不同 → key 不同
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v2.2"
 
 
 def test_relational_ease_question_is_score_with_five_levels():

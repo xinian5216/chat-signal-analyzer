@@ -14,16 +14,20 @@ import sys
 import threading
 import time
 
+from context_builder import select_context
 from parser import has_media_marker
 from storage import make_cache_key
 
-SCHEMA_VERSION = "chat-signal-v2.1"  # 问题 schema 变更时必须递增，使旧缓存自然失效
+# 缓存 schema 版本。v2.2：9 个 Jev 问题**未变**，变的是 conversation_context
+# 的选择语义（previous 5 → Context Builder v2 turn-aware 有界预算），因此
+# 主动 bump 使旧分析缓存条目自然失效（不删除 .jev_cache，只自然 miss）。
+SCHEMA_VERSION = "chat-signal-v2.2"
 DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
 
-# 基础分析规则（与 v2.1 及更早版本一致：纯文本消息的 state 因此保持
-# 与历史缓存条目完全相同的 cache key）。
+# 基础分析规则（各版本一致；媒体条款见下）。v2.2 起上下文的**选择方式**改变
+# （Context Builder v2），所有消息的 cache key 随之变化（SCHEMA_VERSION 已 bump）。
 ANALYSIS_RULE = (
     "Judge only observable signals in the conversation. "
     "Do not assume romantic interest from politeness or normal friendliness alone. "
@@ -246,19 +250,22 @@ def build_questions_schema() -> dict:
     }
 
 
-def build_state(
-    context: list[dict], target: dict, max_context: int = 5
-) -> dict:
-    """构建 Jev state：目标消息 + 之前的最多 max_context 条上下文。
+def build_state(context: list[dict], target: dict) -> dict:
+    """构建 Jev state：目标消息 + turn-aware 有界上下文（Context Builder v2）。
+
+    ``context`` 是 target 之前**全部**历史消息（chronological，双方混合）。
+    实际进入 state 的窗口由 ``context_builder.select_context`` 按
+    “turn 回溯 + turn/message/char 预算”选择（不再机械取最近 5 条），
+    详见 context_builder 模块。
 
     不包含任何未来消息——模拟“当时看到这句话时能判断出什么”。
+    target 自身不受任何上下文预算约束，永远完整保留。
 
     ``analysis_rule`` 按 state 实际内容生成：仅当上下文 / 目标中存在媒体中性
-    marker 时才追加媒体条款，因此纯文本消息的 state（及缓存 key）与
-    引入媒体过滤之前完全一致。
+    marker 时才追加媒体条款。
     """
     state = {
-        "conversation_context": context[-max_context:],
+        "conversation_context": select_context(context),
         "target_message": target,
     }
     state["analysis_rule"] = analysis_rule_for(state)
@@ -542,7 +549,10 @@ def analyze_messages(
     prefix: list[dict] = []
     for i, m in enumerate(messages):
         if i in target_indices:
-            context = [
+            # 全量前缀交给 Context Builder v2 选择窗口；state / cache key 只含
+            # 选中的上下文。结果条目里的 "context" 就是实际发给 Jev 的窗口，
+            # 因此 UI“判断上下文”展示的与 Jev 所见完全一致。
+            prefix_view = [
                 {"speaker": c["speaker"], "text": c["text"], "time": c.get("time")}
                 for c in prefix
             ]
@@ -553,12 +563,13 @@ def analyze_messages(
                 "time": m.get("time"),
                 "raw_speaker": m.get("raw_speaker"),
             }
-            state = build_state(context, target_state)
+            state = build_state(prefix_view, target_state)
+            window = state["conversation_context"]
             plans.append({
                 "index": i,
                 "message": m,
                 "state": state,
-                "context": context,
+                "context": window,
                 "key": None if cache is None else make_cache_key(
                     state, questions_schema, DEFAULT_MODEL, SCHEMA_VERSION
                 ),
@@ -567,7 +578,7 @@ def analyze_messages(
                     "speaker": "them",
                     "text": m["text"],
                     "time": m.get("time"),
-                    "context": context,
+                    "context": window,
                 },
             })
         prefix.append({

@@ -5,7 +5,9 @@
 - “我”的消息用于理解 TA 在回应什么 → 进入 conversation_context；
 - “我”的消息永远不是 target：不产生 API 请求、不产生 relationship score、
   不进 overall 分子、不进 effective_messages；
-- previous 5 上下文是**双方混合**消息，不是 previous 5 条 TA 消息；
+- previous 5 机械截断已替换为 **Context Builder v2**：turn-aware、
+  turn/message/char 三种有界预算（见 context_builder.py），上下文仍是
+  双方混合消息，不是 previous N 条 TA 消息；
 - 纯语音消息不是 target，只以中性 marker（含时长）出现在上下文里。
 """
 
@@ -133,19 +135,22 @@ def test_my_messages_produce_no_scores_or_effective_messages():
 
 
 def test_previous_context_is_mixed_not_only_ta():
-    """previous 5 上下文是双方混合消息（不是 previous 5 条 TA 消息）。"""
+    """turn-aware 有界上下文是双方混合消息（不是 previous N 条 TA 消息）。"""
     chat = "\n\n".join(
-        f"{speaker}\n2026年08月21日 1{i}:00\n内容 {i}"
+        f"{speaker}\n2026年08月21日 09:{i:02d}\n内容 {i}"
         for i, speaker in enumerate(
             ["我", "TA"] * 6
         )
     )
     client, messages, results = _analyze(chat)
     last_ctx = client.contexts[-1]
-    assert len(last_ctx) == 5                      # 默认 previous 5
+    # 11 个前序 turn（我/TA 交替）→ 取最近 CONTEXT_MAX_TURNS 个完整 turn
+    assert len(last_ctx) == 8
     assert {c["speaker"] for c in last_ctx} == {"me", "them"}
-    assert sum(1 for c in last_ctx if c["speaker"] == "me") >= 2
-    assert sum(1 for c in last_ctx if c["speaker"] == "them") >= 2
+    assert sum(1 for c in last_ctx if c["speaker"] == "me") == 4
+    assert sum(1 for c in last_ctx if c["speaker"] == "them") == 4
+    # 窗口是完整 turn 的边界：最旧一条是“我 内容 3”（与 8 个 turn 对应）
+    assert last_ctx[0]["text"] == "内容 3"
 
 
 def test_context_never_contains_future_messages():

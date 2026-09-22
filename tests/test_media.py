@@ -211,7 +211,7 @@ def test_media_not_counted_in_stats():
 
 
 def test_media_in_context_becomes_neutral_marker():
-    """纯媒体消息位于其他消息前 5 条上下文内时，以中性 marker 出现。"""
+    """纯媒体消息位于其他消息的上下文窗口内时，以中性 marker 出现。"""
     chat = """我: 在忙吗
 TA: [图片] 微信图片_1.dat
 我: 周末出去玩吗

@@ -227,8 +227,9 @@ def test_media_fields_never_enter_jev_state():
     state2 = analyzer.build_state(
         [{"speaker": "me", "text": "在忙吗", "time": None}], projected)
     assert set(state2["target_message"]) == {"speaker", "text", "time", "raw_speaker"}
-    # 纯文本消息的 state / key 与媒体占位符消息使用相同 schema 与版本
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v2.1"
+    # 纯文本消息的 state 形状不变；版本号随 Context Builder v2（上下文选择语义
+    # 变更）bump 到 v2.2，问题 schema 本身与 v2.1 完全一致
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v2.2"
 
 
 def test_pure_text_cache_key_unchanged():

@@ -358,7 +358,7 @@ interrupted）。如果一次新的 rerun 开始时仍看到 `running`，说明�
 
 ## 8. Jev 调用了哪些 primitives
 
-每条 TA 消息一次 `client.system_one(state, questions)` 请求，包含 9 个问题（schema v2.1）：
+每条 TA 消息一次 `client.system_one(state, questions)` 请求，包含 9 个问题（问题 schema 自 v2.1 起未变）：
 
 | 指标 | primitive | 返回 |
 |---|---|---|
@@ -369,12 +369,24 @@ interrupted）。如果一次新的 rerun 开始时仍看到 `running`，说明�
 | relational_ease（v2.1 新增，解释层） | Score（5 级） | 同上 |
 | romantic_signal / distancing_signal | Noul（0~1 概率） | `noul`（无 confidence 字段，官方设计如此） |
 
-- `state` 只包含：目标消息 + 之前最多 5 条上下文 + 发言人身份 + 可选时间 +
+- `state` 只包含：目标消息 + 由 **Context Builder v2** 选出的有界上下文 + 发言人身份 + 可选时间 +
   一条分析规则（“只判断可观察信号，不得仅凭礼貌推断浪漫兴趣”）。
   **不包含任何未来消息**——模拟“当时看到这句话时能判断出什么”。
-- **缓存 schema 版本 v2 → v2.1**：v2.1 新增 `relational_ease` 问题。
+- **上下文选择（Context Builder v2，v0.2.0 起）**：不再机械取“之前最多 5 条”，而是
+  **turn-aware + 有界预算**（`context_builder.py`，纯本地逻辑、0 次额外 API）：
+  - turn = 连续同一方的消息（一次“连发”就是一个 turn）；从 target 向前按 turn 回溯，
+    优先完整保留最近的 turn——尤其最近的“我”的 turn（TA 最可能正在回应的内容）；
+  - 三种预算同时生效：最多 **8 个 turn / 12 条消息 / 4000 字符**（按消息文本长度近似计数）；
+    超预算时从靠近 target 的一侧按消息粒度裁剪，**绝不从消息中间截断**；
+  - target 紧邻的上一条消息永远整条保留；target 自身不受任何预算约束；
+  - 上下文仍是双方混合消息：“我”的消息帮助 Jev 理解 TA 在回应什么，但**永远不是
+    target**、不产生独立请求、不产生 relationship score；
+  - 不做语义检索 / 关键词召回（避免 cherry-picking），也不用回复速度直接推断感情。
+- **缓存 schema 版本 v2 → v2.1 → v2.2**：v2.1 新增 `relational_ease` 问题；v2.2 的 9 个
+  问题与 v2.1 完全一致，变更的是上下文选择语义（previous 5 → Context Builder v2），
+  因此 bump 版本使旧分析缓存**自然失效**（不删除缓存文件，只自然 miss）。
   缓存 key 由（state + 问题 schema + 模型 + schema 版本）的 SHA256 构成，
-  旧 v2 缓存条目**自然失效**（不会冒充新 schema 结果），不会被删除。
+  旧版本条目不会冒充新语义结果。
 - 官方文档：<https://docs.typesafe.ai/>；SDK：<https://github.com/typesafe-ai/typesafe-sdk-python>
   （第三方 SDK 遵循其各自许可证，与本项目 MIT 许可证相互独立。）
 
@@ -471,7 +483,8 @@ overall 仍然计算并展示，只是降低视觉优先级；Markdown 报告会
 - 只支持“复制文本后粘贴”，不支持微信数据库解密、OCR、语音 / 图片 / 表情语义。
 - 解析器只覆盖最常见文本格式；特殊格式请用昵称兜底或手工整理。
 - 脱敏为正则启发式，可能漏检或误检。
-- 上下文窗口最多 5 条；不跨“引用回复”等结构。
+- 上下文窗口为 turn-aware 有界预算（最多 8 个 turn / 12 条消息 / 4000 字符），超预算时丢弃更早的
+  完整 turn 而不是关键词召回；不跨“引用回复”等结构。
 - Jev 对中文网络用语的效果未经系统校准；结果仅供娱乐与参考。
 - 若发现 Jev 对中文效果明显不好，请保留原始结果反馈，本项目不会偷偷换模型。
 
