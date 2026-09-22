@@ -23,6 +23,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -37,6 +38,7 @@ HEALTH_PATH = "/healthz"
 POLL_INTERVAL = 0.25                  # 秒
 STARTUP_TIMEOUT = 25.0                # 秒：总超时，绝不无限等待
 CHILD_ENV_FLAG = "SIGNALLENS_INTERNAL_STREAMLIT"
+NO_BROWSER_ENV = "SIGNALLENS_NO_BROWSER"   # =1 时不自动打开浏览器（CI / smoke）
 RUNTIME_FILENAME = "runtime.json"
 
 APP_TITLE = "SignalLens"
@@ -320,6 +322,9 @@ def _wait_until_ready(port: int, timeout: float = STARTUP_TIMEOUT) -> bool:
 
 
 def _open_browser(port: int) -> None:
+    """用默认浏览器打开本地地址；``SIGNALLENS_NO_BROWSER=1`` 时跳过（CI / smoke）。"""
+    if os.environ.get(NO_BROWSER_ENV, "").strip().lower() in ("1", "true", "yes"):
+        return
     url = f"http://127.0.0.1:{port}"
     try:
         webbrowser.open(url)
@@ -327,9 +332,36 @@ def _open_browser(port: int) -> None:
         pass
 
 
+def _kill_pid(pid: int) -> None:
+    """强制结束一个进程（Windows 上带 /T，一并结束它的子进程）。"""
+    if pid <= 0:
+        return
+    try:
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True, timeout=30, creationflags=creationflags,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except Exception:
+        pass
+
+
 def _terminate(process: subprocess.Popen) -> None:
+    """结束子进程，并清理整个进程树。
+
+    Windows 上结束父进程**不会级联结束孙子进程**（已在 GitHub Actions 的
+    Windows runner 上实测到残留），因此先收集并强制结束子孙进程，再结束自身，
+    最后再兜底扫一次。
+    """
     if process.poll() is not None:
         return
+    # 1) 先记录并强制结束子孙进程（父进程一死就再也绑定不到了）
+    for pid in _descendants(process.pid):
+        _kill_pid(pid)
+    # 2) 结束自身
     try:
         process.terminate()
     except Exception:
@@ -345,6 +377,9 @@ def _terminate(process: subprocess.Popen) -> None:
             process.wait(timeout=5)
         except Exception:
             pass
+    # 3) 兜底：结束过程中新出现的子孙进程
+    for pid in _descendants(process.pid):
+        _kill_pid(pid)
 
 
 def _logs_hint() -> str:
