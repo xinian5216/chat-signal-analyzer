@@ -168,6 +168,7 @@ def init_state() -> None:
         ("results", None),
         ("stats", None),
         ("run_error", None),
+        ("analysis_revision", 0),         # 分析结果版本号（报告 memo 的身份）
         ("skipped_media", 0),
         ("msg_filter_mode", "全部消息"),
         ("msg_filter_last", None),       # 上一次的过滤模式（变化时回到第 1 页）
@@ -193,6 +194,19 @@ def init_state() -> None:
     ):
         if key not in st.session_state:
             st.session_state[key] = default
+
+
+def bump_analysis_revision() -> int:
+    revision = int(st.session_state.get("analysis_revision") or 0) + 1
+    st.session_state["analysis_revision"] = revision
+    return revision
+
+
+def clear_analysis_results() -> None:
+    st.session_state["results"] = None
+    st.session_state["stats"] = None
+    st.session_state["report_cache"] = None
+    bump_analysis_revision()
 
 
 def recover_analysis_state() -> None:
@@ -287,6 +301,7 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
                 st.session_state["results"]
             )
         st.session_state["skipped_media"] = skipped_media_count(messages)
+        bump_analysis_revision()   # 新的一整份结果 → 报告 memo 身份失效
 
         cached_n = sum(1 for e in st.session_state["results"] if e.get("cached"))
         failed_n = sum(1 for e in st.session_state["results"] if e.get("error"))
@@ -450,8 +465,6 @@ def _reset_chat_state() -> None:
     """清空当前聊天与结果（解析失败 / 替换聊天时使用）。"""
     st.session_state["messages"] = None
     st.session_state["analysis_messages"] = None
-    st.session_state["results"] = None
-    st.session_state["stats"] = None
     st.session_state["run_error"] = None
     st.session_state["raw_text"] = ""
     st.session_state["raw_chunks"] = []
@@ -459,7 +472,7 @@ def _reset_chat_state() -> None:
     st.session_state["input_notice"] = None
     st.session_state["analysis_state"] = "idle"
     st.session_state["pending_target"] = None
-    st.session_state["report_cache"] = None
+    clear_analysis_results()
     st.session_state["sel_me"] = "（未指定）"
     st.session_state["sel_ta"] = "（未指定）"
     st.session_state["applied_me"] = None
@@ -564,10 +577,8 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
 
     # 消息列表变了 → 旧结果的下标全部失效，必须重新分析（缓存命中不重复请求）
     st.session_state["analysis_messages"] = None
-    st.session_state["results"] = None
-    st.session_state["stats"] = None
     st.session_state["analysis_state"] = "idle"
-    st.session_state["report_cache"] = None
+    clear_analysis_results()
 
     # 身份映射：参与者集合不变 → 保留；出现新参与者 → 要求重新确认
     had_mapping = bool(
@@ -887,8 +898,7 @@ def show_confirm_stage(messages: list[dict]) -> None:
                         )
                         st.session_state["messages"] = merged
                         st.session_state["analysis_messages"] = None
-                        st.session_state["results"] = None
-                        st.session_state["stats"] = None
+                        clear_analysis_results()
                         st.rerun()
         else:
             mapping = " · ".join(
@@ -905,8 +915,7 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 st.session_state["sel_me"] = "（未指定）"
                 st.session_state["sel_ta"] = "（未指定）"
                 st.session_state["analysis_messages"] = None
-                st.session_state["results"] = None
-                st.session_state["stats"] = None
+                clear_analysis_results()
                 st.rerun()
 
         # ---- 媒体提示（非错误）----
@@ -1165,6 +1174,18 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
             st.rerun()
 
 
+def report_memo_key(revision: int, include_text: bool) -> tuple:
+    """报告 memo 的身份：**分析版本号 + 是否包含原文**（纯函数）。
+
+    统计量（条数 / analyzed / skipped_media / failed / overall …）不能作为
+    身份：两份不同聊天完全可能这些数字都一样，却必须各自生成自己的报告。
+    ``analysis_revision`` 在每次产生 / 替换 / 清除一整份分析结果时递增，
+    因此同一份结果重复进入报告仍命中 memo，新聊天一定重新生成。
+    不接触聊天正文，也不影响 Jev cache key / scoring / parser。
+    """
+    return (int(revision), bool(include_text))
+
+
 def _build_or_reuse_reports(results: list[dict], stats: dict,
                             include_text: bool) -> tuple[str, str]:
     """报告只在进入“报告”视图时构建；结果未变则复用 session_state 里的成品。
@@ -1173,9 +1194,9 @@ def _build_or_reuse_reports(results: list[dict], stats: dict,
     rerun 时重复拼接 Markdown / JSON。
     """
     skipped = st.session_state.get("skipped_media", 0)
-    cache_key = (len(results), int(include_text), int(skipped),
-                 sum(1 for e in results if e.get("error")),
-                 stats.get("analyzed"), stats.get("overall"))
+    cache_key = report_memo_key(
+        st.session_state.get("analysis_revision") or 0, include_text
+    )
     cache = st.session_state.get("report_cache") or {}
     if cache.get("key") == cache_key:
         return cache["md"], cache["json"]
