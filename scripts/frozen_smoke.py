@@ -115,6 +115,10 @@ def _run_case(name: str, workdir: Path, expect_cn_path: bool = False) -> None:
     env = dict(os.environ)
     env["SIGNALLENS_DATA_DIR"] = str(app_dir / "data")
     env["SIGNALLENS_PORT"] = str(_free_port())
+    # 自动化测试不开浏览器：否则每个用例（及单实例复用）都会弹标签页，
+    # 而 smoke 结束时会关掉服务器，遗下的标签页就会报
+    # "Connection error / Failed to fetch dynamically imported module"（非产品缺陷）。
+    env["SIGNALLENS_NO_BROWSER"] = "1"
 
     proc = subprocess.Popen(
         [str(exe_copy)], cwd=str(ROOT), env=env,
