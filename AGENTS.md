@@ -9,7 +9,7 @@ Repo-specific guidance for OpenCode / AI sessions. Everything here was verified 
 
 ## Commands
 
-- Tests: `.venv\Scripts\python -m pytest tests -q` — 211 tests, ~10s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
+- Tests: `.venv\Scripts\python -m pytest tests -q` — 276 tests, ~12s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
 - App: `.venv\Scripts\streamlit run app.py`. Needs `TYPESAFE_API_KEY` in the gitignored `.env`; without a key the UI shows a friendly hint and does not crash.
 - Real-API smoke test — **the only script that calls Jev** (5 constructed messages, then fully cached): `.venv\Scripts\python -X utf8 scripts\smoke_test.py`.
 
@@ -23,7 +23,8 @@ Repo-specific guidance for OpenCode / AI sessions. Everything here was verified 
 
 Single Streamlit app, flat modules, no package:
 
-- `parser.py` — chat text → messages; participant/nickname detection; non-text media placeholder filtering (`content_type` text/media/mixed, WeChat media filenames stripped, real Unicode emoji preserved)
+- `parser.py` — chat text → messages; WeChat three-line block parsing (`SENDER` / `TIMESTAMP` / `BODY`: a new message starts only on a valid sender candidate + a next-line **fullmatch** timestamp); legacy `speaker: content` / `time name` branches isolated from URL schemes and in-body time substrings; participant detection reads **only** parsed `raw_speaker` (no repetition requirement); non-text media placeholder filtering (`content_type` text/media/mixed, WeChat media filenames stripped, real Unicode emoji preserved, voice duration → local-only `duration_seconds`)
+- `merge.py` — local chunk append / fingerprint / dedup (0 Jev API). Fingerprints and chunk info are local metadata only: they must never enter Jev state, cache keys, or default report bodies
 - `privacy.py` — local masking before anything leaves the machine
 - `analyzer.py` — one Jev `system_one` call per TA message carrying all 9 questions (2 Choice + 5 Score + 2 Noul). Pure-media messages (`content_type == "media"`) are never targets: zero API calls, excluded from every statistic
 - `scoring.py` — v2 weighted aggregation; **all weights and thresholds are centralized at the top of the file**

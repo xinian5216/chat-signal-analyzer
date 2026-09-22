@@ -68,9 +68,17 @@ def media_badge(kinds: list[str]) -> str:
     return f"{icons} {names}"
 
 
-def media_placeholder_label(kinds: list[str]) -> str:
-    """预览表 / 消息卡中媒体内容列的脱敏展示（绝不出现本地文件名）。"""
+def media_placeholder_label(kinds: list[str], duration_seconds=None) -> str:
+    """预览表 / 消息卡中媒体内容列的脱敏展示（绝不出现本地文件名）。
+
+    带时长的语音显示录制时长（如 ``[语音 7″，内容未分析]``）：时长只是本地
+    metadata，不携带任何内容 / 情绪 / 关系信息。
+    """
     names = " / ".join(MEDIA_KIND_LABELS.get(k, k) for k in kinds) or "媒体"
+    if kinds == ["voice"] and duration_seconds is not None:
+        sec = f"{duration_seconds:g}" if isinstance(duration_seconds, float) \
+            else str(duration_seconds)
+        names = f"语音 {sec}″"
     return f"[{names}，内容未分析]"
 
 
@@ -119,7 +127,9 @@ def preview_rows(messages: list[dict], limit: int = 15,
     rows = []
     for idx, m in enumerate(messages[:limit]):
         if m.get("content_type") == "media":
-            content = media_placeholder_label(m.get("media_kinds") or [])
+            content = media_placeholder_label(
+                m.get("media_kinds") or [], m.get("duration_seconds")
+            )
         else:
             content = m["text"].replace("\n", " ⏎ ")
             if len(content) > 50:

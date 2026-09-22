@@ -24,6 +24,7 @@ from analyzer import (
     create_client,
 )
 from parser import ParseError, detect_participants, parse_chat
+from merge import merge_messages
 from privacy import mask_messages
 from media import (
     MediaAsset,
@@ -115,6 +116,8 @@ def init_state() -> None:
     for key, default in (
         ("messages", None),
         ("raw_text", ""),
+        ("raw_chunks", []),              # 多片段追加：每段的原始文本（仅本机）
+        ("append_stats", None),          # 最近一次追加的本地统计
         ("analysis_messages", None),
         ("results", None),
         ("stats", None),
@@ -146,6 +149,7 @@ def get_cache() -> Cache:
 def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
     """对 TA 的消息逐条分析（含缓存）。失败项不中断，写入 error 字段。"""
     st.session_state["run_error"] = None
+    st.session_state["append_stats"] = None  # 分析已开始，追加横幅不再适用
     api_key = os.environ.get("TYPESAFE_API_KEY", "").strip()
     if not api_key:
         st.session_state["run_error"] = (
@@ -275,16 +279,17 @@ def _asset_thumb(asset: MediaAsset, width: int = 220):
     return asset
 
 
-def show_input_stage() -> tuple[str | None, list | None]:
+def show_input_stage() -> tuple[str | None, list, str]:
     """① 粘贴聊天记录：文本 + 可选图片上传。
 
-    返回 (待解析文本, 上传的图片文件列表)；未点击提交返回 (None, None)。
+    返回 (待解析文本, 上传的图片文件列表, 模式)；未点击提交返回 (None, [], "")。
+    模式:
 
-    说明：浏览器剪贴板的富媒体直采依赖 Streamlit 自定义组件协议，该协议在
-    当前 Streamlit 版本下无法把二进制可靠回传到 Python（已实测）。因此本阶段：
-    - 文本走 text_area（与 v0.1.1 完全一致）；
-    - 图片走原生 file_uploader（点击 / 拖拽，稳定可靠）；
-    - “剪贴板诊断”侧栏项用组件自包含展示剪贴板真实格式，用于后续阶段决策。
+    - ``replace``：解析并替换当前聊天；
+    - ``append``：把这一段**追加**到当前聊天（微信一次复制的条数有限，
+      分几次复制时用）。
+
+    追加与去重全部在本机完成，**不会调用 Jev API**。
     """
     with st.container(border=True):
         st.markdown("#### ① 粘贴聊天记录")
@@ -310,7 +315,13 @@ def show_input_stage() -> tuple[str | None, list | None]:
                 help="从微信保存或截图后拖入；仅存于本机内存，不发送给 Jev，"
                      "不写入报告。",
             )
-            submitted = st.form_submit_button("解析并预览", type="primary")
+            if st.session_state.get("messages"):
+                st.caption("当前已有一段聊天；再次粘贴后用“解析并替换当前聊天”会整体替换。")
+            st.caption("微信一次复制的条数有限：可以分几次复制，用“追加到当前聊天”"
+                       "逐段拼接。追加与去重都在本机完成，不调用 Jev。")
+            c1, c2 = st.columns(2)
+            replaced = c1.form_submit_button("解析并替换当前聊天", type="primary")
+            appended = c2.form_submit_button("追加到当前聊天")
 
         if uploaded:
             st.caption(f"已选择 {len(uploaded)} 张图片（仅本机内存，"
@@ -320,9 +331,11 @@ def show_input_stage() -> tuple[str | None, list | None]:
                 with cols[i]:
                     st.image(f, width=110)
 
-    if submitted:
-        return raw_text, list(uploaded or [])
-    return None, None
+    if appended:
+        return raw_text, list(uploaded or []), "append"
+    if replaced:
+        return raw_text, list(uploaded or []), "replace"
+    return None, [], ""
 
 
 def reset_media_state() -> None:
@@ -330,6 +343,129 @@ def reset_media_state() -> None:
     st.session_state["media_assets"] = []
     st.session_state["media_bindings"] = {}
     st.session_state["media_manual"] = {}
+
+
+def _reset_chat_state() -> None:
+    """清空当前聊天与结果（解析失败 / 替换聊天时使用）。"""
+    st.session_state["messages"] = None
+    st.session_state["analysis_messages"] = None
+    st.session_state["results"] = None
+    st.session_state["stats"] = None
+    st.session_state["run_error"] = None
+    st.session_state["raw_text"] = ""
+    st.session_state["raw_chunks"] = []
+    st.session_state["append_stats"] = None
+    st.session_state["sel_me"] = "（未指定）"
+    st.session_state["sel_ta"] = "（未指定）"
+    st.session_state["applied_me"] = None
+    st.session_state["applied_ta"] = None
+
+
+def rebuild_messages_from_chunks() -> list[dict]:
+    """按当前昵称映射，从所有已追加的片段重新解析并本地合并。
+
+    纯本地操作（解析 + 合并去重），不调用 Jev API。用于“重新选择身份”后
+    重建消息列表：与逐段追加的结果保持一致（重复片段同样会被去掉）。
+    """
+    merged: list[dict] = []
+    for chunk in st.session_state.get("raw_chunks") or []:
+        if not chunk or not chunk.strip():
+            continue
+        parsed = mask_messages(
+            parse_chat(
+                chunk,
+                st.session_state.get("applied_me"),
+                st.session_state.get("applied_ta"),
+            )
+        )
+        if not merged:
+            merged = parsed
+        else:
+            merged = merge_messages(merged, parsed).messages
+    return merged
+
+
+def handle_replace_chunk(text: str, uploaded: list) -> None:
+    """解析并替换当前聊天（本地解析 + 本地脱敏，0 Jev API）。"""
+    try:
+        parsed = parse_chat(text)
+    except ParseError as exc:
+        st.error(str(exc))
+        _reset_chat_state()
+        reset_media_state()
+        return
+
+    _reset_chat_state()
+    st.session_state["raw_text"] = text
+    st.session_state["raw_chunks"] = [text]
+    st.session_state["messages"] = mask_messages(parsed)
+    st.session_state["skipped_media"] = 0
+    assets, errors = assets_from_uploader(uploaded)
+    for err in errors:
+        st.warning(err)
+    st.session_state["media_assets"] = dedupe_assets(assets)
+    apply_media_bindings(st.session_state["messages"])
+
+
+def handle_append_chunk(text: str, uploaded: list) -> None:
+    """把新复制的片段追加到当前聊天：解析 + 脱敏 + 本地合并去重（0 Jev API）。"""
+    st.session_state["run_error"] = None
+    if not text or not text.strip():
+        st.warning("请先粘贴要追加的聊天片段。")
+        return
+
+    try:
+        parsed = parse_chat(
+            text,
+            st.session_state.get("applied_me"),
+            st.session_state.get("applied_ta"),
+        )
+    except ParseError as exc:
+        st.error(f"这一段无法解析：{exc}")
+        return
+
+    existing = st.session_state.get("messages") or []
+    before_participants = set(detect_participants(existing))
+    result = merge_messages(existing, mask_messages(parsed))
+
+    chunks = list(st.session_state.get("raw_chunks") or [])
+    chunks.append(text)
+    st.session_state["raw_chunks"] = chunks
+    st.session_state["raw_text"] = "\n\n".join(chunks)
+    st.session_state["messages"] = result.messages
+    st.session_state["append_stats"] = result
+
+    # 消息列表变了 → 旧结果的下标全部失效，必须重新分析（缓存命中不重复请求）
+    st.session_state["analysis_messages"] = None
+    st.session_state["results"] = None
+    st.session_state["stats"] = None
+
+    # 身份映射：参与者集合不变 → 保留；出现新参与者 → 要求重新确认
+    had_mapping = bool(
+        st.session_state.get("applied_me") or st.session_state.get("applied_ta")
+    )
+    new_participants = sorted(
+        set(detect_participants(result.messages)) - before_participants
+    )
+    if had_mapping and new_participants:
+        st.session_state["applied_me"] = None
+        st.session_state["applied_ta"] = None
+        st.session_state["sel_me"] = "（未指定）"
+        st.session_state["sel_ta"] = "（未指定）"
+        st.session_state["messages"] = rebuild_messages_from_chunks()
+        st.warning(
+            "追加的片段里出现新的参与者：" + "、".join(new_participants)
+            + "。请重新确认谁是“我”、谁是“TA”（不会自动把第三方归为 TA）。"
+        )
+
+    # 媒体资产：保留已上传图片，并入本次新上传的（仍只在本机内存）
+    assets, errors = assets_from_uploader(uploaded)
+    for err in errors:
+        st.warning(err)
+    st.session_state["media_assets"] = dedupe_assets(
+        list(st.session_state.get("media_assets") or []) + assets
+    )
+    apply_media_bindings(st.session_state["messages"])
 
 
 def show_api_key_hint() -> None:
@@ -549,6 +685,16 @@ def show_confirm_stage(messages: list[dict]) -> None:
     text_n = len(messages) - media_n
     participants = detect_participants(messages)
 
+    # 最近一次“追加片段”的本地统计（纯本机处理，未调用 Jev）
+    appended = st.session_state.get("append_stats")
+    if appended:
+        st.success(
+            f"已追加片段：本次 {appended.chunk_size} 条 · "
+            f"检测重复 {appended.duplicates} 条 · "
+            f"新增 {appended.added} 条 · "
+            f"当前总消息 {appended.total} 条（全部本机处理，未调用 Jev）"
+        )
+
     with st.container(border=True):
         st.markdown("#### ② 确认聊天双方")
         c0, c1, c2, c3, c4 = st.columns(5)
@@ -577,11 +723,7 @@ def show_confirm_stage(messages: list[dict]) -> None:
                     st.error("“我”和“TA”不能选择同一个昵称。")
                 else:
                     try:
-                        parsed = parse_chat(
-                            st.session_state["raw_text"],
-                            None if sel_me == "（未指定）" else sel_me,
-                            None if sel_ta == "（未指定）" else sel_ta,
-                        )
+                        merged = rebuild_messages_from_chunks()
                     except ParseError as exc:
                         st.error(str(exc))
                     else:
@@ -591,7 +733,7 @@ def show_confirm_stage(messages: list[dict]) -> None:
                         st.session_state["applied_ta"] = (
                             None if sel_ta == "（未指定）" else sel_ta
                         )
-                        st.session_state["messages"] = mask_messages(parsed)
+                        st.session_state["messages"] = merged
                         st.session_state["analysis_messages"] = None
                         st.session_state["results"] = None
                         st.session_state["stats"] = None
@@ -980,40 +1122,13 @@ def main() -> None:
         4 if (results and stats) else (2 if messages else 1)
     ))
 
-    # ① 输入
-    submitted_text, uploaded = show_input_stage()
+    # ① 输入（解析并替换 / 追加片段，全部本地完成）
+    submitted_text, uploaded, input_mode = show_input_stage()
     if submitted_text is not None:
-        try:
-            parsed = parse_chat(submitted_text)
-        except ParseError as exc:
-            st.error(str(exc))
-            st.session_state["messages"] = None
-            st.session_state["analysis_messages"] = None
-            st.session_state["results"] = None
-            st.session_state["stats"] = None
-            st.session_state["applied_me"] = None
-            st.session_state["applied_ta"] = None
-            reset_media_state()
+        if input_mode == "append":
+            handle_append_chunk(submitted_text, uploaded)
         else:
-            st.session_state["raw_text"] = submitted_text
-            st.session_state["messages"] = mask_messages(parsed)
-            st.session_state["analysis_messages"] = None
-            st.session_state["results"] = None
-            st.session_state["stats"] = None
-            st.session_state["skipped_media"] = 0
-            # 新文本：清空旧的昵称选择与应用记录，避免误映射
-            st.session_state["sel_me"] = "（未指定）"
-            st.session_state["sel_ta"] = "（未指定）"
-            st.session_state["applied_me"] = None
-            st.session_state["applied_ta"] = None
-            # 媒体资产：来自本次上传的图片（仅内存）
-            reset_media_state()
-            assets, errors = assets_from_uploader(uploaded)
-            st.session_state["media_assets"] = dedupe_assets(assets)
-            for err in errors:
-                st.warning(err)
-            # 保守绑定到 [图片] 占位符
-            apply_media_bindings(st.session_state["messages"])
+            handle_replace_chunk(submitted_text, uploaded)
 
     # ② 确认解析
     messages = st.session_state.get("messages")

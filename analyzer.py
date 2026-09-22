@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 
-from parser import MEDIA_MARKERS
+from parser import has_media_marker
 from storage import make_cache_key
 
 SCHEMA_VERSION = "chat-signal-v2.1"  # 问题 schema 变更时必须递增，使旧缓存自然失效
@@ -43,7 +43,7 @@ def analysis_rule_for(state: dict) -> str:
     """按 state 实际内容返回分析规则（媒体 marker 存在时才追加媒体条款）。"""
     texts = [state.get("target_message", {}).get("text", "")]
     texts += [c.get("text", "") for c in state.get("conversation_context", [])]
-    if any(marker in t for t in texts for marker in MEDIA_MARKERS.values()):
+    if any(has_media_marker(t) for t in texts):
         return ANALYSIS_RULE + MEDIA_RULE_CLAUSE
     return ANALYSIS_RULE
 

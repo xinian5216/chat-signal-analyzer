@@ -37,6 +37,35 @@ TA: 你看这个 [视频] 微信视频_99.mp4
 我: 好的
 TA: [动画表情]"""
 
+# 多片段追加用的合成微信聊天（虚构昵称，片段 B 与 A 在末尾重叠一条）
+CHAT_A = """我
+2026年08月21日 21:00
+第一条
+
+TA
+2026年08月21日 21:05
+收到，谢谢"""
+
+CHAT_B_OVERLAP = """TA
+2026年08月21日 21:05
+收到，谢谢
+
+我
+2026年08月21日 21:10
+第二条
+
+TA
+2026年08月21日 21:15
+好的"""
+
+CHAT_B_NEW_PARTICIPANT = """TA
+2026年08月21日 21:05
+收到，谢谢
+
+老王
+2026年08月21日 21:20
+第三方也说一句"""
+
 
 class FakeAnswer:
     def __init__(self, **kw):
@@ -121,13 +150,27 @@ def _metric_labels(at) -> str:
 
 def _parse(at, chat):
     at.text_area[0].set_value(chat)
-    _button_by_label(at, "解析并预览").click()
+    _button_by_label(at, "解析并替换当前聊天").click()
     at.run()
 
 
 def _use_text_mode(at) -> None:
     """AppTest 中无浏览器 iframe，组件返回 None；显式切到纯文本路径。"""
     at.session_state["input_mode"] = "text"
+    at.run()
+
+
+def _append(at, chat) -> None:
+    """在输入区粘贴片段 B 并点“追加到当前聊天”。"""
+    at.text_area[0].set_value(chat)
+    _button_by_label(at, "追加到当前聊天").click()
+    at.run()
+
+
+def _apply_mapping(at) -> None:
+    at.selectbox[0].select("我")
+    at.run()
+    _button_by_label(at, "应用昵称映射并重新解析").click()
     at.run()
 
 
@@ -297,11 +340,12 @@ def test_low_evidence_overview_uses_reference_mode(monkeypatch, tmp_path):
 
 
 def test_input_stage_has_text_and_optional_image_upload(counting_client):
-    """输入阶段 = 文本 + 可选图片上传（v0.2.0 形态；剪贴板直采见 Probe）。"""
+    """输入阶段 = 文本 + 可选图片上传 + 替换 / 追加两个恒定按钮。"""
     at = AppTest.from_file(str(APP_PATH), default_timeout=60)
     at.run()
     labels = [b.label for b in at.button]
-    assert "解析并预览" in labels
+    assert "解析并替换当前聊天" in labels
+    assert "追加到当前聊天" in labels
     # 不再有 rich/text 模式切换按钮
     assert "富媒体粘贴不可用？切换到纯文本输入" not in labels
     assert "切回富媒体粘贴" not in labels
@@ -332,3 +376,113 @@ def test_report_tab_export_zero_api(counting_client):
     at.run()
     assert len(counting_client) == n
     assert not at.exception
+
+
+# ---------------------------------------------------------------------------
+# 多片段追加（微信一次复制的条数有限）
+# ---------------------------------------------------------------------------
+
+
+def test_append_overlapping_chunk_zero_api_and_dedup(counting_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    assert not at.exception
+    _use_text_mode(at)
+    _parse(at, CHAT_A)
+    assert len(at.session_state["messages"]) == 2
+
+    _append(at, CHAT_B_OVERLAP)
+    assert not at.exception
+
+    # 追加 / 合并 / 去重全部本地完成：0 次 Jev 调用
+    assert len(counting_client) == 0
+    # A 2 条 + B 3 条，重叠 1 条 → 4 条
+    assert len(at.session_state["messages"]) == 4
+    stats = at.session_state["append_stats"]
+    assert (stats.chunk_size, stats.duplicates, stats.added, stats.total) == (3, 1, 2, 4)
+
+    body = _texts(at)
+    assert "已追加片段" in body
+    assert "本次 3 条" in body and "检测重复 1 条" in body and "新增 2 条" in body
+    assert "当前总消息 4 条" in body
+    assert "未调用 Jev" in body
+    # 追加后旧结果失效，需要重新分析
+    assert at.session_state["results"] is None
+
+
+def test_append_keeps_identity_mapping(counting_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _use_text_mode(at)
+    _parse(at, CHAT_A)
+    _apply_mapping(at)
+    assert at.session_state["applied_me"] == "我"
+    mapping_before = (at.session_state["applied_me"], at.session_state["applied_ta"])
+
+    _append(at, CHAT_B_OVERLAP)
+    assert not at.exception
+    # 参与者集合没变 → 昵称映射原样保留，不要求重新选择
+    assert (at.session_state["applied_me"], at.session_state["applied_ta"]) \
+        == mapping_before
+    assert [m["speaker"] for m in at.session_state["messages"]] == [
+        "me", "them", "me", "them"
+    ]
+    assert "请重新确认" not in _texts(at)
+
+
+def test_append_new_participant_requires_reconfirmation(counting_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _use_text_mode(at)
+    _parse(at, CHAT_A)
+    _apply_mapping(at)
+    assert at.session_state["applied_me"] == "我"
+
+    _append(at, CHAT_B_NEW_PARTICIPANT)
+    assert not at.exception
+    body = _texts(at)
+    assert "新的参与者" in body and "老王" in body
+    assert "不会自动把第三方归为 TA" in body
+    # 映射被重置，等待用户重新确认；新参与者不是自动变成 TA
+    assert at.session_state["applied_me"] is None
+    assert at.session_state["applied_ta"] is None
+
+
+def test_append_metadata_never_enters_jev_state(counting_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _use_text_mode(at)
+    _parse(at, CHAT_A)
+    _apply_mapping(at)
+    _append(at, CHAT_B_OVERLAP)      # 参与者不变 → 映射保留
+    _button_by_label(at, "开始 Jev 分析").click()
+    at.run()
+    assert not at.exception
+    assert counting_client                # 确实分析了几条
+    for state in counting_client:
+        assert set(state["target_message"]) == {
+            "speaker", "text", "time", "raw_speaker"
+        }
+        for key in ("fingerprint", "chunk_id", "source", "duration_seconds"):
+            assert key not in state["target_message"]
+        for c in state["conversation_context"]:
+            assert set(c) == {"speaker", "text", "time"}
+
+
+def test_replace_button_resets_chat(counting_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _use_text_mode(at)
+    _parse(at, CHAT_A)
+    _append(at, CHAT_B_OVERLAP)
+    assert len(at.session_state["messages"]) == 4
+
+    # 再粘贴另一段并“解析并替换当前聊天”
+    at.text_area[0].set_value("我: 全新的一段\nTA: 知道了")
+    _button_by_label(at, "解析并替换当前聊天").click()
+    at.run()
+    assert not at.exception
+    assert len(at.session_state["messages"]) == 2
+    assert len(counting_client) == 0
+    assert at.session_state["append_stats"] is None
+    assert at.session_state["raw_chunks"] == ["我: 全新的一段\nTA: 知道了"]
