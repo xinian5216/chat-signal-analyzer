@@ -174,9 +174,15 @@ def _healthy(port: int, timeout: float = 1.5) -> bool:
 
 
 def _pid_alive(pid: int) -> bool:
-    """Windows 上检查进程是否仍存在（不依赖第三方库）。"""
+    """Windows 上检查进程是否仍存在（不依赖第三方库）。
+
+    非 Windows 平台返回 ``False`` 而**不抛异常**：Windows launcher 的可测性
+    不能依赖运行平台，且 ``find_running_instance()`` 在任何平台都不该崩。
+    """
     if pid <= 0:
         return False
+    if os.name != "nt":
+        return False                     # 平台守护：非 Windows 无 windll
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
     kernel32 = ctypes.windll.kernel32

@@ -23,6 +23,11 @@ import settings_store
 
 REPO = Path(__file__).resolve().parents[1]
 
+WINDOWS_ONLY = pytest.mark.skipif(
+    os.name != "nt", reason="Windows-only portable launcher behavior"
+)
+
+
 FAKE_KEY = "tsk_test_not_a_real_key_0123456789"
 
 
@@ -294,6 +299,7 @@ def portable_launcher_bind(port: int):
     return sock
 
 
+@WINDOWS_ONLY
 def test_launcher_requires_valid_instance(tmp_path, monkeypatch):
     """\u4e0d\u8fba\u4fe1\u9648\u65e7 PID \u6587\u4ef6\uff1a\u5fc5\u987b\u9a8c\u8bc1 PID + \u7aef\u53e3 + health\u3002"""
     import portable_launcher as launcher
@@ -352,6 +358,7 @@ def test_launcher_streamlit_command_is_localhost_only():
     assert "run" in argv
 
 
+@WINDOWS_ONLY
 def test_launcher_terminate_reaps_process():
     """\u5b50\u8fdb\u7a0b\u9000\u51fa\u540e\u4e0d\u5f97\u6709\u5b50\u8fdb\u7a0b\u9057\u7559\uff08Windows\uff09\u3002"""
     import portable_launcher as launcher
