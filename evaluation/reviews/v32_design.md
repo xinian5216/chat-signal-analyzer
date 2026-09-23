@@ -1,8 +1,15 @@
-# v3.2 设计方案（仅方案，本轮不实施）
+# v3.2 设计方案（engagement 语义已实施，见下方“实施状态”）
 
-输入：v3.1 三组真实评估（main34 / distancing / phase2）+ 34 例修订集离线复算
-+ 对照案例集预登记。原则继承：不新增凭空“读心”维度；优先改问题描述；
-可观察行为优先；未经校准不得把 confidence 当概率。
+## 实施状态（2026-09）
+
+- ✅ **第一节（engagement 语义）已实施**：`ENGAGEMENT_INSTRUCTIONS` 与
+  `ENGAGEMENT_LEVELS` 重写；`SCHEMA_VERSION` 升至 `chat-signal-v3.2`；
+  九问合一、scoring 与其余八个问题未动；纯 mock 回归见
+  `tests/test_psych_v32.py`（版本隔离 / 六类区分覆盖 / 其余八问哨兵 /
+  九问合一 / 案例集锁定）。真实模型效果**尚未验证**，待批准的 `--real`
+  对比 v3.1 报告（跨 schema 只做约束级对照）。
+- ⬜ 第二节（关心分层、confidence 校准、evidence 稳定性）**未实施**，
+  保持独立后续任务，不并入 v3.2。
 
 ## 一、建议 v3.2 只做一件事：投入度的会话层语义
 
@@ -22,6 +29,10 @@
 > 拒绝 / 搁置当前话题但主动开启新话题、追问对方近况、提议改天再聊，
 > 都属于维持对话线，投入度不因此降低；只有明确结束交流、连续无回应式
 > 短回复、或明确表示不想继续聊，才计入低投入。
+
+（已实施：最终措辞见 `analyzer.py` 的 `ENGAGEMENT_INSTRUCTIONS` 与
+`ENGAGEMENT_LEVELS`，包含“提出后续计划不自动获得高分”与
+“与 distancing_signal 解耦”两条。）
 
 **可观察正反例**（已预登记于 `cases_contrast_v3.2.json`）：
 

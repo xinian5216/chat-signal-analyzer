@@ -18,18 +18,14 @@ from context_builder import select_context
 from parser import has_media_marker
 from storage import make_cache_key
 
-# 缓存 schema 版本。v3.1：Psychological Evidence v3 Phase 2 的**问题描述级**
-# 修正——不新增/删除问题，仍为 9 个、仍一次 system_one：
-#   1) intent 的 distance 描述显式承认三类子情形（话题拒绝 / 浪漫边界 /
-#      关系疏离）共享该标签，输出不宣称已独立分类；
-#   2) warmth 描述区分普通礼貌友好与回应性情绪支持，明确关心≠亲密/浪漫；
-#   3) relationship_evidence_strength 明确“只衡量信息量、不衡量方向”，
-#      浪漫拒绝可高信息量，普通话题拒绝不自动高信息量；
-#   4) emotion / intent 增加歧义条款（无语气线索时允许覆盖性选项，
-#      禁止假设不存在的表情/声音/媒体内容）。
-# instructions / criteria 属于问题语义 → bump 使旧缓存自然失效（不删除缓存）。
-# scoring 公式与权重不变。
-SCHEMA_VERSION = "chat-signal-v3.1"
+# 缓存 schema 版本。v3.2：**只改 engagement 的问题描述与等级说明**——把投入度
+# 从“是否同意话题/是否亲密”重新锚定为“当前消息对互动的实际参与和贡献”：
+# 拒绝话题但主动追问、暂时忙碌但给出具体安排、礼貌收尾但内容具体，都不再
+# 机械判为低投入；只有反复无实质回应或明确拒绝继续交流才计入低投入；
+# 且 engagement 与关系疏离（distancing_signal）显式解耦。其余 8 问、scoring、
+# Noul 转换、Context Builder 均不变；仍 9 问一次 system_one。bump 使旧缓存
+# 自然失效（不删除缓存）。
+SCHEMA_VERSION = "chat-signal-v3.2"
 DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
@@ -133,12 +129,27 @@ WARMTH_LEVELS: list[str] = [
 ]
 
 ENGAGEMENT_LEVELS: list[str] = [
-    "明显不想继续交流",
-    "最低限度、敷衍回应",
+    "明显不想继续交流：明确拒绝继续对话，或反复无实质回应的敷衍",
+    "最低限度、敷衍回应：无实质内容，或连续简短应付",
     "普通正常参与",
-    "主动帮助对话继续",
-    "高度主动、明显投入",
+    "主动帮助对话继续：追问、开启新话题、给出具体后续安排",
+    "高度主动、明显投入：持续主动贡献内容或明显维持交流",
 ]
+
+ENGAGEMENT_INSTRUCTIONS = (
+    "这条 TA 的消息在对话投入程度上处于哪一级？"
+    "engagement 衡量 TA 当前这条消息对互动的实际参与和贡献，"
+    "而不是 TA 是否同意当前话题，更不是双方关系的亲密程度。区分："
+    "拒绝当前话题但主动追问、开启新话题——存在对话投入；"
+    "暂时忙碌但同时给出具体后续安排——有继续互动的意愿，不机械判为低投入；"
+    "礼貌结束当前交流——投入度取决于这条回复的具体内容（是否安排后续、"
+    "是否带有关心内容），不能自动判成敷衍；"
+    "单次简短回复——没有更多证据时，不能直接判为持续性低投入；"
+    "多次缺乏实质参与的敷衍回复——可构成低投入证据；"
+    "明确拒绝继续交流——低投入；是否关系疏离由 distancing_signal 单独判断，"
+    "与本项无关。注意：提出后续计划不自动获得高分；只有实际体现主动贡献、"
+    "具体安排或明显维持交流的行为，才支持较高投入度。"
+)
 
 SPECIAL_ATTENTION_LEVELS: list[str] = [
     "没有特别关注，甚至略显疏离",
@@ -244,7 +255,7 @@ def build_questions() -> dict:
             criteria=WARMTH_LEVELS,
         ),
         "engagement": Score(
-            instructions="这条 TA 的消息在对话投入程度上处于哪一级？",
+            instructions=ENGAGEMENT_INSTRUCTIONS,
             criteria=ENGAGEMENT_LEVELS,
         ),
         "special_attention": Score(

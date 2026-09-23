@@ -98,19 +98,19 @@ TA
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_v31():
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.1"
+def test_schema_version_is_v32():
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.2"
 
 
-def test_v31_cache_key_isolated_from_v22_v30():
+def test_v32_cache_key_isolated_from_v31_v22():
     state = analyzer.build_state(
         [{"speaker": "me", "text": "在吗", "time": None}],
         {"speaker": "them", "text": "在", "time": None})
     schema = build_questions_schema()
-    key_v31 = make_cache_key(state, schema, analyzer.DEFAULT_MODEL,
+    key_v32 = make_cache_key(state, schema, analyzer.DEFAULT_MODEL,
                              analyzer.SCHEMA_VERSION)
-    for old in ("chat-signal-v2.2", "chat-signal-v3.0"):
-        assert key_v31 != make_cache_key(state, schema,
+    for old in ("chat-signal-v2.2", "chat-signal-v3.0", "chat-signal-v3.1"):
+        assert key_v32 != make_cache_key(state, schema,
                                          analyzer.DEFAULT_MODEL, old)
 
 
