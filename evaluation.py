@@ -90,10 +90,22 @@ FP_ROMANTIC_MISS = "romantic_miss"
 FP_DISTANCING = "distancing_false_positive"
 FP_DISTANCING_MISS = "distancing_miss"
 FP_SPECIAL_ATTENTION = "special_attention_overclaim"
+FP_SPECIAL_ATTENTION_UNDER = "special_attention_undervalue"
 FP_WARMTH = "warmth_estimation"
 FP_ENGAGEMENT = "engagement_estimation"
 FP_EVIDENCE = "relationship_evidence_estimation"
 FP_EASE = "relational_ease_estimation"
+# 每个 Score 维度的 (over, under) 失败分类——真实结果首次触发任何
+# 一侧都必须有分类，聚合统计不得因缺键崩溃（历史事故：缺
+# special_attention 映射导致一次真实基线在第 34/34 次请求完成后崩溃）。
+_SCORE_FAILURE_CATEGORIES: dict[str, tuple[str, str]] = {
+    "warmth": (FP_WARMTH + "_over", FP_WARMTH + "_under"),
+    "engagement": (FP_ENGAGEMENT + "_over", FP_ENGAGEMENT + "_under"),
+    "special_attention": (FP_SPECIAL_ATTENTION, FP_SPECIAL_ATTENTION_UNDER),
+    "relationship_evidence_strength": (FP_EVIDENCE + "_over",
+                                       FP_EVIDENCE + "_under"),
+    "relational_ease": (FP_EASE + "_over", FP_EASE + "_under"),
+}
 FP_CONTEXT = "context_misunderstanding"
 FP_LEAKAGE = "future_message_leakage"
 FP_MEDIA_GUESSING = "media_guessing"
@@ -380,17 +392,11 @@ def _check_expectations(case: dict, result: dict) -> list[dict]:
 
 
 def _score_over_category(dim: str) -> str:
-    if dim == "special_attention":
-        return FP_SPECIAL_ATTENTION
-    return {"warmth": FP_WARMTH, "engagement": FP_ENGAGEMENT,
-            "relationship_evidence_strength": FP_EVIDENCE,
-            "relational_ease": FP_EASE}[dim] + "_over"
+    return _SCORE_FAILURE_CATEGORIES[dim][0]
 
 
 def _score_under_category(dim: str) -> str:
-    return {"warmth": FP_WARMTH, "engagement": FP_ENGAGEMENT,
-            "relationship_evidence_strength": FP_EVIDENCE,
-            "relational_ease": FP_EASE}[dim] + "_under"
+    return _SCORE_FAILURE_CATEGORIES[dim][1]
 
 
 def _check_must_not_infer(case: dict, result: dict) -> list[dict]:

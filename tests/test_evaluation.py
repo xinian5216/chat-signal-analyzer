@@ -679,3 +679,38 @@ def test_run_real_gate_is_separate_from_orchestration():
     """门禁独立：orchestration 不读环境，门禁逻辑单独可测。"""
     assert cli._gate_real(confirmed=False) is not None
     assert cli._gate_real(confirmed=True) is not None  # pytest 进程内必然拒绝
+
+
+def test_every_score_dimension_has_both_failure_categories():
+    """每个 Score 维度都必须有 over/under 分类（防聚合缺键崩溃）。"""
+    for dim in ev.SCORE_DIMS:
+        over, under = ev._SCORE_FAILURE_CATEGORIES[dim]
+        assert over and under and over != under
+
+
+def test_special_attention_under_min_is_classified_not_crashing():
+    case = _valid_case()
+    case["expectations"]["special_attention"] = {"min": 2, "max": 4}
+    report = evaluate_case(case, _valid_result(
+        special_attention={"score": 1, "probabilities": {}, "confidence": 0.7}))
+    constraint = _constraint(report, "special_attention_range")
+    assert not constraint["passed"]
+    assert constraint["failure"] == ev.FP_SPECIAL_ATTENTION_UNDER
+
+
+def test_collect_real_results_matches_run_real_evaluation_raw():
+    cases = load_cases()[:5]
+    raw, failures = cli.collect_real_results(
+        cases, _make_analyze_fn())
+    aggregate, raw2, failures2 = cli.run_real_evaluation(
+        cases, _make_analyze_fn(), model="jev-test",
+        schema_version="chat-signal-v2.2")
+    assert raw == raw2 and failures == failures2
+    assert set(raw) == {c["id"] for c in cases}
+    assert "meta" in aggregate and aggregate["meta"]["benchmark_cases"] == 5
+
+
+def test_default_raw_path_is_gitignored_reports_dir(tmp_path):
+    path = cli._default_raw_path()
+    assert path.replace("\\", "/").endswith(".json")
+    assert "/evaluation/reports/" in path.replace("\\", "/")

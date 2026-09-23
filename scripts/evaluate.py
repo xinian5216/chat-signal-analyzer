@@ -108,29 +108,10 @@ def resolve_target_index(case: dict, history: list[dict]) -> int:
     return matches[0]
 
 
-def run_real_evaluation(
-    cases: list[dict],
-    analyze_fn,
-    *,
-    model: str,
-    mode: str = "real",
-    schema_version: str | None = None,
-) -> tuple[dict, dict, list[str]]:
-    """真实模式的编排核心（与网络/门禁解耦，便于完全 mock 测试）。
+def collect_real_results(cases: list[dict], analyze_fn) -> tuple[dict, list[str]]:
+    """逐案例采集真实结果（与评估/落盘解耦）。
 
-    参数:
-        cases: benchmark 案例列表。
-        analyze_fn: (messages, only_indices) -> entries；真实实现内部
-            调用 ``analyze_messages(client, messages,
-            only_indices={target_index})``。测试可注入 fake。
-
-    行为:
-        - 每个案例**只**请求其 target 对应的那一个 them 消息；
-        - 结果按原始消息 index 选择，不按文本匹配；
-        - 单条请求失败 / 结果缺失只记录该 case，不中断整个基线。
-
-    返回:
-        (aggregate, raw_results, failed_case_ids)
+    单条请求失败 / 结果缺失只记录该 case，不中断整个基线。
     """
     raw_results: dict[str, dict] = {}
     failures: list[str] = []
@@ -172,7 +153,34 @@ def run_real_evaluation(
             **result,
             "conversation_context": entry.get("context") or [],
         }
+    return raw_results, failures
 
+
+def run_real_evaluation(
+    cases: list[dict],
+    analyze_fn,
+    *,
+    model: str,
+    mode: str = "real",
+    schema_version: str | None = None,
+) -> tuple[dict, dict, list[str]]:
+    """真实模式的编排核心（与网络/门禁解耦，便于完全 mock 测试）。
+
+    参数:
+        cases: benchmark 案例列表。
+        analyze_fn: (messages, only_indices) -> entries；真实实现内部
+            调用 ``analyze_messages(client, messages,
+            only_indices={target_index})``。测试可注入 fake。
+
+    行为:
+        - 每个案例**只**请求其 target 对应的那一个 them 消息；
+        - 结果按原始消息 index 选择，不按文本匹配；
+        - 单条请求失败 / 结果缺失只记录该 case，不中断整个基线。
+
+    返回:
+        (aggregate, raw_results, failed_case_ids)
+    """
+    raw_results, failures = collect_real_results(cases, analyze_fn)
     aggregate = ev.evaluate_cases(cases, raw_results)
     aggregate["meta"] = _report_meta(cases, model=model, mode=mode,
                                      schema_version=schema_version,
@@ -246,9 +254,17 @@ def _run_real(confirmed: bool, report_path: str | None,
         masked = mask_messages(messages)
         return analyze_messages(client, masked, only_indices=only_indices)
 
-    aggregate, raw_results, failures = run_real_evaluation(
-        cases, analyze_fn, model=DEFAULT_MODEL, mode="real",
-        schema_version=SCHEMA_VERSION)
+    # 原始输出**先**落盘：聚合阶段即使崩溃也不丢失已付费的模型响应
+    # （历史事故：一次真实基线在第 34/34 次请求完成后因聚合缺键崩溃，
+    #  34 次真实响应全部丢失）。
+    raw_results, failures = collect_real_results(cases, analyze_fn)
+    raw_target = raw_report_path or _default_raw_path()
+    _write_json(raw_target, {"cases": cases, "results": raw_results})
+    print(f"raw model outputs written: {raw_target}")
+    aggregate = ev.evaluate_cases(cases, raw_results)
+    aggregate["meta"] = _report_meta(cases, model=DEFAULT_MODEL, mode="real",
+                                     schema_version=SCHEMA_VERSION,
+                                     failed=len(failures))
 
     print(ev.format_report(aggregate))
     print(f"schema version: {SCHEMA_VERSION}; "
@@ -271,6 +287,12 @@ def _write_json(path: str, payload: dict) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                       encoding="utf-8")
+
+
+def _default_raw_path() -> str:
+    """未指定 --raw-report 时的默认原始输出位置（gitignored 目录）。"""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return str(ev.EVALUATION_DIR / "reports" / f"raw_{stamp}.json")
 
 
 def main(argv: list[str] | None = None) -> int:
