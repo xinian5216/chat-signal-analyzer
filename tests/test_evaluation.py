@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 import evaluation as ev
+from analyzer import SCHEMA_VERSION as ANALYZER_SCHEMA
 from evaluation import (
     FP_API_ERROR,
     FP_CONTEXT,
@@ -520,3 +521,161 @@ def test_real_mode_refuses_under_pytest():
         cwd=str(REPO_ROOT), env=env)
     assert proc.returncode == 2
     assert "pytest" in (proc.stdout + proc.stderr).lower()
+
+
+# ---------------------------------------------------------------------------
+# 真实路径编排（完全 mock，绝不触网）
+# ---------------------------------------------------------------------------
+
+import importlib.util  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "evaluate_cli", REPO_ROOT / "scripts" / "evaluate.py")
+cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cli)
+
+
+class _FakeEntry(dict):
+    pass
+
+
+def _fixture_results_by_target() -> dict:
+    """fixture 结果按 target 文本索引（每条案例的 target 文本唯一）。"""
+    fixtures = load_fixture_results()
+    return {case["target"]: fixtures[case["id"]]
+            for case in load_cases()}
+
+
+def _make_analyze_fn(results_by_index=None, fail_for=None,
+                     record=None, omit_index=False):
+    """构造完全 mock 的 analyze_fn：(messages, only_indices) -> [entry]。
+
+    默认按 fixture 结果应答（含 conversation_context 透传），因此
+    “每案例一个请求”的断言可以在全约束通过的前提下进行。
+    """
+    fail_for = fail_for or set()
+    results_by_text = results_by_index or _fixture_results_by_target()
+
+    def analyze_fn(messages, only_indices):
+        assert len(only_indices) == 1, "每个案例只应请求 1 个 target"
+        target_index = next(iter(only_indices))
+        if record is not None:
+            record.append({"message_count": len(messages),
+                           "only_indices": set(only_indices),
+                           "target_text": messages[target_index]["text"],
+                           "target_speaker": messages[target_index]["speaker"]})
+        fingerprint = messages[target_index]["text"]
+        if fingerprint in fail_for:
+            raise RuntimeError("simulated network drop")
+        result = dict(results_by_text.get(fingerprint, _valid_result()))
+        context = result.pop("conversation_context", None) or [
+            {"speaker": "me", "text": "hello", "time": None}]
+        entry = {"index": -1 if omit_index else target_index,
+                 "speaker": "them", "text": fingerprint, "time": None,
+                 "context": context, "result": result, "cached": False}
+        return [entry]
+
+    return analyze_fn
+
+
+def test_real_path_requests_exactly_one_target_per_case():
+    cases = load_cases()
+    record: list[dict] = []
+    aggregate, raw, failures = cli.run_real_evaluation(
+        cases, _make_analyze_fn(record=record),
+        model="jev-test", schema_version=ANALYZER_SCHEMA)
+    assert len(record) == len(cases)                     # 每案例恰好一次请求
+    assert failures == []
+    for call, case in zip(record, cases):
+        assert len(call["only_indices"]) == 1
+        assert call["target_speaker"] == "them"
+        assert call["target_text"] == case["target"]
+        # 保留完整历史上下文（analyze_messages 收到整段消息，只限制 target）
+        history_len = len(ev._case_history(case))
+        assert call["message_count"] == history_len
+    assert aggregate["passed_cases"] == aggregate["total_cases"]
+    assert set(raw) == {c["id"] for c in cases}
+
+
+def test_real_path_selects_entry_by_index_not_text():
+    """entry 文本等于 target 但 index 不符时不得选中（避免重复文本错配）。"""
+    cases = load_cases()[:3]
+    aggregate, raw, failures = cli.run_real_evaluation(
+        cases, _make_analyze_fn(omit_index=True),
+        model="jev-test", schema_version="chat-signal-v2.2")
+    assert len(failures) == len(cases)                    # 全部按缺失记录
+    assert all("error" in raw[c["id"]] for c in cases)
+    assert aggregate["passed_cases"] == 0
+    assert aggregate["false_positive_counts"].get(FP_API_ERROR) == len(cases)
+
+
+def test_real_path_single_failure_does_not_abort_baseline():
+    cases = load_cases()
+    doomed = {cases[2]["target"], cases[5]["target"]}
+    aggregate, raw, failures = cli.run_real_evaluation(
+        cases, _make_analyze_fn(fail_for=doomed),
+        model="jev-test", schema_version="chat-signal-v2.2")
+    assert set(failures) == {cases[2]["id"], cases[5]["id"]}
+    # 其余案例照常产出结果并被评估
+    ok_cases = [c for c in cases if c["id"] not in failures]
+    assert all("error" not in raw[c["id"]] for c in ok_cases)
+    assert aggregate["passed_cases"] == len(ok_cases)
+    assert aggregate["false_positive_counts"].get(FP_API_ERROR) == 2
+
+
+def test_real_report_is_comparable_and_records_meta(tmp_path):
+    cases = load_cases()
+    aggregate, _, _ = cli.run_real_evaluation(
+        cases, _make_analyze_fn(), model="jev-test",
+        schema_version="chat-signal-v2.2")
+    baseline_path = tmp_path / "baseline.json"
+    cli._write_json(str(baseline_path), aggregate)
+    saved = json.loads(baseline_path.read_text(encoding="utf-8"))
+
+    # compare 直接读取
+    diff = ev.compare_reports(saved, saved)
+    assert diff["regression"] is False
+    assert diff["baseline_pass_rate"] == diff["candidate_pass_rate"] == 1.0
+
+    # meta 记录 schema / 模型 / 评估配置
+    meta = saved["meta"]
+    assert meta["schema_version"] == "chat-signal-v2.2"
+    assert meta["model"] == "jev-test"
+    assert meta["mode"] == "real"
+    assert meta["benchmark_cases"] == len(cases)
+    assert meta["context_builder"]["max_turns"] == 8
+    assert len(meta["benchmark_sha256"]) == 64
+
+    # 原始输出独立存放时不进入聚合报告
+    raw_path = tmp_path / "raw.json"
+    _, raw, _ = cli.run_real_evaluation(
+        cases, _make_analyze_fn(), model="jev-test",
+        schema_version="chat-signal-v2.2")
+    cli._write_json(str(raw_path), {"cases": cases, "results": raw})
+    raw_saved = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert set(raw_saved) == {"cases", "results"}
+    assert "meta" not in raw_saved
+
+
+def test_estimate_live_requests_matches_case_count():
+    cases = load_cases()
+    estimate = cli.estimate_live_requests(cases)
+    assert estimate["cases"] == len(cases)
+    assert estimate["targets_per_case"] == 1
+    assert estimate["estimated_live_requests"] == len(cases)
+
+
+def test_resolve_target_index_is_deterministic():
+    cases = load_cases()
+    for case in cases:
+        history = ev._case_history(case)
+        index = cli.resolve_target_index(case, history)
+        assert history[index]["speaker"] == "them"
+        assert history[index]["text"] == case["target"]
+        assert cli.resolve_target_index(case, history) == index  # 幂等
+
+
+def test_run_real_gate_is_separate_from_orchestration():
+    """门禁独立：orchestration 不读环境，门禁逻辑单独可测。"""
+    assert cli._gate_real(confirmed=False) is not None
+    assert cli._gate_real(confirmed=True) is not None  # pytest 进程内必然拒绝

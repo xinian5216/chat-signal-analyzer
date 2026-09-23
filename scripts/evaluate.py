@@ -14,8 +14,13 @@
     --real 必须同时满足两个条件才会运行：
       1. 显式传入 ``--yes-run-live-api``；
       2. 环境变量 TYPESAFE_API_KEY 已设置。
-    真实模式会调用 Jev 分析 benchmark 案例并保存匿名结果（虚构案例），
-    用于生成 / 对比 v2.2 之后的 baseline 与 candidate。
+    真实模式对每个案例**只分析指定的 TA target**（使用 only_indices），
+    不会对案例内其他 TA 历史消息发起请求——34 个案例 = 34 次请求。
+    运行前会打印预计请求数量。
+
+    --report PATH        聚合评估报告（含 meta：schema/模型/评估配置），
+                         可直接被 --compare 读取；
+    --raw-report PATH    原始模型输出（与聚合报告分开存放）。
 
 benchmark 通过率是人工定义案例上的 regression / evaluation 指标，
 不是“科学准确率”。详见 evaluation/README.md。
@@ -24,8 +29,11 @@ benchmark 通过率是人工定义案例上的 regression / evaluation 指标，
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -67,63 +75,202 @@ def _compare(baseline_path: str, candidate_path: str) -> int:
     return 1 if diff["regression"] else 0
 
 
-def _run_real(confirmed: bool, report_path: str | None) -> int:
-    """真实模式：人工显式确认 + API key 才允许调用 Jev。"""
-    import os
+def estimate_live_requests(cases: list[dict]) -> dict:
+    """运行前的预计请求量：每个案例只分析 1 个 target → N 个案例 = N 次请求。"""
+    return {
+        "cases": len(cases),
+        "targets_per_case": 1,
+        "estimated_live_requests": len(cases),
+        "cache": "off（评估不用缓存，保证测量确定）",
+    }
 
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        # 防御纵深：测试进程内（含 CI）永远不允许真实模式触网
-        print("refusing to run --real under pytest "
-              "(benchmark real mode is human-only)", file=sys.stderr)
-        return 2
-    if os.environ.get("CI"):
-        # GitHub Actions 等处 CI=true：即使有人显式传了确认与 key 也拒绝
-        print("refusing to run --real in a CI environment "
-              "(benchmark real mode is human-only)", file=sys.stderr)
-        return 2
-    if not confirmed:
-        print("refusing to run --real without explicit --yes-run-live-api",
+
+def resolve_target_index(case: dict, history: list[dict]) -> int:
+    """把 case 的 target 文本解析为**原始消息下标**（确定后只认下标）。
+
+    选取规则（确定性）：them 名下的文本消息且文本等于 target；若文本在
+    历史中多次出现取第一个下标并向 stderr 提示。返回后，结果选择一律用
+    下标比对，不再按文本重配（避免重复文本错配）。
+    """
+    matches = [
+        i for i, m in enumerate(history)
+        if m.get("speaker") == "them"
+        and m.get("text") == case["target"]
+        and m.get("content_type") != "media"
+    ]
+    if not matches:
+        raise ev.EvaluationError(
+            f"case {case['id']}: target 未出现在 them 文本消息中")
+    if len(matches) > 1:
+        print(f"warning: case {case['id']} 的 target 文本在历史中出现 "
+              f"{len(matches)} 次，使用第一个下标 {matches[0]}",
               file=sys.stderr)
-        return 2
-    if not os.environ.get("TYPESAFE_API_KEY"):
-        print("refusing to run --real without TYPESAFE_API_KEY", file=sys.stderr)
-        return 2
-    print("real mode: this will call the live TypeSafe Jev API for every "
-          "benchmark case", file=sys.stderr)
+    return matches[0]
 
-    from analyzer import DEFAULT_MODEL, SCHEMA_VERSION, analyze_messages, \
-        extract_answers  # noqa: F401 - extract_answers 供下游校验形状
+
+def run_real_evaluation(
+    cases: list[dict],
+    analyze_fn,
+    *,
+    model: str,
+    mode: str = "real",
+    schema_version: str | None = None,
+) -> tuple[dict, dict, list[str]]:
+    """真实模式的编排核心（与网络/门禁解耦，便于完全 mock 测试）。
+
+    参数:
+        cases: benchmark 案例列表。
+        analyze_fn: (messages, only_indices) -> entries；真实实现内部
+            调用 ``analyze_messages(client, messages,
+            only_indices={target_index})``。测试可注入 fake。
+
+    行为:
+        - 每个案例**只**请求其 target 对应的那一个 them 消息；
+        - 结果按原始消息 index 选择，不按文本匹配；
+        - 单条请求失败 / 结果缺失只记录该 case，不中断整个基线。
+
+    返回:
+        (aggregate, raw_results, failed_case_ids)
+    """
+    raw_results: dict[str, dict] = {}
+    failures: list[str] = []
+    for case in cases:
+        case_id = case["id"]
+        history = ev._case_history(case)
+        try:
+            target_index = resolve_target_index(case, history)
+        except ev.EvaluationError as exc:
+            raw_results[case_id] = {"error": f"case setup failed: {exc}"}
+            failures.append(case_id)
+            continue
+        try:
+            entries = analyze_fn(history, {target_index})
+        except Exception as exc:  # 单条失败不中断基线
+            raw_results[case_id] = {
+                "error": f"request failed: {type(exc).__name__}"}
+            failures.append(case_id)
+            continue
+        entry = next(
+            (e for e in (entries or []) if e.get("index") == target_index),
+            None)
+        if entry is None:
+            raw_results[case_id] = {
+                "error": "target entry missing from analysis results"}
+            failures.append(case_id)
+            continue
+        if entry.get("error"):
+            raw_results[case_id] = {"error": entry["error"]}
+            failures.append(case_id)
+            continue
+        result = entry.get("result")
+        if not isinstance(result, dict):
+            raw_results[case_id] = {
+                "error": "analysis returned no result payload"}
+            failures.append(case_id)
+            continue
+        raw_results[case_id] = {
+            **result,
+            "conversation_context": entry.get("context") or [],
+        }
+
+    aggregate = ev.evaluate_cases(cases, raw_results)
+    aggregate["meta"] = _report_meta(cases, model=model, mode=mode,
+                                     schema_version=schema_version,
+                                     failed=len(failures))
+    return aggregate, raw_results, failures
+
+
+def _report_meta(cases: list[dict], *, model: str, mode: str,
+                 schema_version: str | None, failed: int) -> dict:
+    """报告 meta：记录 schema、模型与评估配置，便于后续比较与复现。"""
+    from context_builder import (CONTEXT_MAX_CHARS, CONTEXT_MAX_MESSAGES,
+                                 CONTEXT_MAX_TURNS)
+
+    return {
+        "mode": mode,
+        "model": model,
+        "schema_version": schema_version,
+        "benchmark_cases": len(cases),
+        "benchmark_sha256": hashlib.sha256(
+            ev.DEFAULT_CASES_PATH.read_bytes()).hexdigest(),
+        "context_builder": {
+            "max_turns": CONTEXT_MAX_TURNS,
+            "max_messages": CONTEXT_MAX_MESSAGES,
+            "max_chars": CONTEXT_MAX_CHARS,
+        },
+        "failed_cases": failed,
+        "generated_at": datetime.now(timezone.utc).isoformat(
+            timespec="seconds"),
+    }
+
+
+def _gate_real(confirmed: bool) -> str | None:
+    """真实模式门禁；返回 None 表示放行，否则给出拒绝原因。"""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return ("refusing to run --real under pytest "
+                "(benchmark real mode is human-only)")
+    if os.environ.get("CI"):
+        return ("refusing to run --real in a CI environment "
+                "(benchmark real mode is human-only)")
+    if not confirmed:
+        return "refusing to run --real without explicit --yes-run-live-api"
+    if not os.environ.get("TYPESAFE_API_KEY"):
+        return "refusing to run --real without TYPESAFE_API_KEY"
+    return None
+
+
+def _run_real(confirmed: bool, report_path: str | None,
+              raw_report_path: str | None = None) -> int:
+    """真实模式：人工显式确认 + API key 才允许调用 Jev。"""
+    refusal = _gate_real(confirmed)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 2
+
+    print("real mode: this will call the live TypeSafe Jev API once per "
+          "benchmark case (targets only)", file=sys.stderr)
+
+    from analyzer import (DEFAULT_MODEL, SCHEMA_VERSION, analyze_messages)
     from privacy import mask_messages
     from typesafe_sdk import TypeSafeClient
 
     client = TypeSafeClient(api_key=os.environ["TYPESAFE_API_KEY"],
                             model=DEFAULT_MODEL)
     cases = ev.load_cases()
-    results: dict[str, dict] = {}
-    for case in cases:
-        messages = mask_messages(
-            ev._case_history(case))  # 复用评估侧的解析（案例格式固定）
-        entries = analyze_messages(client, messages)
-        entry = next(
-            (e for e in entries if e["text"] == case["target"]), None)
-        if entry is None:
-            results[case["id"]] = {"error": "target message was not analyzed"}
-            continue
-        results[case["id"]] = {
-            **entry["result"],
-            "conversation_context": entry["context"],
-        }
-    aggregate = ev.evaluate_cases(cases, results)
+    estimate = estimate_live_requests(cases)
+    print(f"planned live requests: {estimate['estimated_live_requests']} "
+          f"({estimate['cases']} cases x {estimate['targets_per_case']} "
+          f"target; {estimate['cache']})", file=sys.stderr)
+
+    def analyze_fn(messages, only_indices):
+        masked = mask_messages(messages)
+        return analyze_messages(client, masked, only_indices=only_indices)
+
+    aggregate, raw_results, failures = run_real_evaluation(
+        cases, analyze_fn, model=DEFAULT_MODEL, mode="real",
+        schema_version=SCHEMA_VERSION)
+
     print(ev.format_report(aggregate))
-    print(f"schema version: {SCHEMA_VERSION}")
+    print(f"schema version: {SCHEMA_VERSION}; "
+          f"model: {DEFAULT_MODEL}; cache: off")
+    if failures:
+        print(f"failed cases (recorded, baseline continued): "
+              f"{len(failures)} → {', '.join(failures)}")
     if report_path:
-        path = Path(report_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(
-            {"cases": cases, "results": results},
-            ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"raw results written: {path}")
+        _write_json(report_path, aggregate)
+        print(f"aggregate report written: {report_path} "
+              f"(readable by --compare)")
+    if raw_report_path:
+        _write_json(raw_report_path, {"cases": cases, "results": raw_results})
+        print(f"raw model outputs written: {raw_report_path}")
     return 0 if aggregate["passed_cases"] == aggregate["total_cases"] else 1
+
+
+def _write_json(path: str, payload: dict) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                      encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -136,7 +283,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yes-run-live-api", action="store_true",
                         help="显式确认允许真实模式调用 Jev")
     parser.add_argument("--report", metavar="PATH",
-                        help="把评估汇总写入 JSON 文件")
+                        help="聚合评估报告（含 meta；可被 --compare 读取）")
+    parser.add_argument("--raw-report", metavar="PATH",
+                        help="原始模型输出（单独存放，不参与 compare）")
     parser.add_argument("--compare", nargs=2, metavar=("BASELINE", "CANDIDATE"),
                         help="比较两份评估报告（constraint 维度）")
     args = parser.parse_args(argv)
@@ -144,7 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.compare:
         return _compare(args.compare[0], args.compare[1])
     if args.real:
-        return _run_real(args.yes_run_live_api, args.report)
+        return _run_real(args.yes_run_live_api, args.report,
+                         args.raw_report)
     return _run_fixtures(args.report)
 
 

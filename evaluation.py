@@ -428,18 +428,28 @@ def _check_must_not_infer(case: dict, result: dict) -> list[dict]:
 
 
 def _case_history(case: dict) -> list[dict]:
-    """解析案例聊天得到消息历史（fixture 模式下做结构检查；只读 parser）。"""
-    try:
-        return parse_chat(case["chat"], my_name=None, them_name=None)
-    except Exception:
-        # 手工昵称模式：逐个名字尝试
-        for my in case["me"]:
-            for them in case["them"]:
-                try:
-                    return parse_chat(case["chat"], my_name=my, them_name=them)
-                except Exception:
-                    continue
+    """解析案例聊天得到消息历史（fixture 模式下做结构检查；只读 parser）。
+
+    先用默认名解析；若没有任何消息映射到 me/them（例如案例使用虚构昵称
+    小柯 / 阿柚），再用案例声明的 me/them 名字重试。解析失败返回 []。
+    """
+    def _try_parse(chat: str, my, them) -> list[dict] | None:
+        try:
+            return parse_chat(chat, my_name=my, them_name=them)
+        except Exception:
+            return None
+
+    history = _try_parse(case["chat"], None, None)
+    if history is None:
         return []
+    if any(m["speaker"] in ("me", "them") for m in history):
+        return history
+    for my in case["me"]:
+        for them in case["them"]:
+            parsed = _try_parse(case["chat"], my, them)
+            if parsed and any(m["speaker"] in ("me", "them") for m in parsed):
+                return parsed
+    return history
 
 
 def _check_context(case: dict, result: dict) -> list[dict]:

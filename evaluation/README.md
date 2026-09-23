@@ -91,8 +91,22 @@ python scripts/evaluate.py --real --yes-run-live-api    # 且需 TYPESAFE_API_KE
 ```
 
 `--real` 双重门禁：必须显式 `--yes-run-live-api` 且存在 `TYPESAFE_API_KEY`，
-否则拒绝运行（绝不静默调用 API）。真实模式的结果可保存为匿名 JSON，
-作为后续 v3 的 baseline / candidate 对比输入。
+否则拒绝运行（pytest / CI 环境另外直接拒绝）。真实模式的请求语义：
+
+- 每个案例**只分析指定的 TA target**（内部使用 `analyze_messages` 的
+  `only_indices`），N 个案例 = N 次请求；案例内其他 TA 历史消息不会被
+  额外分析，只作为上下文；
+- 目标位置由 case 的 target 文本解析为**原始消息 index**，结果选取按
+  index 比对（重复文本不会错配）；
+- 运行前打印预计请求数量；
+- 单条请求失败 / 结果缺失只记录该案例（聚合里计 `api_error` /
+  `missing_result`），不中断整个基线；
+- `--report PATH` 写**聚合评估报告**（含 meta：schema 版本、模型、
+  Context Builder 预算、案例数、cases.json SHA256），可被 `--compare`
+  直接读取；`--raw-report PATH` 单独存放原始模型输出。
+
+真实模式的结果可保存为匿名 JSON，作为后续 v3 的 baseline / candidate
+对比输入。
 
 ## 修改算法前必须先跑 benchmark
 
