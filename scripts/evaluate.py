@@ -307,14 +307,16 @@ def collect_real_results(cases: list[dict], analyze_fn) -> tuple[dict, list[str]
         try:
             target_index = resolve_target_index(case, history)
         except ev.EvaluationError as exc:
-            raw_results[case_id] = {"error": f"case setup failed: {exc}"}
+            raw_results[case_id] = {"error": f"case setup failed: {exc}",
+                                    "error_kind": "case_setup"}
             failures.append(case_id)
             continue
         try:
             entries = analyze_fn(history, {target_index})
         except Exception as exc:  # 单条失败不中断基线
             raw_results[case_id] = {
-                "error": f"request failed: {type(exc).__name__}"}
+                "error": f"request failed: {type(exc).__name__}",
+                "error_kind": "api_error"}
             failures.append(case_id)
             continue
         entry = next(
@@ -322,17 +324,20 @@ def collect_real_results(cases: list[dict], analyze_fn) -> tuple[dict, list[str]
             None)
         if entry is None:
             raw_results[case_id] = {
-                "error": "target entry missing from analysis results"}
+                "error": "target entry missing from analysis results",
+                "error_kind": "api_error"}
             failures.append(case_id)
             continue
         if entry.get("error"):
-            raw_results[case_id] = {"error": entry["error"]}
+            raw_results[case_id] = {"error": entry["error"],
+                                    "error_kind": "api_error"}
             failures.append(case_id)
             continue
         result = entry.get("result")
         if not isinstance(result, dict):
             raw_results[case_id] = {
-                "error": "analysis returned no result payload"}
+                "error": "analysis returned no result payload",
+                "error_kind": "api_error"}
             failures.append(case_id)
             continue
         raw_results[case_id] = {
@@ -417,6 +422,24 @@ def _gate_real(confirmed: bool) -> str | None:
     return None
 
 
+def validate_cases_for_real(cases: list[dict]) -> list[str]:
+    """批次级前置校验：任一案例无法定位 target 即拒绝整批（零请求）。
+
+    返回问题描述列表（空 = 可以启动）。每条含 case id 与原因。
+    """
+    problems: list[str] = []
+    for case in cases:
+        history = ev._case_history(case)
+        if not history:
+            problems.append(f"{case['id']}: 聊天无法解析出任何消息")
+            continue
+        try:
+            resolve_target_index(case, history)
+        except ev.EvaluationError as exc:
+            problems.append(f"{case['id']}: {exc}")
+    return problems
+
+
 def _run_real(confirmed: bool, report_path: str | None,
               raw_report_path: str | None = None,
               cases_path: str | None = None) -> int:
@@ -426,16 +449,26 @@ def _run_real(confirmed: bool, report_path: str | None,
         print(refusal, file=sys.stderr)
         return 2
 
-    print("real mode: this will call the live TypeSafe Jev API once per "
-          "benchmark case (targets only)", file=sys.stderr)
-
     from analyzer import (DEFAULT_MODEL, SCHEMA_VERSION, analyze_messages)
     from privacy import mask_messages
+
+    cases = ev.load_cases(cases_path)
+
+    # 前置校验：在任何 API 请求（甚至 client 构造）之前完成。
+    problems = validate_cases_for_real(cases)
+    if problems:
+        print("refusing to start this batch: 案例设置错误（未发出任何请求）",
+              file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        print("请修正案例数据后重试；案例设置错误计为 case_setup_error，"
+              "不计为 api_error。", file=sys.stderr)
+        return 4
+
     from typesafe_sdk import TypeSafeClient
 
     client = TypeSafeClient(api_key=os.environ["TYPESAFE_API_KEY"],
                             model=DEFAULT_MODEL)
-    cases = ev.load_cases(cases_path)
     estimate = estimate_live_requests(cases)
     print(f"planned live requests: {estimate['estimated_live_requests']} "
           f"({estimate['cases']} cases x {estimate['targets_per_case']} "

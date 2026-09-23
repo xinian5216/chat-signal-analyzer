@@ -20,6 +20,7 @@ import evaluation as ev
 from analyzer import SCHEMA_VERSION as ANALYZER_SCHEMA
 from evaluation import (
     FP_API_ERROR,
+    FP_CASE_SETUP,
     FP_CONTEXT,
     FP_DISTANCING,
     FP_LEAKAGE,
@@ -680,6 +681,80 @@ def test_run_real_gate_is_separate_from_orchestration():
     """门禁独立：orchestration 不读环境，门禁逻辑单独可测。"""
     assert cli._gate_real(confirmed=False) is not None
     assert cli._gate_real(confirmed=True) is not None  # pytest 进程内必然拒绝
+
+
+# ---------------------------------------------------------------------------
+# 真实评估前置校验（target 定位；设置错误与 API 错误分开）
+# ---------------------------------------------------------------------------
+
+
+ALL_CASE_FILES = (
+    None,  # 默认 cases.json
+    "evaluation/cases_distancing.json",
+    "evaluation/cases_distancing_v3.1.json",
+    "evaluation/cases_phase2.json",
+    "evaluation/cases_contrast_v3.2.json",
+    "evaluation/cases_main34_v3.1.json",
+)
+
+
+@pytest.mark.parametrize("cases_file", ALL_CASE_FILES)
+def test_all_registered_case_files_pass_preflight(cases_file):
+    path = None if cases_file is None else REPO_ROOT / cases_file
+    problems = cli.validate_cases_for_real(ev.load_cases(path))
+    assert problems == []
+
+
+def test_preflight_stops_batch_on_transcription_error():
+    """单个案例转录错误必须在首个请求前拒绝，并列出问题 ID。"""
+    cases = ev.load_cases(REPO_ROOT / "evaluation"
+                          / "cases_contrast_v3.2.json")
+    tampered = json.loads(json.dumps(cases))
+    target = next(c for c in tampered
+                  if c["id"] == "cs_care_understanding_help")
+    target["chat"] = target["chat"].replace("我表哥做这行的", "我表哥做这行")
+    other = tampered[3]
+    other["chat"] = other["chat"] + "\n\n多余行"
+    problems = cli.validate_cases_for_real(tampered)
+    assert len(problems) == 2
+    assert any("cs_care_understanding_help" in p for p in problems)
+    assert any(other["id"] in p for p in problems)
+
+
+def test_setup_error_counted_separately_from_api_error():
+    case = _valid_case(id="setup_case")
+    broken = dict(case)
+    broken["chat"] = broken["chat"] + "\n\n我: 无法定位的新消息"
+    report = evaluate_case(broken, {"error": "case setup failed: x",
+                                    "error_kind": "case_setup"})
+    assert not report["passed"]
+    assert report["failures"] == [FP_CASE_SETUP]
+    ok = evaluate_case(case, {"error": "request failed: Boom",
+                              "error_kind": "api_error"})
+    assert ok["failures"] == [FP_API_ERROR]
+
+
+def test_run_real_evaluation_marks_setup_failures():
+    cases = ev.load_cases(REPO_ROOT / "evaluation"
+                          / "cases_contrast_v3.2.json")[:2]
+    original_hist = ev._case_history
+
+    def fake_history(case):
+        hist = original_hist(case)
+        if case["id"] == cases[0]["id"]:
+            return [{"speaker": "me", "text": "错位", "time": None}]
+        return hist
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(ev, "_case_history", fake_history)
+    try:
+        raw, failures = cli.collect_real_results(
+            cases, _make_analyze_fn())
+    finally:
+        monkey.undo()
+    assert failures == [cases[0]["id"]]
+    assert raw[cases[0]["id"]]["error_kind"] == "case_setup"
+    assert "error" not in raw[cases[1]["id"]]
 
 
 def test_every_score_dimension_has_both_failure_categories():

@@ -111,6 +111,7 @@ FP_LEAKAGE = "future_message_leakage"
 FP_MEDIA_GUESSING = "media_guessing"
 FP_MISSING_RESULT = "missing_result"
 FP_API_ERROR = "api_error"
+FP_CASE_SETUP = "case_setup_error"
 
 KNOWN_TAGS = {"media_unknown", "anti_overclaim", "ambiguity_tolerant",
               "true_positive", "needs_context", "negative_direction"}
@@ -327,9 +328,12 @@ def _check_result_present(case: dict, result) -> list[dict]:
                  "detail": "缺少该 case 的分析结果",
                  "failure": FP_MISSING_RESULT}]
     if isinstance(result, dict) and result.get("error"):
+        # 案例设置错误（未发起请求）与真实 API 错误分开统计
+        failure = FP_CASE_SETUP if result.get("error_kind") == "case_setup" \
+            else FP_API_ERROR
         return [{"name": "result_present", "passed": False,
-                 "detail": "分析失败：该次请求返回 error",
-                 "failure": FP_API_ERROR}]
+                 "detail": f"分析失败：{result['error']}",
+                 "failure": failure}]
     return [{"name": "result_present", "passed": True, "detail": ""}]
 
 
