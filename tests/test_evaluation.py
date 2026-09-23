@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import analyzer
 import evaluation as ev
 from analyzer import SCHEMA_VERSION as ANALYZER_SCHEMA
 from evaluation import (
@@ -639,7 +640,7 @@ def test_real_report_is_comparable_and_records_meta(tmp_path):
 
     # meta 记录 schema / 模型 / 评估配置
     meta = saved["meta"]
-    assert meta["schema_version"] == ANALYZER_SCHEMA == "chat-signal-v3.0"
+    assert meta["schema_version"] == ANALYZER_SCHEMA == "chat-signal-v3.1"
     assert meta["model"] == "jev-test"
     assert meta["mode"] == "real"
     assert meta["benchmark_cases"] == len(cases)
@@ -833,3 +834,114 @@ def test_from_raw_regenerates_meta_offline(tmp_path):
     assert data["meta"]["benchmark_cases_file"].endswith("cases.json")
     assert data["meta"]["benchmark_cases"] == 34
     assert data["total_cases"] == 34 and data["passed_cases"] == 34
+
+
+def _write_raw_and_cases(tmp_path, n=5, meta=None):
+    """写临时 raw + 精简 cases 文件（n 个案例），返回 (raw, cases_path)。"""
+    cases = load_cases()[:n]
+    fixtures = load_fixture_results()
+    raw = tmp_path / "raw.json"
+    payload = {"cases": cases,
+               "results": {c["id"]: fixtures[c["id"]] for c in cases}}
+    if meta is not None:
+        payload["meta"] = meta
+    raw.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(json.dumps(cases, ensure_ascii=False),
+                          encoding="utf-8")
+    return raw, cases_path
+
+
+def test_from_raw_uses_raw_meta_schema_when_present(tmp_path):
+    raw, cases_path = _write_raw_and_cases(
+        tmp_path, meta={"schema_version": "chat-signal-v2.2",
+                        "model": "jev-1.13.0"})
+    report = tmp_path / "regen.json"
+    code = cli._regenerate_from_raw(str(raw), str(cases_path), str(report))
+    assert code == 0
+    meta = json.loads(report.read_text(encoding="utf-8"))["meta"]
+    assert meta["schema_version"] == "chat-signal-v2.2"   # 来自 raw meta
+    assert meta["schema_source"] == "raw-meta"
+    assert meta["model"] == "jev-1.13.0"
+
+
+def test_from_raw_unknown_schema_never_guesses(tmp_path, capsys):
+    raw, cases_path = _write_raw_and_cases(tmp_path)
+    report = tmp_path / "regen.json"
+    assert cli._regenerate_from_raw(str(raw), str(cases_path),
+                                    str(report)) == 0
+    meta = json.loads(report.read_text(encoding="utf-8"))["meta"]
+    assert meta["schema_version"] is None
+    assert meta["schema_source"] == "unknown"
+    err = capsys.readouterr().err
+    assert "无法确认" in err and "不猜测" in err
+    # 不得套用当前代码的版本
+    assert meta["schema_version"] != analyzer.SCHEMA_VERSION
+
+
+def test_from_raw_assume_schema_and_validation(tmp_path):
+    raw, cases_path = _write_raw_and_cases(tmp_path)
+    report = tmp_path / "regen.json"
+
+    # 合法格式被采纳并记录来源
+    assert cli._regenerate_from_raw(str(raw), str(cases_path), str(report),
+                                    assume_schema="chat-signal-v3.0") == 0
+    meta = json.loads(report.read_text(encoding="utf-8"))["meta"]
+    assert meta["schema_version"] == "chat-signal-v3.0"
+    assert meta["schema_source"] == "user-flag"
+
+    # 非法格式拒绝（不得猜测/不得静默通过）
+    with pytest.raises(ev.EvaluationError):
+        cli._regenerate_from_raw(str(raw), str(cases_path), str(report),
+                                 assume_schema="v3.0")
+
+
+def test_from_raw_schema_from_report(tmp_path):
+    raw, cases_path = _write_raw_and_cases(tmp_path)
+    report = tmp_path / "regen.json"
+    companion = tmp_path / "frozen.json"
+    companion.write_text(json.dumps(
+        {"meta": {"benchmark_sha256": "a" * 64,
+                  "benchmark_cases": 34,
+                  "schema_version": "chat-signal-v3.0"}},
+        ensure_ascii=False), encoding="utf-8")
+    assert cli._regenerate_from_raw(str(raw), str(cases_path), str(report),
+                                    schema_from_report=str(companion)) == 0
+    meta = json.loads(report.read_text(encoding="utf-8"))["meta"]
+    assert meta["schema_version"] == "chat-signal-v3.0"
+    assert meta["schema_source"] == "report-meta"
+
+
+def test_compare_cross_schema_uses_neutral_wording(tmp_path, capsys):
+    cases = load_cases()[:4]
+    cases_path = REPO_ROOT / "evaluation" / "cases.json"
+    base, cand = tmp_path / "a.json", tmp_path / "b.json"
+    _write_report(base, cases=cases, schema="chat-signal-v2.2",
+                  cases_path=cases_path)
+    _write_report(cand, cases=cases, schema="chat-signal-v3.1",
+                  cases_path=cases_path)
+    code = cli._compare(str(base), str(cand))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "SCHEMA SEMANTICS CHANGED" in out
+    assert "constraint differences (neutral, cross-schema)" in out
+    # 跨 schema 不得使用改善/回归标签
+    assert "resolved failures (improvement)" not in out
+    assert "introduced failures (regression)" not in out
+    assert "only in baseline" in out and "only in candidate" in out
+    assert "不做改善/回归判定" in out
+
+
+def test_compare_same_schema_keeps_improvement_wording(tmp_path, capsys):
+    cases = load_cases()[:4]
+    cases_path = REPO_ROOT / "evaluation" / "cases.json"
+    base, cand = tmp_path / "a.json", tmp_path / "b.json"
+    _write_report(base, cases=cases, schema="chat-signal-v3.1",
+                  cases_path=cases_path)
+    _write_report(cand, cases=cases, schema="chat-signal-v3.1",
+                  cases_path=cases_path)
+    cli._compare(str(base), str(cand))
+    out = capsys.readouterr().out
+    assert "SCHEMA SEMANTICS CHANGED" not in out
+    assert "resolved failures (improvement)" in out.replace("\n", " ") or \
+        "regression: none" in out

@@ -1,0 +1,131 @@
+{
+  "p2_care_not_intimacy": {
+    "emotion": {"choice": "caring", "probabilities": {"caring": 0.9, "calm": 0.1}, "confidence": 0.8},
+    "intent": {"choice": "show_care", "probabilities": {"show_care": 0.9, "other": 0.1}, "confidence": 0.8},
+    "warmth": {"score": 3, "probabilities": {"3": 0.7, "4": 0.3}, "confidence": 0.75},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.75},
+    "special_attention": {"score": 2, "probabilities": {"2": 0.6, "1": 0.4}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.65},
+    "relational_ease": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.2,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_teasing_with_cues": {
+    "emotion": {"choice": "teasing", "probabilities": {"teasing": 0.8, "happy": 0.2}, "confidence": 0.8},
+    "intent": {"choice": "tease", "probabilities": {"tease": 0.8, "share_opinion": 0.2}, "confidence": 0.75},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.75},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.75},
+    "special_attention": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.65},
+    "relational_ease": {"score": 4, "probabilities": {"4": 0.8, "3": 0.2}, "confidence": 0.75},
+    "romantic_signal": 0.25,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_romantic_boundary_fresh": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.7, "caring": 0.3}, "confidence": 0.75},
+    "intent": {"choice": "share_opinion", "probabilities": {"share_opinion": 0.7, "distance": 0.3}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "relational_ease": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.65},
+    "romantic_signal": 0.3,
+    "distancing_signal": 0.25,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_topic_refusal_fresh": {
+    "emotion": {"choice": "awkward", "probabilities": {"awkward": 0.6, "calm": 0.4}, "confidence": 0.7},
+    "intent": {"choice": "end_topic", "probabilities": {"end_topic": 0.7, "distance": 0.3}, "confidence": 0.7},
+    "warmth": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 0, "probabilities": {"0": 0.7, "1": 0.3}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.65},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.1,
+    "distancing_signal": 0.15,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_true_distancing_fresh": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.7, "sad": 0.3}, "confidence": 0.75},
+    "intent": {"choice": "distance", "probabilities": {"distance": 0.9, "other": 0.1}, "confidence": 0.8},
+    "warmth": {"score": 2, "probabilities": {"2": 0.6, "1": 0.4}, "confidence": 0.7},
+    "engagement": {"score": 1, "probabilities": {"1": 0.7, "0": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 0, "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.7},
+    "relationship_evidence_strength": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "relational_ease": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.15,
+    "distancing_signal": 0.85,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_responsive_support": {
+    "emotion": {"choice": "caring", "probabilities": {"caring": 0.9, "calm": 0.1}, "confidence": 0.8},
+    "intent": {"choice": "show_care", "probabilities": {"show_care": 0.8, "continue_topic": 0.2}, "confidence": 0.75},
+    "warmth": {"score": 4, "probabilities": {"4": 0.7, "3": 0.3}, "confidence": 0.8},
+    "engagement": {"score": 4, "probabilities": {"4": 0.7, "3": 0.3}, "confidence": 0.75},
+    "special_attention": {"score": 2, "probabilities": {"2": 0.6, "3": 0.4}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 3, "probabilities": {"3": 0.6, "2": 0.4}, "confidence": 0.7},
+    "relational_ease": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.3,
+    "distancing_signal": 0.05,
+    "model": "fixture-baseline-v3.1",
+    "conversation_context": [
+      {"speaker": "me", "text": "项目中道崩殂，我觉得自己挺失败的", "time": "2026-05-06 22:00"},
+      {"speaker": "me", "text": "连着三周没睡好了", "time": "2026-05-06 22:01"}
+    ]
+  },
+  "p2_perfunctory_kind": {
+    "emotion": {"choice": "caring", "probabilities": {"caring": 0.7, "calm": 0.3}, "confidence": 0.7},
+    "intent": {"choice": "show_care", "probabilities": {"show_care": 0.7, "perfunctory": 0.3}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.2,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_ambiguity_laugh": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.5, "happy": 0.5}, "confidence": 0.5},
+    "intent": {"choice": "other", "probabilities": {"other": 0.5, "tease": 0.5}, "confidence": 0.5},
+    "warmth": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.55},
+    "engagement": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.55},
+    "special_attention": {"score": 0, "probabilities": {"0": 0.7, "1": 0.3}, "confidence": 0.55},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 0.7, "0": 0.3}, "confidence": 0.55},
+    "relational_ease": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.55},
+    "romantic_signal": 0.15,
+    "distancing_signal": 0.15,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_friendly_not_special": {
+    "emotion": {"choice": "happy", "probabilities": {"happy": 0.8, "calm": 0.2}, "confidence": 0.75},
+    "intent": {"choice": "share_opinion", "probabilities": {"share_opinion": 0.6, "continue_topic": 0.4}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 0.7, "0": 0.3}, "confidence": 0.6},
+    "relational_ease": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.25,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.1"
+  },
+  "p2_media_care": {
+    "emotion": {"choice": "caring", "probabilities": {"caring": 0.8, "calm": 0.2}, "confidence": 0.75},
+    "intent": {"choice": "show_care", "probabilities": {"show_care": 0.8, "other": 0.2}, "confidence": 0.75},
+    "warmth": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.75},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 2, "probabilities": {"2": 0.6, "1": 0.4}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.65},
+    "relational_ease": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.25,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.1",
+    "conversation_context": [
+      {"speaker": "me", "text": "在忙吗，刚才被领导批了", "time": "2026-05-10 17:00"},
+      {"speaker": "them", "text": "[发送了一条 12 秒语音，内容未知]", "time": "2026-05-10 17:05"},
+      {"speaker": "me", "text": "听到了", "time": "2026-05-10 17:06"}
+    ]
+  }
+}

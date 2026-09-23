@@ -98,20 +98,20 @@ TA
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_v30():
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.0"
+def test_schema_version_is_v31():
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.1"
 
 
-def test_v30_cache_key_isolated_from_v22():
+def test_v31_cache_key_isolated_from_v22_v30():
     state = analyzer.build_state(
         [{"speaker": "me", "text": "在吗", "time": None}],
         {"speaker": "them", "text": "在", "time": None})
     schema = build_questions_schema()
-    key_v30 = make_cache_key(state, schema, analyzer.DEFAULT_MODEL,
+    key_v31 = make_cache_key(state, schema, analyzer.DEFAULT_MODEL,
                              analyzer.SCHEMA_VERSION)
-    key_v22 = make_cache_key(state, schema, analyzer.DEFAULT_MODEL,
-                             "chat-signal-v2.2")
-    assert key_v30 != key_v22
+    for old in ("chat-signal-v2.2", "chat-signal-v3.0"):
+        assert key_v31 != make_cache_key(state, schema,
+                                         analyzer.DEFAULT_MODEL, old)
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +128,62 @@ def test_distancing_question_targets_relationship_withdrawal():
         assert marker in DISTANCING_QUESTION
 
 
+def test_intent_distance_documents_shared_label():
+    """v3.1：distance 描述显式承认三类子情形共享标签，不宣称已独立分类。"""
+    desc = analyzer.INTENT_OPTIONS["distance"]
+    for marker in ("话题拒绝", "浪漫边界", "关系疏离", "本项不区分范围"):
+        assert marker in desc
+
+
+def test_ambiguity_clause_attached_to_emotion_and_intent():
+    questions = build_questions()
+    clause = analyzer.AMBIGUITY_RULE_CLAUSE
+    for dim in ("emotion", "intent"):
+        assert clause in questions[dim].instructions
+    for marker in ("语气证据", "调侃与冒犯", "不得假设不存在的"):
+        assert marker in clause
+
+
+def test_warmth_instructions_layer_politeness_vs_care():
+    instructions = build_questions()["warmth"].instructions
+    for marker in ("礼貌", "情绪支持", "不自动证明亲密或浪漫兴趣",
+                   "不要仅因为温暖就把分数推至最高级"):
+        assert marker in instructions
+
+
+def test_evidence_instructions_information_not_direction():
+    instructions = (build_questions()
+                    ["relationship_evidence_strength"].instructions)
+    for marker in ("不衡量方向", "浪漫拒绝", "不自动代表高关系信息量"):
+        assert marker in instructions
+
+
+def test_other_questions_and_options_structurally_unchanged():
+    questions = build_questions()
+    assert len(questions) == 9
+    assert set(questions) == {
+        "emotion", "intent", "warmth", "engagement", "special_attention",
+        "relationship_evidence_strength", "relational_ease",
+        "romantic_signal", "distancing_signal"}
+    # 选项集合本身不变（仅 distance 描述细化）
+    assert len(analyzer.EMOTION_OPTIONS) == 11
+    assert len(analyzer.INTENT_OPTIONS) == 13
+    assert set(analyzer.INTENT_OPTIONS) >= {"distance", "perfunctory"}
+    # 其余问题常量未被触碰（哨兵值）
+    assert analyzer.ROMANTIC_QUESTION == (
+        "结合当前消息和前文，这条消息是否提供了超出普通友好或礼貌范围的"
+        "具体暧昧、调情或浪漫兴趣信号？"
+        "普通礼貌、正常朋友关心、正常聊天不能单独算作浪漫信号。"
+    )
+    assert analyzer.DISTANCING_QUESTION != DISTANCING_QUESTION_V22
+    assert len(analyzer.WARMTH_LEVELS) == 5
+    assert len(analyzer.RELATIONAL_EASE_LEVELS) == 5
+    schema = build_questions_schema()
+    assert schema["distancing_signal"] == {"type": "noul"}
+    assert schema["romantic_signal"] == {"type": "noul"}
+    assert len(schema) == 9
+
+
 def test_distancing_criteria_cover_all_five_buckets():
     questions = build_questions()
     question = questions["distancing_signal"]
@@ -140,30 +196,6 @@ def test_distancing_criteria_cover_all_five_buckets():
         assert marker in criteria["false"]
     # instructions 与 criteria 一致地指向关系层
     assert "别联系" in criteria["true"]
-
-
-def test_other_eight_questions_unchanged():
-    questions = build_questions()
-    assert len(questions) == 9
-    assert set(questions) == {
-        "emotion", "intent", "warmth", "engagement", "special_attention",
-        "relationship_evidence_strength", "relational_ease",
-        "romantic_signal", "distancing_signal"}
-    # 其余问题常量未被触碰（哨兵值）
-    assert analyzer.ROMANTIC_QUESTION == (
-        "结合当前消息和前文，这条消息是否提供了超出普通友好或礼貌范围的"
-        "具体暧昧、调情或浪漫兴趣信号？"
-        "普通礼貌、正常朋友关心、正常聊天不能单独算作浪漫信号。"
-    )
-    assert len(analyzer.EMOTION_OPTIONS) == 11
-    assert len(analyzer.INTENT_OPTIONS) == 13
-    assert analyzer.WARMTH_LEVELS[0] == "明显冷淡、疏离或拒绝"
-    assert len(analyzer.RELATIONAL_EASE_LEVELS) == 5
-    # schema 镜像形状不变（distancing 仍为 noul）
-    schema = build_questions_schema()
-    assert schema["distancing_signal"] == {"type": "noul"}
-    assert schema["romantic_signal"] == {"type": "noul"}
-    assert len(schema) == 9
 
 
 # ---------------------------------------------------------------------------
@@ -316,3 +348,104 @@ def test_expectation_detail_labels_use_dimension_name():
     assert details["intent_allowed"].startswith("intent=")
     assert "emotion/intent=" not in (details["emotion_allowed"]
                                      + details["intent_allowed"])
+
+# ---------------------------------------------------------------------------
+# P3：修订案例集（仅 6 处经复核确认的修订）与全新 Phase 2 案例集
+# ---------------------------------------------------------------------------
+
+REVISED_DIS = REPO_ROOT / 'evaluation' / 'cases_distancing_v3.1.json'
+PHASE2_CASES = REPO_ROOT / 'evaluation' / 'cases_phase2.json'
+REVISED_FIXTURE = (REPO_ROOT / 'evaluation' / 'fixtures'
+                   / 'baseline_v3.1_distancing.json')
+PHASE2_FIXTURE = (REPO_ROOT / 'evaluation' / 'fixtures'
+                  / 'baseline_v3.1_phase2.json')
+
+
+def test_revised_distancing_set_changes_exactly_the_reviewed_items():
+    original = json.loads((REPO_ROOT / 'evaluation' / 'cases_distancing.json')
+                          .read_text(encoding='utf-8'))
+    revised = json.loads(REVISED_DIS.read_text(encoding='utf-8'))
+    assert [c['id'] for c in revised] == [c['id'] for c in original]
+    changed = []
+    for old, new in zip(original, revised):
+        if old['expectations'] != new['expectations']:
+            changed.append(new['id'])
+    # 恰好是复核记录中的 5 个案例的证据/意图修订
+    assert sorted(changed) == [
+        'dis_romantic_boundary', 'dis_romantic_boundary_soft',
+        'dis_topic_close_reengage', 'dis_topic_refusal', 'dis_vague_no_desire']
+    by_id = {c['id']: c for c in revised}
+    assert (by_id['dis_romantic_boundary']['expectations']
+            ['relationship_evidence_strength']['max'] == 4)
+    assert (by_id['dis_romantic_boundary_soft']['expectations']
+            ['intent']['allowed'] == [
+                'share_opinion', 'show_care', 'other', 'distance'])
+    assert (by_id['dis_topic_refusal']['expectations']
+            ['intent']['allowed'] == [
+                'share_opinion', 'other', 'end_topic', 'distance'])
+    assert (by_id['dis_vague_no_desire']['expectations']
+            ['intent']['allowed'] == [
+                'share_opinion', 'end_topic', 'other', 'distance'])
+    assert (by_id['dis_topic_close_reengage']['expectations']
+            ['emotion']['allowed'] == [
+                'calm', 'happy', 'other', 'curious'])
+    # 观察项/校准项未被修改
+    assert (by_id['dis_plan_later']['expectations']['engagement']['min'] == 1)
+    assert (by_id['dis_topic_refusal']['expectations']
+            ['relationship_evidence_strength']['max'] == 3)
+    assert (by_id['dis_topic_close_reengage']['expectations']
+            ['relationship_evidence_strength']['max'] == 2)
+    # 原始案例文件未被改动
+    assert json.loads((REPO_ROOT / 'evaluation' / 'cases_distancing.json')
+                      .read_text(encoding='utf-8')) == original
+
+
+def test_phase2_cases_are_new_and_preregistered():
+    import evaluation as ev
+
+    cases = json.loads(PHASE2_CASES.read_text(encoding='utf-8'))
+    ids = [c['id'] for c in cases]
+    assert len(cases) >= 10 and len(ids) == len(set(ids))
+    assert all(i.startswith('p2_') for i in ids)
+    # 覆盖要求：关心vs亲密 / 带线索调侃 / 浪漫边界 / 话题拒绝 / 真疏离 /
+    # 回应性支持
+    joined = json.dumps(cases, ensure_ascii=False)
+    for marker in ('赶紧回去休息', '潮流先锋', '朋友我一直在',
+                   '说点别的吧', '别再联系', '我陪你想办法'):
+        assert marker in joined
+    # 从未用于真实评估的独立集合：不与既有案例 id 重叠
+    existing = {c['id'] for c in ev.load_cases()} | {
+        c['id'] for c in
+        json.loads((REPO_ROOT / 'evaluation' / 'cases_distancing.json')
+                   .read_text(encoding='utf-8'))}
+    assert not (set(ids) & existing)
+
+
+def test_revised_and_phase2_fixtures_pass():
+    import evaluation as ev
+
+    for cases_path, fixture_path in ((REVISED_DIS, REVISED_FIXTURE),
+                                     (PHASE2_CASES, PHASE2_FIXTURE)):
+        cases = ev.load_cases(cases_path)
+        results = ev.load_fixture_results(fixture_path)
+        assert set(results) == {c['id'] for c in cases}
+        aggregate = ev.evaluate_cases(cases, results)
+        assert aggregate['passed_cases'] == aggregate['total_cases']
+
+
+def test_revised_and_phase2_cli_smoke_offline():
+    import evaluation as ev
+
+    for cases_path, fixture_path in (
+            ('evaluation/cases_distancing_v3.1.json',
+             'evaluation/fixtures/baseline_v3.1_distancing.json'),
+            ('evaluation/cases_phase2.json',
+             'evaluation/fixtures/baseline_v3.1_phase2.json')):
+        proc = subprocess.run(
+            [sys.executable, str(CLI), '--fixtures',
+             '--cases', cases_path, '--fixture-file', fixture_path],
+            capture_output=True, text=True, encoding='utf-8', timeout=300,
+            cwd=str(REPO_ROOT))
+        assert proc.returncode == 0, proc.stderr
+        assert "/%d passed" % len(ev.load_cases(REPO_ROOT / cases_path)) \
+            in proc.stdout

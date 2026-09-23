@@ -22,9 +22,18 @@
 |---|---|
 | `cases.json` | benchmark 案例集（34 个，分类 A–Z） |
 | `cases_distancing.json` | **v3.0 独立疏离泛化案例集**（15 个，预期在真实运行前固定，DIS 类） |
+| `cases_distancing_v3.1.json` | v3.1 **修订**疏离案例集（仅应用 `reviews/distancing_v31_revisions.md` 记录的 6 处经复核确认的修订；原始案例集不动） |
+| `cases_phase2.json` | **全新 Phase 2 案例集**（10 个，从未用于真实 Jev 评估，预期已冻结） |
 | `fixtures/baseline_v2.2.json` | **合成** baseline 结果（CI / 框架自测用；不代表真实 Jev 输出） |
 | `fixtures/baseline_v3_distancing.json` | 疏离案例集的合成结果（CI 冒烟） |
-| `reviews/` | 人工复核记录（`distancing_v3.md`：v3.0 语义修正动因与争议案例处置；`phase2_design_review.md`：v3 distancing 真实评估 12 条失败约束的人工复核；`phase2_design.md`：v3 Phase 2 设计方案） |
+| `fixtures/baseline_v3.1_distancing.json` | v3.1 修订疏离案例集的合成结果 |
+| `fixtures/baseline_v3.1_phase2.json` | Phase 2 新案例集的合成结果 |
+| `reviews/` | 人工复核记录（`distancing_v3.md`、`phase2_design_review.md`、`phase2_design.md`、`distancing_v31_revisions.md`） |
+
+不同案例集的通过率**不得直接比较**（`--compare` 会按 `meta.benchmark_sha256`
+强制拒绝）。真实评估的报告必须分案例集分别呈现：原始 34 案例、原始 15 疏离
+案例、v3.1 修订集（探索性）、Phase 2 新集。跨 schema 对照必须说明问题语义
+已经变化（`--compare` 会自动给出语义不一致警告并使用中性措辞）。
 
 `reviews/`、两个 cases 文件的阈值是**冻结的**：不得通过修改预期或阈值来
 提高既有基线分数；事后调整必须作为新记录追加到 `reviews/`，不得静默改标签。
@@ -117,12 +126,16 @@ schema 版本使用不同合成结果）。真实模式的请求语义：
 - `--report PATH` 写**聚合评估报告**（含 meta：schema 版本、模型、
   Context Builder 预算、**实际案例文件路径与 SHA256**），可被 `--compare`
   直接读取；`--raw-report PATH` 单独存放原始模型输出。
-- `--from-raw <raw.json>` 离线重建聚合报告（不调用 API；用于修复 meta 或
-  迁移旧数据）。
+- `--from-raw <raw.json>`：离线重建聚合报告（不调用 API；用于修复 meta 或
+  迁移旧数据）。**schema 版本绝不猜测**：按 raw 自带 meta >
+  `--schema-from-report`（配套冻结报告 meta）> `--assume-schema`（用户显式
+  指定并校验格式）的优先级确定；都无法确认时记 `schema_version: null`
+  （`schema_source: "unknown"`）并告警，绝不用当前代码版本给旧输出贴标签。
+  `--real` 写入的 raw 文件自带 meta（schema/模型/案例文件），可供事后重建。
 - `--compare` 带案例集身份检查：两份报告的 `benchmark_sha256` /
   案例数不一致或缺少 meta 身份时**拒绝**计算改善率（exit 3）；
-  schema 版本不同时会显式提示“语义已变，通过率不可直接当作同一把尺子的
-  改善/回归”，只可作约束级 diff 参考。
+  schema 版本不同或无法确认时，先展示语义不一致警告，再输出**中性的约束
+  差异**（only in baseline / only in candidate），不做改善/回归判定。
 
 真实模式的结果可保存为匿名 JSON，作为后续 v3 的 baseline / candidate
 对比输入。

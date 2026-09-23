@@ -91,29 +91,29 @@ def test_extract_answers_shape():
 
 
 def test_schema_v30_only_distancing_semantics_changed():
-    """v3.0：只修正 distancing 语义；其余 8 问与 state 构造不变。
+    """v3.1：只改问题描述（intent/warmth/evidence/歧义条款），q 集合不变。
 
-    v2.2 之前的版本变化（v2→v2.1 加 relational_ease；v2.2 改上下文选择 +
-    出站白名单）依旧通过版本差让旧缓存自然失效。
+    v2→v2.1 加 relational_ease；v2.2 上下文选择+白名单；v3.0 distancing
+    语义；v3.1 描述级修正。每次 bump 都让旧缓存自然失效。
     """
     from storage import make_cache_key
 
-    schema_v30 = analyzer.build_questions_schema()
-    assert "relational_ease" in schema_v30
-    assert len(schema_v30) == 9
-    assert schema_v30["distancing_signal"] == {"type": "noul"}
+    schema_v31 = analyzer.build_questions_schema()
+    assert "relational_ease" in schema_v31
+    assert len(schema_v31) == 9
+    assert schema_v31["distancing_signal"] == {"type": "noul"}
 
     # 模拟 v2 时代的 schema（无 relational_ease 问题）与版本号
-    schema_v2 = {k: v for k, v in schema_v30.items() if k != "relational_ease"}
+    schema_v2 = {k: v for k, v in schema_v31.items() if k != "relational_ease"}
     state = {"conversation_context": [], "target_message": {"speaker": "them", "text": "哦"}}
     key_v2 = make_cache_key(state, schema_v2, "jev-latest", "chat-signal-v2")
-    key_v22 = make_cache_key(state, schema_v30, "jev-latest",
-                             "chat-signal-v2.2")
-    key_v30 = make_cache_key(state, schema_v30, "jev-latest",
+    key_v30 = make_cache_key(state, schema_v31, "jev-latest",
+                             "chat-signal-v3.0")
+    key_v31 = make_cache_key(state, schema_v31, "jev-latest",
                              analyzer.SCHEMA_VERSION)
-    assert key_v2 != key_v22 != key_v30
-    assert key_v22 != key_v30  # 同问题、同 state：仅版本不同 → key 不同
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.0"
+    assert key_v2 != key_v30 != key_v31
+    assert key_v30 != key_v31  # 同问题、同 state：仅版本不同 → key 不同
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.1"
 
 
 def test_relational_ease_question_is_score_with_five_levels():

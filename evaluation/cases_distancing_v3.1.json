@@ -1,0 +1,992 @@
+[
+  {
+    "id": "dis_polite_close",
+    "category": "DIS",
+    "title": "礼貌收尾（conversation closing，非关系疏离）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月01日 23:10\n那说完了，我先睡了\n\nTA\n2026年04月01日 23:12\n好，那先这样，你早点睡，明天再说",
+    "target": "好，那先这样，你早点睡，明天再说",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "caring",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "end_topic",
+          "show_care",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_short_reply"
+    ],
+    "acceptable_ambiguity": [
+      "礼貌收尾可以是自然的会话管理"
+    ],
+    "notes": "v2.2 误报模式（k_polite_close 0.69）的对照 case：收尾≠疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_plan_later",
+    "category": "DIS",
+    "title": "计划稍后再聊（推迟，非疏离）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月02日 14:00\n这个方案其实挺复杂的，涉及好几个部门\n\nTA\n2026年04月02日 14:20\n今天先不讨论了，晚点有空再说",
+    "target": "今天先不讨论了，晚点有空再说",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "end_topic",
+          "other",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [
+      "主动给出“晚点再说”表示仍愿继续，只是推迟"
+    ],
+    "notes": "计划稍后再聊不是关系疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_single_terse",
+    "category": "DIS",
+    "title": "友好上下文中的一次短回复",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月02日 20:00\n周末爬山去不去， weather 刚好\n\nTA\n2026年04月02日 20:01\n嗯\n\n我\n2026年04月02日 20:02\n那就是去咯",
+    "target": "嗯",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "other",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "confirm_understanding",
+          "perfunctory",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_short_reply",
+      "perfunctory_from_short_reply"
+    ],
+    "acceptable_ambiguity": [
+      "“嗯”可以是确认；上下文是持续性约定"
+    ],
+    "notes": "单次短回复不等于疏离，也不等于敷衍",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_temporary_busy",
+    "category": "DIS",
+    "title": "临时疲劳/忙碌（当前状态，非关系疏离）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月03日 09:00\n最近怎么老不见你\n\nTA\n2026年04月03日 09:30\n这周天天加班，聊得少，周末再约",
+    "target": "这周天天加班，聊得少，周末再约",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "sad",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "explain",
+          "share_opinion",
+          "other",
+          "invite"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "max_probability": 0.5
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_slow_reply"
+    ],
+    "acceptable_ambiguity": [
+      "明确给出恢复计划（周末再约）表示互动继续"
+    ],
+    "notes": "临时忙碌 + 明确后续计划：不是关系疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_topic_refusal",
+    "category": "DIS",
+    "title": "礼貌拒绝当前话题（topic refusal，非关系疏离）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月03日 21:00\n上次分手那事你到底怎么想的\n\nTA\n2026年04月03日 21:02\n这个话题我不太想聊，聊点别的吧",
+    "target": "这个话题我不太想聊，聊点别的吧",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "awkward",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "other",
+          "end_topic",
+          "distance"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [
+      "拒绝的是话题，并主动提议继续聊别的"
+    ],
+    "notes": "对单个话题的拒绝不是关系疏离；v3.1 修订：intent 追加 distance（话题拒绝=拒绝，evidence 上限保留 3 观察）",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_romantic_boundary",
+    "category": "DIS",
+    "title": "浪漫边界：有喜欢的人，做朋友（romantic boundary）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月04日 20:00\n我挺喜欢你的，要不要试试\n\nTA\n2026年04月04日 20:30\n我有喜欢的人了，我们还是当朋友吧",
+    "target": "我有喜欢的人了，我们还是当朋友吧",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "awkward",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "distance",
+          "share_opinion",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 3
+      },
+      "engagement": {
+        "min": 0,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 0,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.5
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [
+      "romantically ambiguous：明确浪漫边界，但普通朋友往来可以继续",
+      "不是明确的关系疏离（未拒绝普通联系）"
+    ],
+    "notes": "浪漫边界 ≠ 关系疏离；v3 定义下不应推高 distancing；v3.1 修订：evidence 上限 3->4（拒绝/关系表达=高信息量，见 reviews/distancing_v31_revisions.md）",
+    "tags": [
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "dis_romantic_boundary_soft",
+    "category": "DIS",
+    "title": "柔和浪漫边界 + 明确继续来往",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月05日 19:00\n我对你不只是朋友那种喜欢\n\nTA\n2026年04月05日 19:40\n我确实只把你当朋友，不过有事还是可以找我",
+    "target": "我确实只把你当朋友，不过有事还是可以找我",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "caring",
+          "awkward",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "show_care",
+          "other",
+          "distance"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.5
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [
+      "l_friendzone 的语义争议在此显式化：柔和拒绝 + “有事可以找我”",
+      "= 浪漫边界，不是关系疏离"
+    ],
+    "notes": "对应 v2.2 复核记录中 l_friendzone 的争议；v3.1 修订：evidence 3->4、intent 追加 distance",
+    "tags": [
+      "negative_direction",
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_true_stop_contact",
+    "category": "DIS",
+    "title": "真阳性：明确拒绝继续保持联系",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月06日 21:00\n我们能不能再谈谈\n\nTA\n2026年04月06日 21:20\n以后别联系我了，求你了",
+    "target": "以后别联系我了，求你了",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "annoyed",
+          "sad",
+          "awkward",
+          "calm",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "distance",
+          "end_topic",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 3
+      },
+      "engagement": {
+        "min": 0,
+        "max": 2
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 0,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "min_probability": 0.6,
+        "max_probability": 1.0
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [],
+    "notes": "明确拒绝继续联系 = 关系疏离（v3 true 语义核心）",
+    "tags": [
+      "true_positive",
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "dis_repeated_avoidance",
+    "category": "DIS",
+    "title": "真阳性：反复回避后明确拒绝联系",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月07日 10:00\n在吗，想跟你聊聊\n\nTA\n2026年04月07日 18:00\n在忙\n\n我\n2026年04月08日 10:00\n那晚点？\n\nTA\n2026年04月08日 19:00\n最近都没空\n\n我\n2026年04月09日 10:00\n就十分钟\n\nTA\n2026年04月09日 20:00\n别再找我了",
+    "target": "别再找我了",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "annoyed",
+          "calm",
+          "awkward",
+          "sad",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "distance",
+          "end_topic",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 2
+      },
+      "engagement": {
+        "min": 0,
+        "max": 2
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 0,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "min_probability": 0.6,
+        "max_probability": 1.0
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [],
+    "notes": "反复回避 + 明确拒绝联系：单次回避不是疏离，反复 + 明拒才是",
+    "context_checks": {
+      "must_contain": [
+        "在忙",
+        "最近都没空"
+      ],
+      "no_future_leakage": true
+    },
+    "tags": [
+      "true_positive",
+      "negative_direction",
+      "needs_context"
+    ]
+  },
+  {
+    "id": "dis_end_relationship",
+    "category": "DIS",
+    "title": "真阳性：宣布结束关系",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月10日 21:00\n你怎么了，最近好冷淡\n\nTA\n2026年04月10日 21:30\n我们算了吧，以后各自生活，别再互相打扰了",
+    "target": "我们算了吧，以后各自生活，别再互相打扰了",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "sad",
+          "calm",
+          "annoyed",
+          "awkward",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "distance",
+          "end_topic",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 2
+      },
+      "engagement": {
+        "min": 0,
+        "max": 2
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 3,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 0,
+        "max": 2
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "min_probability": 0.7,
+        "max_probability": 1.0
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [],
+    "notes": "宣布结束关系：关系疏离的最强形态",
+    "tags": [
+      "true_positive",
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "dis_evening_goodnight",
+    "category": "DIS",
+    "title": "夜间道晚安（时间不推断）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月11日 23:40\n困了，先睡\n\nTA\n2026年04月11日 23:41\n晚安，明天聊",
+    "target": "晚安，明天聊",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "caring",
+          "happy",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "show_care",
+          "end_topic",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_late_night"
+    ],
+    "acceptable_ambiguity": [
+      "“明天聊”表示互动继续"
+    ],
+    "notes": "夜间 + 道晚安：既不是浪漫也不是疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_slow_gap_friendly",
+    "category": "DIS",
+    "title": "跨天慢回复但内容友好",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月12日 21:00\n周末出门逛逛那事你觉得怎么样\n\nTA\n2026年04月13日 09:12\n刚忙完，周末那个提议我觉得可以",
+    "target": "刚忙完，周末那个提议我觉得可以",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "confirm_understanding",
+          "share_opinion",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_slow_reply"
+    ],
+    "acceptable_ambiguity": [
+      "微信异步的时间间隔有大量外部混淆因素"
+    ],
+    "notes": "回复间隔长≠疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_media_delay",
+    "category": "DIS",
+    "title": "语音 marker + 推迟回复（媒体内容未知）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月14日 17:00\n在忙吗，周末想请你帮个忙\n\nTA\n2026年04月14日 17:05\n[语音] 7\"\n\n我\n2026年04月14日 17:06\n听到了\n\nTA\n2026年04月14日 17:08\n晚点回你，在开车",
+    "target": "晚点回你，在开车",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "explain",
+          "share_opinion",
+          "other",
+          "show_care"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_media"
+    ],
+    "acceptable_ambiguity": [
+      "语音内容未知；明确说了“晚点回你”表示会继续"
+    ],
+    "notes": "v2.2 误报模式（z_media_voice 0.67）的对照 case",
+    "context_checks": {
+      "must_contain": [
+        "[发送了一条 7 秒语音，内容未知]"
+      ],
+      "no_future_leakage": true
+    },
+    "tags": [
+      "media_unknown",
+      "anti_overclaim",
+      "needs_context"
+    ]
+  },
+  {
+    "id": "dis_vague_no_desire",
+    "category": "DIS",
+    "title": "临时缺乏聊天意愿（模糊表述）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月15日 20:00\n最近怎么不回消息\n\nTA\n2026年04月15日 20:30\n最近不太想聊天，过段时间再说吧",
+    "target": "最近不太想聊天，过段时间再说吧",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "sad",
+          "calm",
+          "awkward",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "end_topic",
+          "other",
+          "distance"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 3
+      },
+      "engagement": {
+        "min": 0,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 0,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.5
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [
+      "当前疲劳/暂时没意愿 ≠ 关系疏离；若措辞升级为“别再联系”则相反"
+    ],
+    "notes": "模糊意愿表达按“当前状态”处理，不升级为关系疏离；v3.1 修订：intent 追加 distance",
+    "tags": [
+      "ambiguity_tolerant",
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "dis_topic_close_reengage",
+    "category": "DIS",
+    "title": "礼貌结束话题并主动重启互动",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年04月16日 15:00\n那件事到底怎么办\n\nTA\n2026年04月16日 15:05\n不聊这个了，话说你上次那事后来怎么样了",
+    "target": "不聊这个了，话说你上次那事后来怎么样了",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy",
+          "other",
+          "curious"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "end_topic",
+          "continue_topic",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [],
+    "acceptable_ambiguity": [
+      "结束的是话题，同时主动开启新话题"
+    ],
+    "notes": "话题切换 + 主动关心：互动在继续；v3.1 修订：emotion 追加 curious（探询口吻可辩）",
+    "tags": [
+      "anti_overclaim"
+    ]
+  }
+]

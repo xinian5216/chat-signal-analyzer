@@ -18,15 +18,18 @@ from context_builder import select_context
 from parser import has_media_marker
 from storage import make_cache_key
 
-# 缓存 schema 版本。v3.0：**只修正了 distancing_signal 的语义**——旧定义把
-# “结束交流 / 回避互动 / 降低投入 / 拉开距离”混在一起，把会话层行为（礼貌
-# 收尾、计划稍后再聊、一次短回复、临时疲劳）误判成关系层疏离（v2.2 真实
-# 基线：k_polite_close 0.69、z_media_voice 0.67、o_tired 0.51）。distancing
-# 现在收窄为“对持续互动 / 双方关系的明确疏离”，显式区分 relationship
-# distancing / conversation closing / romantic boundary。其余 8 个问题、
-# scoring、Noul 转换阈值均不变；question 数仍为 9。instructions / criteria
-# 属于问题语义的一部分，因此 bump 使旧缓存条目自然失效（不删除缓存）。
-SCHEMA_VERSION = "chat-signal-v3.0"
+# 缓存 schema 版本。v3.1：Psychological Evidence v3 Phase 2 的**问题描述级**
+# 修正——不新增/删除问题，仍为 9 个、仍一次 system_one：
+#   1) intent 的 distance 描述显式承认三类子情形（话题拒绝 / 浪漫边界 /
+#      关系疏离）共享该标签，输出不宣称已独立分类；
+#   2) warmth 描述区分普通礼貌友好与回应性情绪支持，明确关心≠亲密/浪漫；
+#   3) relationship_evidence_strength 明确“只衡量信息量、不衡量方向”，
+#      浪漫拒绝可高信息量，普通话题拒绝不自动高信息量；
+#   4) emotion / intent 增加歧义条款（无语气线索时允许覆盖性选项，
+#      禁止假设不存在的表情/声音/媒体内容）。
+# instructions / criteria 属于问题语义 → bump 使旧缓存自然失效（不删除缓存）。
+# scoring 公式与权重不变。
+SCHEMA_VERSION = "chat-signal-v3.1"
 DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
@@ -104,9 +107,22 @@ INTENT_OPTIONS: dict[str, str] = {
     "share_personal": "主动分享自己的生活或个人信息",
     "end_topic": "结束当前话题",
     "perfunctory": "礼貌但投入较低的回复",
-    "distance": "回避、拒绝、主动拉开距离",
+    # v3.1：显式承认三类子情形共享本标签——**输出没有独立分类**，不要把
+    # intent=distance 当作“关系疏离已判定”（那是 distancing_signal 的职责）。
+    "distance": "回避、拒绝、主动拉开距离。话题拒绝、浪漫边界（不做恋人但"
+                "朋友往来可继续）与关系疏离（减少或结束持续联系）都可能落在"
+                "本项；本项不区分范围，范围由上下文判断",
     "other": "难以判断",
 }
+
+# 歧义条款（v3.1）：附加到 emotion / intent 的 instructions。没有语气证据
+# 时（孤立的“哈哈”“行吧”），调侃与冒犯等解读都可能成立——必须选择能覆盖
+# 合理解读的选项，**不得**假设不存在的表情、声音或其他媒体内容来消除歧义。
+AMBIGUITY_RULE_CLAUSE = (
+    " 当缺少语气证据（如孤立的“哈哈”“行吧”）、调侃与冒犯等解读都可能成立时，"
+    "选择能覆盖合理解读的选项，避免无证据的极端判断；"
+    "不得假设不存在的表情、声音或其他媒体内容来消除歧义。"
+)
 
 WARMTH_LEVELS: list[str] = [
     "明显冷淡、疏离或拒绝",
@@ -172,6 +188,9 @@ RELATIONSHIP_EVIDENCE_INSTRUCTIONS = (
     "暧昧或疏离程度的信息？这里评价的是“关系层面的信息量”，"
     "不是关系好坏本身。纯确认词、普通功能性回复、无关事实陈述通常信息量低；"
     "明显关心、特殊关注、主动邀约、关系表达、暧昧、拒绝、回避等消息信息量高。"
+    "本项只衡量信息量，**不衡量方向**（积极或消极）：浪漫拒绝（如表明只做"
+    "朋友、已有喜欢的人）同样具有很高的关系信息量；普通话题拒绝（只是不想"
+    "谈当前话题）不自动代表高关系信息量。"
 )
 
 # relational_ease（v2.1 新增，仅解释层，不计入总分）：
@@ -201,15 +220,27 @@ def build_questions() -> dict:
 
     return {
         "emotion": Choice(
-            instructions="这条 TA 的消息主要表现出哪种情绪？参考上下文判断。",
+            instructions=(
+                "这条 TA 的消息主要表现出哪种情绪？参考上下文判断。"
+                + AMBIGUITY_RULE_CLAUSE
+            ),
             criteria=EMOTION_OPTIONS,
         ),
         "intent": Choice(
-            instructions="这条 TA 的消息主要意图是什么？参考上下文判断。",
+            instructions=(
+                "这条 TA 的消息主要意图是什么？参考上下文判断。"
+                + AMBIGUITY_RULE_CLAUSE
+            ),
             criteria=INTENT_OPTIONS,
         ),
         "warmth": Score(
-            instructions="这条 TA 的消息在温暖/亲近程度上处于哪一级？",
+            instructions=(
+                "这条 TA 的消息在温暖/亲近程度上处于哪一级？"
+                "区分普通礼貌/友好与具体的情绪支持：礼貌、友好、正常社交通常"
+                "只在中位；针对对方困境或自我披露的回应性关心才进入较高等级。"
+                "关心可以很温暖，但不自动证明亲密或浪漫兴趣，"
+                "也不要仅因为温暖就把分数推至最高级。"
+            ),
             criteria=WARMTH_LEVELS,
         ),
         "engagement": Score(

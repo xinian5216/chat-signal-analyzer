@@ -396,10 +396,12 @@ interrupted）。如果一次新的 rerun 开始时仍看到 `running`，说明�
   - 上下文仍是双方混合消息：“我”的消息帮助 Jev 理解 TA 在回应什么，但**永远不是
     target**、不产生独立请求、不产生 relationship score；
   - 不做语义检索 / 关键词召回（避免 cherry-picking），也不用回复速度直接推断感情。
-- **缓存 schema 版本 v2 → v2.1 → v2.2 → v3.0**：v2.1 新增 `relational_ease` 问题；v2.2 的 9 个
+- **缓存 schema 版本 v2 → v2.1 → v2.2 → v3.0 → v3.1**：v2.1 新增 `relational_ease` 问题；v2.2 的 9 个
   问题与 v2.1 完全一致，变更的是上下文选择语义（previous 5 → Context Builder v2）
   与出站字段白名单（`raw_speaker` 等本地 metadata 不再进入 state）；v3.0 **只修正
-  `distancing_signal` 的问题语义**（见下），其余 8 问、评分公式、Noul 转换阈值均不变。
+  `distancing_signal` 的问题语义**；v3.1 为描述级修正（intent 的 `distance`
+  显式承认话题拒绝/浪漫边界/关系疏离共享该标签；warmth 区分礼貌友好与回应性
+  关心；evidence 明确只衡量信息量不衡量方向；emotion/intent 增加歧义条款）。
   每次 question 语义 / state 语义变化都 bump 版本，使旧分析缓存**自然失效**
   （不删除缓存文件，只自然 miss）。
   缓存 key 由（state + 问题 schema + 模型 + schema 版本）的 SHA256 构成，

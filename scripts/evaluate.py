@@ -32,6 +32,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,56 +94,141 @@ def _compare(baseline_path: str, candidate_path: str) -> int:
               file=sys.stderr)
         return 3
 
+    base_schema, cand_schema = base_id.get("schema"), cand_id.get("schema")
+    if base_schema and cand_schema and base_schema != cand_schema:
+        print("!! SCHEMA SEMANTICS CHANGED !!")
+        print(f"  baseline schema : {base_schema}")
+        print(f"  candidate schema: {cand_schema}")
+        print("  两份报告的问题语义已经不同：以下只展示**中性的约束差异**，")
+        print("  不得解读为改善或回归；通过率也不是同一把尺子上的比较。")
+    elif not (base_schema and cand_schema):
+        print("!! SCHEMA UNKNOWN !!")
+        print(f"  baseline schema : {base_schema or 'unknown'}")
+        print(f"  candidate schema: {cand_schema or 'unknown'}")
+        print("  至少一份报告的 schema 版本无法确认：以下只展示中性的约束差异。")
+
     diff = ev.compare_reports(baseline, candidate)
     print(f"baseline pass rate : {diff['baseline_pass_rate']:.1%}")
     print(f"candidate pass rate: {diff['candidate_pass_rate']:.1%}")
-    if diff["resolved_failures"]:
-        print("resolved failures (improvement):")
-        for item in diff["resolved_failures"]:
-            print(f"  - {item}")
-    if diff["introduced_failures"]:
-        print("introduced failures (regression):")
-        for item in diff["introduced_failures"]:
-            print(f"  + {item}")
-    if base_id["schema"] != cand_id["schema"]:
-        print("\n!! SCHEMA SEMANTICS CHANGED !!")
-        print(f"  baseline schema : {base_id['schema']}")
-        print(f"  candidate schema: {cand_id['schema']}")
-        print("  两份报告的 question 语义不同：通过率差异**不是**同一把尺子上的"
-              "改善/回归，只能作为约束级 diff 参考；案例集一致也不代表语义可比。")
+    only_in_base = diff["resolved_failures"]
+    only_in_cand = diff["introduced_failures"]
+    cross_schema = not (base_schema and cand_schema and
+                        base_schema == cand_schema)
+    if cross_schema:
+        print("constraint differences (neutral, cross-schema):")
+        print("  only in baseline:")
+        for item in only_in_base:
+            print(f"    - {item}")
+        print("  only in candidate:")
+        for item in only_in_cand:
+            print(f"    + {item}")
+    else:
+        if only_in_base:
+            print("resolved failures (improvement):")
+            for item in only_in_base:
+                print(f"  - {item}")
+        if only_in_cand:
+            print("introduced failures (regression):")
+            for item in only_in_cand:
+                print(f"  + {item}")
+    if cross_schema:
+        print("regression verdict: not applicable（schema 语义不一致，"
+              "不做改善/回归判定）")
+        return 0
     print("regression:", "YES" if diff["regression"] else "none")
     return 1 if diff["regression"] else 0
 
 
 def _regenerate_from_raw(raw_path: str, cases_path: str | None,
-                         report_path: str | None) -> int:
-    """离线从原始结果重建聚合报告（不调用任何 API；用于修复 meta 或迁移旧数据）。"""
+                         report_path: str | None,
+                         assume_schema: str | None = None,
+                         schema_from_report: str | None = None) -> int:
+    """离线从原始结果重建聚合报告（不调用任何 API；用于修复 meta 或迁移旧数据）。
+
+    schema 版本溯源（绝不猜测）：优先级为 raw 文件自带 meta >
+    --schema-from-report 指向的报告 meta > --assume-schema 用户显式指定；
+    都无法确认时记为 "unknown" 并显式告警。当前代码的 SCHEMA_VERSION
+    只能用于**本次**真实运行，不得用来给旧输出重新贴版本。
+    """
     payload = json.loads(Path(raw_path).read_text(encoding="utf-8"))
     raw_results = payload.get("results")
     if not isinstance(raw_results, dict) or not raw_results:
         print(f"raw 文件没有 results：{raw_path}", file=sys.stderr)
         return 2
-    from analyzer import DEFAULT_MODEL, SCHEMA_VERSION
+
+    schema, schema_source = _resolve_schema_version(
+        payload, assume_schema, schema_from_report)
+    if schema is None:
+        print("warning: 无法确认该 raw 输出对应的 schema 版本，"
+              "schema_version 标记为 unknown（不猜测）。"
+              "可用 --assume-schema 或 --schema-from-report 显式提供。",
+              file=sys.stderr)
 
     cases = ev.load_cases(cases_path)
     aggregate = ev.evaluate_cases(cases, raw_results)
-    model = next(
-        (r.get("model") for r in raw_results.values()
-         if isinstance(r, dict) and r.get("model")), DEFAULT_MODEL)
+    model = None
+    payload_meta = payload.get("meta")
+    if isinstance(payload_meta, dict) and payload_meta.get("model"):
+        model = payload_meta["model"]
+    if not model:
+        model = next(
+            (r.get("model") for r in raw_results.values()
+             if isinstance(r, dict) and r.get("model")), None)
+    if not model:
+        from analyzer import DEFAULT_MODEL
+        model = DEFAULT_MODEL
     failed = sum(1 for r in raw_results.values()
                  if not isinstance(r, dict) or r.get("error"))
-    aggregate["meta"] = _report_meta(
-        cases, model=model, mode="real-offline-regen",
-        schema_version=SCHEMA_VERSION, failed=failed,
-        cases_path=cases_path or ev.DEFAULT_CASES_PATH)
+    meta = _report_meta(cases, model=model, mode="real-offline-regen",
+                        schema_version=schema,
+                        failed=failed,
+                        cases_path=cases_path or ev.DEFAULT_CASES_PATH)
+    meta["schema_source"] = schema_source
+    aggregate["meta"] = meta
     print(ev.format_report(aggregate))
-    print(f"cases file: {aggregate['meta']['benchmark_cases_file']}; "
-          f"cases sha256: {aggregate['meta']['benchmark_sha256'][:16]}…; "
-          f"model: {model}")
+    print(f"cases file: {meta['benchmark_cases_file']}; "
+          f"cases sha256: {meta['benchmark_sha256'][:16]}…; "
+          f"model: {model}; schema_version: {schema} "
+          f"(source: {schema_source})")
     if report_path:
         _write_json(report_path, aggregate)
         print(f"regenerated aggregate report written: {report_path}")
     return 0 if aggregate["passed_cases"] == aggregate["total_cases"] else 1
+
+
+_SCHEMA_PATTERN = re.compile(r"^chat-signal-v\d+(\.\d+)?$")
+
+
+def _resolve_schema_version(payload: dict, assume_schema: str | None,
+                            schema_from_report: str | None
+                            ) -> tuple[str | None, str]:
+    """按可信优先级确定 raw 输出的 schema 版本；返回 (schema|None, source)。"""
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        candidate = meta.get("schema_version")
+        if isinstance(candidate, str) and _SCHEMA_PATTERN.match(candidate):
+            return candidate, "raw-meta"
+    if schema_from_report:
+        try:
+            report = json.loads(Path(schema_from_report)
+                                .read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ev.EvaluationError(
+                f"--schema-from-report 无法读取：{exc}") from exc
+        report_meta = report.get("meta")
+        candidate = report_meta.get("schema_version") \
+            if isinstance(report_meta, dict) else None
+        if isinstance(candidate, str) and _SCHEMA_PATTERN.match(candidate):
+            return candidate, "report-meta"
+        raise ev.EvaluationError(
+            "--schema-from-report 的报告没有可识别的 meta.schema_version")
+    if assume_schema:
+        if not _SCHEMA_PATTERN.match(assume_schema):
+            raise ev.EvaluationError(
+                f"--assume-schema 版本格式不合法：{assume_schema!r}"
+                "（应为 chat-signal-vX[.Y]）")
+        return assume_schema, "user-flag"
+    return None, "unknown"
 
 
 def estimate_live_requests(cases: list[dict]) -> dict:
@@ -334,7 +420,18 @@ def _run_real(confirmed: bool, report_path: str | None,
     #  34 次真实响应全部丢失）。
     raw_results, failures = collect_real_results(cases, analyze_fn)
     raw_target = raw_report_path or _default_raw_path()
-    _write_json(raw_target, {"cases": cases, "results": raw_results})
+    _write_json(raw_target, {
+        "meta": {
+            "schema_version": SCHEMA_VERSION,
+            "model": DEFAULT_MODEL,
+            "benchmark_cases_file": str(cases_path or ev.DEFAULT_CASES_PATH)
+            .replace("\\", "/"),
+            "generated_at": datetime.now(timezone.utc).isoformat(
+                timespec="seconds"),
+        },
+        "cases": cases,
+        "results": raw_results,
+    })
     print(f"raw model outputs written: {raw_target}")
     aggregate = ev.evaluate_cases(cases, raw_results)
     aggregate["meta"] = _report_meta(cases, model=DEFAULT_MODEL, mode="real",
@@ -394,12 +491,21 @@ def main(argv: list[str] | None = None) -> int:
                              "不一致或 schema 语义变化会被拒绝/显式警告）")
     parser.add_argument("--from-raw", metavar="PATH",
                         help="离线从原始结果重建聚合报告（不调用 API）")
+    parser.add_argument("--assume-schema", metavar="VERSION",
+                        help="为 --from-raw 显式指定 raw 输出的 schema 版本"
+                             "（chat-signal-vX[.Y]；无法从 raw/配套报告确认时"
+                             "才会用到，否则记 unknown）")
+    parser.add_argument("--schema-from-report", metavar="PATH",
+                        help="从一份已冻结/同批次报告的 meta.schema_version "
+                             "推断 raw 的 schema 版本")
     args = parser.parse_args(argv)
 
     if args.compare:
         return _compare(args.compare[0], args.compare[1])
     if args.from_raw:
-        return _regenerate_from_raw(args.from_raw, args.cases, args.report)
+        return _regenerate_from_raw(args.from_raw, args.cases, args.report,
+                                    args.assume_schema,
+                                    args.schema_from_report)
     if args.real:
         return _run_real(args.yes_run_live_api, args.report,
                          args.raw_report, args.cases)
