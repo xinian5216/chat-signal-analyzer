@@ -9,6 +9,9 @@ portable_logs/
 SignalLens-*.zip
 SignalLens-*.zip.sha256
 
+# ===== 评估报告（案例与 fixture 是数据，报告是产物）=====
+evaluation/reports/
+
 # ===== 环境变量与密钥 =====
 .env
 .env.*
