@@ -209,7 +209,8 @@ def init_state() -> None:
         # ---- 时间线（排序 / 预览 / 不确定性）----
         ("timeline_info", None),         # timeline.TimelineResult（时间校验摘要）
         ("order_signature", None),       # 消息顺序指纹（变化即失效旧结果）
-        ("media_bindings_dropped", []),  # 排序后无法安全迁移而被丢弃的绑定
+        ("media_bindings_dropped", []),  # 排序后无法安全迁移而被丢弃的自动绑定
+        ("media_manual_dropped", []),    # 同上：手动绑定被丢弃 → 要求重新匹配
         ("preview_mode", "recent"),      # 预览方式：recent / earliest / all
         ("preview_page", 1),             # 分页预览页码
         ("order_confirmed", False),      # 用户已确认“时间不完整消息的顺序风险”
@@ -556,6 +557,7 @@ def _reset_chat_state() -> None:
     st.session_state["timeline_info"] = None
     st.session_state["order_signature"] = None
     st.session_state["media_bindings_dropped"] = []
+    st.session_state["media_manual_dropped"] = []
     st.session_state["order_confirmed"] = False
     st.session_state["preview_page"] = 1
 
@@ -830,6 +832,7 @@ def set_messages(new_messages: list[dict], *, source: str = "import") -> None:
     """
     old_messages = st.session_state.get("messages") or []
     old_bindings = dict(st.session_state.get("media_bindings") or {})
+    old_manual = dict(st.session_state.get("media_manual") or {})
     timeline = sort_messages(
         new_messages,
         multi_chunk=len(st.session_state.get("raw_chunks") or []) > 1,
@@ -843,6 +846,14 @@ def set_messages(new_messages: list[dict], *, source: str = "import") -> None:
     if dropped:
         st.session_state["media_bindings_dropped"] = sorted(dropped)
 
+    # 手动绑定同样按 fingerprint 迁移；无法唯一对应的一律清空并要求
+    # 重新匹配（绝不允许旧下标指向另一条消息）
+    new_manual, manual_dropped = migrate_bindings(
+        old_messages, timeline.messages, old_manual)
+    st.session_state["media_manual"] = new_manual
+    if manual_dropped:
+        st.session_state["media_manual_dropped"] = sorted(manual_dropped)
+
     previous_sig = st.session_state.get("order_signature")
     new_sig = order_signature(timeline.messages)
     st.session_state["order_signature"] = new_sig
@@ -851,6 +862,9 @@ def set_messages(new_messages: list[dict], *, source: str = "import") -> None:
         st.session_state["analysis_messages"] = None
         st.session_state["analysis_state"] = "idle"
         clear_analysis_results()
+        # 顺序歧义的确认也失效：新导入/新歧义必须重新显式确认，
+        # 绝不让上一次勾选放行新的不确定记录
+        st.session_state["order_confirmed"] = False
     if timeline.order_changed and source == "import":
         set_input_notice(
             "info",
@@ -1165,6 +1179,12 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 f"重新排序后 {len(dropped)} 个图片绑定无法唯一对应，已失效，"
                 "请在上方重新确认绑定（不会把图片错配到别的消息）。"
             )
+        manual_dropped = st.session_state.get("media_manual_dropped") or []
+        if manual_dropped:
+            st.warning(
+                f"重新排序后 {len(manual_dropped)} 个**手动**匹配的图片无法唯一"
+                "对应到原消息，已清空，请在“图片绑定”里重新匹配。"
+            )
 
         # ---- 预览表：最近 15 / 最早 15 / 分页全部（只影响展示）----
         mode = st.radio(
@@ -1239,14 +1259,15 @@ def show_confirm_stage(messages: list[dict]) -> None:
         order_ok = True
         if tlinfo is not None and tlinfo.requires_order_confirm:
             st.warning(
-                "有消息的时间不完整或同刻顺序无法自动确定（"
+                "有消息的时间不完整、格式非法或同刻顺序无法自动确定（"
                 + tlinfo.summary_text() + "）。这些消息不会被猜测日期后插入"
                 "时间线，而是按各自可确定的顺序排在完整时间消息之后。"
-                "如果它们实际发生在中途，相关上下文判断可能不可靠 —— "
-                "请确认后继续，或回到上一步排除这些片段。"
+                "“无时间”也包含无法解析的时间格式（如不存在的日期、25:61 之类）"
+                "——请回到上一步修正或排除这些片段；"
+                "如果它们实际发生在中途，相关上下文判断可能不可靠。"
             )
             order_ok = st.checkbox(
-                "我确认：上述时间不完整的消息按当前顺序参与分析",
+                "我确认：上述时间异常的消息按当前顺序参与分析",
                 value=bool(st.session_state.get("order_confirmed")),
                 key="order_confirm_checkbox",
             )

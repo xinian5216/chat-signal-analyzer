@@ -371,8 +371,8 @@ def test_all_messages_is_paginated(counting_client):
     at = _fresh(counting_client)
     # 构造 > 25 条可分析消息
     chat = "\n\n".join(
-        f"我\n2026年08月21日 2{i % 9}:00\n问 {i}\n\n"
-        f"TA\n2026年08月21日 2{i % 9}:01\n答 {i}"
+        f"我\n2026年08月21日 {9 + i % 8:02d}:{i % 60:02d}\n问 {i}\n\n"
+        f"TA\n2026年08月21日 {9 + i % 8:02d}:{i % 60:02d}\n答 {i}"
         for i in range(30)
     )
     _parse(at, chat)

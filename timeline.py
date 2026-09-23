@@ -35,6 +35,34 @@ TIME_MISSING = "missing"  # 完全没有时间
 
 _FULL_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$")
 _ONLY_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _is_real_datetime(year: int, month: int, day: int,
+                      hour: int, minute: int) -> bool:
+    """真实日历校验：拒绝不存在的日期、非法月份、非法小时与分钟。
+
+    含闰年（四年一闰、百年不闰、四百年再闰）与月底天数。
+    """
+    if not 1 <= month <= 12:
+        return False
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return False
+    dim = _DAYS_IN_MONTH[month - 1]
+    if month == 2 and (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
+        dim = 29
+    return 1 <= day <= dim
+
+
+def _full_key(time_value: str):
+    """完整时间 → 可排序 key；正则不匹配或不是真实时刻则返回 None。"""
+    m = _FULL_RE.match(str(time_value).strip())
+    if not m:
+        return None
+    y, mo, d, h, mi = (int(x) for x in m.groups())
+    if not _is_real_datetime(y, mo, d, h, mi):
+        return None
+    return (y, mo, d, h, mi)
 
 
 def _norm(value) -> str:
@@ -53,22 +81,33 @@ def message_fingerprint(message: dict) -> str:
 
 
 def time_kind(time_value) -> str:
-    """时间字段分类：full / time_only / missing。"""
+    """时间字段分类：full / time_only / missing。
+
+    ``full`` 需要**真实存在**的日期时间（经 _is_real_datetime 校验）：
+    2026-02-30、2026-13-01、2026-09-23 25:61 这类会被判为 missing，
+    绝不进入确定的时间线。``time_only`` 同样需要是合法时刻
+    （25:00 / 12:61 判 missing）。
+    """
     if not time_value or not str(time_value).strip():
         return TIME_MISSING
     s = str(time_value).strip()
-    if _FULL_RE.match(s):
+    if _full_key(s) is not None:
         return TIME_FULL
-    if _ONLY_RE.match(s):
+    m = _ONLY_RE.match(s)
+    if m and _is_real_datetime(2000, 1, 1, int(m.group(1)),
+                               int(m.group(2))):
         return TIME_ONLY
-    return TIME_MISSING          # 其它格式视为不可解析（不算完整时间）
+    return TIME_MISSING          # 非法日期/时刻或无其它格式支持 → 不可解析
 
 
 def _full_key(time_value: str):
-    m = _FULL_RE.match(time_value.strip())
+    """完整时间 → 可排序 key；正则不匹配或不是真实时刻则返回 None。"""
+    m = _FULL_RE.match(str(time_value).strip())
     if not m:
         return None
     y, mo, d, h, mi = (int(x) for x in m.groups())
+    if not _is_real_datetime(y, mo, d, h, mi):
+        return None
     return (y, mo, d, h, mi)
 
 
