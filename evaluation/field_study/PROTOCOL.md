@@ -1,91 +1,109 @@
-# Field Study 研究方案（Pilot Protocol v1）
+# Field Study 研究方案 v1.1（Scientific Hardening）
 
-状态：**试点准备（未启动招募）**。本方案经批准后方可执行；执行前不得
-收集任何真实个人聊天数据。
+状态：**试点准备（未启动招募）**。v1.1 修正统计学与数据冻结问题，使设施
+真正适合后续小规模人工验证。执行前不得收集任何真实个人聊天数据。
 
-## 1. 目的
+## 0. 本版修订摘要（相对 v1）
 
-检验 SignalLens 的结构化判断（emotion / intent / warmth / engagement /
-special_attention / relational_ease / romantic_signal / distancing_signal）
-与**真实人类标注**的一致性，并量化弃答与不确定性，而不是继续提高虚构
-案例的通过率。
+1. item 级指标：同一 item 的多个 observer 标注不再各自计为独立模型样本
+   （消除伪重复）；
+2. group-level cluster bootstrap CI 为主不确定性指标（固定 seed=20260923、
+   2000 次，写入报告）；Wilson CI 仅作描述性参考；
+3. 引入 Krippendorff's alpha（nominal / ordinal，自实现，允许缺失与多
+   标注者）作为“称人类标注为 human reference”的前置条件；
+4. Noul：raw Noul 只报 ROC-AUC / PR-AUC；Brier / log loss 必须先 dev
+   拟合 Platt calibration 并冻结映射、只在 blind 上计算；
+5. 新增脱敏 item dataset（`item_schema.json`），模型输入与观察者文本由
+   同一冻结数据集 + 同一渲染函数派生；freeze manifest 同时绑定双方哈希；
+6. 角色-标签合法性代码强制（sender/receiver/observer/participant 层分离）；
+7. blind-lock 清单（commit SHA / schema / 模型 alias / 指标定义哈希 /
+   校准映射）；
+8. sender 回忆延迟分桶与偏差声明；
+9. pilot 与 confirmatory 验证分离。
 
-## 2. 非目标（明确不做）
+## 1. 目的与非目标
 
-- 不提供临床心理诊断，不评估任何人的心理健康状况；
-- 不声称读取他人真实心理；所有标注仅针对“写下来的文字”；
-- 不用回复速度推断感情；不用时间间隔做关系判断；
-- 不把模型 Noul 输出解释为现实事件概率。
+检验 SignalLens 的结构化判断与**真实人类标注**的一致性，并量化弃答与
+不确定性。不提供临床心理诊断，不声称读取他人真实心理，不用回复速度推断
+感情，不把 Noul 当作现实事件概率。
 
-## 3. 参与者与角色
+## 2. 三层（+1）标注层
 
-| 角色 | 人数（建议） | 任务 |
+| 层 | 提供者 | 说明 |
 |---|---|---|
-| 聊天参与者（发送方） | ≥ 8 组 | 提供自己聊天片段（脱敏后）+ 事后标注自己当时的交流意图 |
-| 聊天参与者（接收方） | 同上（配对） | 标注自己当时的感受（可选） |
-| 独立观察标注者 | ≥ 3 人 | 仅根据文字做行为层标注；不接触参与者 |
+| sender ground truth | 发送者本人 | `sender_intent`，一条 item 最多一个有效发送者标签；**事后自我报告，有回忆偏差** |
+| receiver experience | 接收者本人 | `receiver_felt_experience`；与模型 gold 分开 |
+| participant perception | 双方均可 | `participant_perception`；单独层，**绝不与 observer gold 混合** |
+| observer reference | 独立观察者（每 item ≥3 人） | 模型对分的 human reference |
 
-同一聊天双方的片段记为一个 `group_id`。
+角色-维度合法性由 `field_study.load_annotations` 强制。
 
-## 4. 数据与脱敏
+## 3. item 级 reference 与指标口径
 
-见 `DEIDENTIFICATION.md`：数据集只含脱敏文本、粗粒度时间桶、
-`group_id`/`item_id`；禁止 raw_speaker、真实昵称、联系方式、精确时间、
-媒体内容。标注记录字段白名单见 `annotation_schema.json`。
+- categorical/binary：每 item 多数决；无多数 → `contested`，排除并计数；
+- ordinal Score：labeled 值的**较低中位数**；
+- 模型预测每 item 只计一次（n = items，不是 annotation records）；
+- 报告必须写清：items 数、groups 数、annotation records 数、independent
+  observers 数。
 
-## 5. 纳入 / 排除标准（预先记录）
+## 4. 不确定性：clustering 优先
 
-纳入：
-- 双方均为自愿参与的成年人，且聊天双方均签署同意书；
-- 片段长度 10~500 字，含至少一个可识别的回合；
-- 脱敏后不含隐私硬伤（见脱敏规范）。
+同一聊天双方（group）可能贡献多条 item，不能假设为完全独立。主 CI 为
+group-level bootstrap（seed 与次数固定、记录于报告）；Wilson CI 仅描述性。
+group 数 < 2 时 bootstrap 不可用，报告明示。
 
-排除：
-- 涉及未成年人、医疗/法律/财务建议、危机与自伤他伤内容、雇佣或司法
-  场景的片段；
-- 无法脱敏到规范的片段；
-- 参与者要求退出的片段。
+## 5. 人类一致性前置条件
 
-## 6. 分组与冻结（防泄漏）
+把 observer 标签称为 human reference 之前，每个多标注者维度必须报告
+Krippendorff's alpha：
+- categorical/binary：nominal；0~4 Score：ordinal；
+- `unsure`/`declined`/`insufficient`/missing 不计入 alpha 计算；
+- **alpha 低 → 模型与“人类真值”的一致率解释力有限**（报告明示）；
+- 实现说明：alpha 为自实现（闭式一致性矩阵），回归测试锚定手工计算值；
+  未引入第三方依赖。
 
-- 以 `group_id`（聊天双方）为最小单位划分：同一 group 的片段只能全部
-  进入开发集或全部进入盲测集（`fs.check_group_isolation` 强制）；
-- 划分配置、纳入/排除标准、预期分析指标在看到盲测结果**之前**写入
-  冻结清单（`fs.freeze_dataset`：标注文件 SHA256 + group 清单 + 划分）；
-- 盲测结果产生后，禁止反向调整划分、阈值或指标定义；任何后续修改必须
-  以新版本数据集记录（`dataset_version` 递增）。
+## 6. Noul 评估策略
 
-## 7. 预期分析指标（预先登记）
+- 主指标：ROC-AUC + PR-AUC（正负不平衡时看 PR-AUC）；
+- raw Noul **不**计算也不解释 Brier / log loss；
+- 若要测校准：在 dev partition 拟合 Platt calibration（确定性固定迭代），
+  将该映射写入 freeze manifest，**只**在 blind partition 计算 Brier /
+  log loss。
 
-| 层 | 维度 | 指标 |
-|---|---|---|
-| 观察层 | emotion / intent | accuracy + Wilson 95% CI + 混淆矩阵 + 逐类 P/R/F1 |
-| 观察层 | warmth / engagement / special_attention / relational_ease | MAE / RMSE / 偏差 |
-| 观察层 | romantic / distancing（二元标注） | AUC / Brier（附非概率告示） |
-| 意图层 | sender_intent ↔ intent | 同上 Choice 指标 |
-| 体验层 | receiver_felt_experience | 描述统计（无模型对应项，不对分） |
-| 数据质量 | 全部标签 | 弃答覆盖率（unsure/declined/insufficient） |
+## 7. 脱敏 item dataset 与冻结
 
-最小样本：每个 Choice 维度至少 30 个 labeled 样本才报告 CI；Noul 维度
-至少 10 正 + 10 负才计算 AUC；不足则明确记“样本不足”。
+- item 字段白名单见 `item_schema.json`；禁真实昵称/联系方式/精确时间/
+  媒体内容；
+- 模型输入与观察者文本由 `render_item_text(item)` 从同一冻结 item
+  dataset 派生；
+- freeze manifest 绑定：item dataset SHA256 + annotations SHA256 +
+  group 清单 + 划分配置 + annotation schema version + analysis-plan
+  version；任何 item 文本变化必须使校验失败。
 
-## 8. 弃答与冲突处理
+## 8. Blind-lock 流程
 
-- 弃答是合法标注，不是缺失数据；
-- 多标注者分歧（如三人中两人 uncertain）按 schema 记录每条标注者的
-  状态，报告分别给出按标注者与按条目的弃答率；
-- 缺模型输出的案例计入 `unmatched`，不计为错误。
+揭晓 blind 结果前必须锁定：dataset_version、双方哈希、dev/blind 划分、
+SignalLens commit SHA、chat-signal schema version、模型 alias、（运行后）
+实际模型版本、主/次指标定义哈希、校准映射（若存在）。
+一旦查看 blind performance：该 blind set 退休为 development evidence；
+基于盲测结果修改模型后，必须用新的 blind groups 才能再次声称独立盲测。
 
-## 9. 版本与可复现
+## 9. 回忆偏差
 
-- 标注 schema 版本：`field-study-annotation-v1`；
-- 模型输出必须携带其 `schema_version`（如 `chat-signal-v3.2`）与模型
-  版本（如 `jev-1.13.0`），写入报告；跨版本结果不得混称为同一模型；
-- 报告为确定性 JSON（无时间戳），相同输入必须字节一致。
+sender_intent 允许且只允许粗粒度 `recall_delay_bucket`；报告按桶给出
+样本数，并声明 retrospective self-report 不是无误差的心理真值。
 
-## 10. 伦理与停止条件
+## 10. Pilot 与 confirmatory 分离
 
-- 知情同意见两个 CONSENT 模板；退出与删除见
-  `WITHDRAWAL_AND_DELETION.md`；
-- 若参与者退出导致某 group 不完整，整组剔除并在报告中记录；
-- 任何阶段发现隐私泄漏风险：立即暂停、删除、复盘后再决定是否继续。
+- **pilot（feasibility）**：≥8 groups 只用于验证招募、脱敏、rubric、
+  一致性、弃答率与流程可行性；**不得据此宣传“科学准确率”**；
+- **confirmatory blind validation**：后续新的独立 groups；
+- 正式样本量不拍脑袋：pilot 之后依据类别分布、alpha、abstention 与
+  group 内相关（ICC / 组内相关系数）再制定样本量方案并写入新版本
+  analysis plan。
+
+## 11. 纳入 / 排除 / 停止条件
+
+（与 v1 相同：双方成年且双签同意；片段 10~500 字；排除医疗/法律/财务/
+危机/雇佣司法场景、不可脱敏、参与者退出。）
+隐私风险或系统性 API 错误：立即停止、记录、清理。

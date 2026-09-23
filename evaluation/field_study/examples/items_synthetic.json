@@ -1,0 +1,56 @@
+{
+  "dataset_version": "fs-synth-v1",
+  "schema_note": "合成 item 数据集示例：全部虚构。模型输入与观察者文本必须由 render_item_text(item) 从本文件派生，不得分别手工复制。",
+  "items": [
+    {
+      "item_id": "synth-001",
+      "group_id": "group-A",
+      "time_bucket": "evening",
+      "messages": [
+        {"speaker": "me", "text": "最近有点感冒"},
+        {"speaker": "them", "text": "那你早点休息，多喝水"}
+      ],
+      "target_index": 1
+    },
+    {
+      "item_id": "synth-002",
+      "group_id": "group-A",
+      "time_bucket": "evening",
+      "messages": [
+        {"speaker": "me", "text": "明天考试，有点慌"},
+        {"speaker": "them", "text": "加油，你可以的"}
+      ],
+      "target_index": 1
+    },
+    {
+      "item_id": "synth-003",
+      "group_id": "group-B",
+      "time_bucket": "afternoon",
+      "messages": [
+        {"speaker": "me", "text": "周末干嘛"},
+        {"speaker": "them", "text": "周末一起看电影？"}
+      ],
+      "target_index": 1
+    },
+    {
+      "item_id": "synth-004",
+      "group_id": "group-B",
+      "time_bucket": "late_night",
+      "messages": [
+        {"speaker": "me", "text": "看我新拍的照片"},
+        {"speaker": "them", "text": "哈哈"}
+      ],
+      "target_index": 1
+    },
+    {
+      "item_id": "synth-005",
+      "group_id": "group-C",
+      "time_bucket": "morning",
+      "messages": [
+        {"speaker": "me", "text": "出门了，外面下暴雨"},
+        {"speaker": "them", "text": "嗯嗯记得带伞，别淋湿了"}
+      ],
+      "target_index": 1
+    }
+  ]
+}

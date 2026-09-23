@@ -18,7 +18,7 @@
       "role": "observer",
       "annotator_id": "a-02",
       "labels": {
-        "sender_intent": {"status": "labeled", "value": "show_care"},
+        "intent_observed": {"status": "labeled", "value": "show_care"},
         "warmth_observed": {"status": "labeled", "value": 3},
         "romantic_binary": {"status": "labeled", "value": false}
       }
@@ -28,9 +28,10 @@
       "group_id": "group-A",
       "role": "sender",
       "annotator_id": "p-A-1",
+      "recall_delay_bucket": "1_7_days",
       "labels": {
         "sender_intent": {"status": "labeled", "value": "show_care"},
-        "receiver_felt_experience": {"status": "declined"}
+        "participant_perception": {"status": "declined"}
       }
     },
     {
@@ -39,7 +40,7 @@
       "role": "observer",
       "annotator_id": "a-01",
       "labels": {
-        "sender_intent": {"status": "labeled", "value": "invite"},
+        "intent_observed": {"status": "labeled", "value": "invite"},
         "engagement_observed": {"status": "labeled", "value": 4},
         "distancing_binary": {"status": "labeled", "value": false}
       }
@@ -50,7 +51,7 @@
       "role": "observer",
       "annotator_id": "a-03",
       "labels": {
-        "sender_intent": {"status": "unsure"},
+        "intent_observed": {"status": "unsure"},
         "warmth_observed": {"status": "insufficient"},
         "romantic_binary": {"status": "labeled", "value": true}
       }
@@ -61,7 +62,8 @@
       "role": "receiver",
       "annotator_id": "p-C-2",
       "labels": {
-        "receiver_felt_experience": {"status": "labeled", "value": "被关心但有点压力"}
+        "receiver_felt_experience": {"status": "labeled", "value": "被关心但有点压力"},
+        "participant_perception": {"status": "labeled", "value": "像是普通关心"}
       }
     }
   ]

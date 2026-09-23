@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SignalLens field study de-identified item",
+  "type": "object",
+  "required": ["item_id", "group_id", "messages", "target_index"],
+  "additionalProperties": false,
+  "properties": {
+    "item_id": {"type": "string", "minLength": 1},
+    "group_id": {"type": "string", "minLength": 1,
+                 "description": "聊天双方配对 ID：同一双方的片段共享；dev/blind 以此为单位隔离"},
+    "messages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["speaker", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "speaker": {"enum": ["me", "them"],
+                      "description": "假名角色；禁止真实昵称/raw_speaker"},
+          "text": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "target_index": {
+      "type": "integer", "minimum": 0,
+      "description": "them 侧目标消息下标；模型与观察者看到的同一渲染由 render_item_text(item) 派生"
+    },
+    "time_bucket": {
+      "enum": ["early_morning", "morning", "afternoon", "evening", "late_night"],
+      "description": "粗粒度时间桶；禁止精确时间"
+    },
+    "source_note": {"type": "string",
+                    "description": "可选来源说明；不得包含可识别信息"}
+  },
+  "x-forbidden-fields": [
+    "text", "chat", "raw_speaker", "speaker_name", "contact", "email",
+    "phone", "exact_time", "timestamp", "user_id", "account", "handle",
+    "media_content", "real_names", "nickname"
+  ],
+  "x-version": "field-study-item-v1",
+  "x-rendering": "模型输入与观察者文本必须由 field_study.render_item_text(item) 从同一份冻结 item dataset 派生，不得分别手工复制"
+}
