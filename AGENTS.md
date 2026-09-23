@@ -9,7 +9,7 @@ Repo-specific guidance for OpenCode / AI sessions. Everything here was verified 
 
 ## Commands
 
-- Tests: `.venv\Scripts\python -m pytest tests -q` — 502 tests (412 + 90 evaluation/isolation/v3), ~56s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
+- Tests: `.venv\Scripts\python -m pytest tests -q` — 510 tests (412 + 98 evaluation/isolation/v3), ~56s. Single test: `... -m pytest tests/test_scoring.py::test_transform_noul_noise_floor -q`. Run from the repo root (`pytest.ini` sets `pythonpath = .`, `testpaths = tests`).
 - App: `.venv\Scripts\streamlit run app.py` (dev mode).
 - Benchmark (offline, deterministic): `.venv\Scripts\python scripts\evaluate.py --fixtures` (real mode `--real --yes-run-live-api` + `TYPESAFE_API_KEY` is human-only, never run by CI; per case it analyzes **only** that case's TA target via `only_indices` — N cases = N requests — `--report` writes the aggregate comparable via `--compare`, `--raw-report` stores raw model outputs separately).
 - Portable build: `.venv\Scripts\python -m PyInstaller --noconfirm --clean SignalLens.spec` → `.venv\Scripts\python scripts/frozen_smoke.py` → `.venv\Scripts\python scripts/package_portable.py`. Needs `TYPESAFE_API_KEY` in the gitignored `.env`; without a key the UI shows a friendly hint and does not crash.

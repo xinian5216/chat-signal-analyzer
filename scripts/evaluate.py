@@ -139,6 +139,35 @@ def _compare(baseline_path: str, candidate_path: str) -> int:
     return 1 if diff["regression"] else 0
 
 
+_CANON_FIELDS = ("id", "category", "me", "them", "chat", "target")
+
+
+def _case_identity(case: dict) -> dict:
+    """案例的身份指纹（不含预期/说明——允许这些不同）。"""
+    return {field: case.get(field) for field in _CANON_FIELDS}
+
+
+def _check_raw_cases_match(payload_cases, cases, raw_path: str) -> None:
+    """确保 raw 输出对应的案例与待评分案例是同一批（同 ID/顺序/聊天/target/身份）。
+
+    只允许预期与说明文字不同；同名但内容不同的案例一律拒绝复用，
+    防止给旧输出错误地套新约束。
+    """
+    if not isinstance(payload_cases, list) or not payload_cases:
+        raise ev.EvaluationError(
+            f"raw 文件缺少 cases 清单，无法验证案例一致性：{raw_path}")
+    if len(payload_cases) != len(cases):
+        raise ev.EvaluationError(
+            f"raw 文件案例数（{len(payload_cases)}）与待评分案例数"
+            f"（{len(cases)}）不一致：{raw_path}")
+    for raw_case, case in zip(payload_cases, cases):
+        if _case_identity(raw_case) != _case_identity(case):
+            raise ev.EvaluationError(
+                f"案例不一致（id={case.get('id')!r}）：raw 中的案例与 "
+                f"--cases 指定的案例在 id/顺序/聊天/target/身份上不同，"
+                f"拒绝复用该输出。")
+
+
 def _regenerate_from_raw(raw_path: str, cases_path: str | None,
                          report_path: str | None,
                          assume_schema: str | None = None,
@@ -165,6 +194,7 @@ def _regenerate_from_raw(raw_path: str, cases_path: str | None,
               file=sys.stderr)
 
     cases = ev.load_cases(cases_path)
+    _check_raw_cases_match(payload.get("cases"), cases, raw_path)
     aggregate = ev.evaluate_cases(cases, raw_results)
     model = None
     payload_meta = payload.get("meta")

@@ -1,0 +1,167 @@
+{
+  "cs_same_sentence_agree": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.8, "happy": 0.2}, "confidence": 0.75},
+    "intent": {"choice": "confirm_understanding", "probabilities": {"confirm_understanding": 0.8, "other": 0.2}, "confidence": 0.75},
+    "warmth": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.15,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_same_sentence_reluctant": {
+    "emotion": {"choice": "annoyed", "probabilities": {"annoyed": 0.7, "awkward": 0.3}, "confidence": 0.65},
+    "intent": {"choice": "perfunctory", "probabilities": {"perfunctory": 0.7, "other": 0.3}, "confidence": 0.65},
+    "warmth": {"score": 1, "probabilities": {"1": 0.7, "0": 0.3}, "confidence": 0.65},
+    "engagement": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.65},
+    "special_attention": {"score": 0, "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.6},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.15,
+    "distancing_signal": 0.15,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_topic_refusal_redirect": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.7, "awkward": 0.3}, "confidence": 0.7},
+    "intent": {"choice": "continue_topic", "probabilities": {"continue_topic": 0.6, "ask_information": 0.4}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.6},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.1,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_conversation_close_plan": {
+    "emotion": {"choice": "happy", "probabilities": {"happy": 0.6, "calm": 0.4}, "confidence": 0.75},
+    "intent": {"choice": "end_topic", "probabilities": {"end_topic": 0.6, "show_care": 0.4}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.2,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_true_contact_refusal": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.6, "sad": 0.4}, "confidence": 0.7},
+    "intent": {"choice": "distance", "probabilities": {"distance": 0.9, "other": 0.1}, "confidence": 0.75},
+    "warmth": {"score": 2, "probabilities": {"2": 0.6, "1": 0.4}, "confidence": 0.7},
+    "engagement": {"score": 1, "probabilities": {"1": 0.7, "0": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 0, "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "relational_ease": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.15,
+    "distancing_signal": 0.9,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_teasing_no_cues": {
+    "emotion": {"choice": "teasing", "probabilities": {"teasing": 0.6, "annoyed": 0.4}, "confidence": 0.55},
+    "intent": {"choice": "tease", "probabilities": {"tease": 0.6, "share_opinion": 0.4}, "confidence": 0.6},
+    "warmth": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.6},
+    "engagement": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.6},
+    "special_attention": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.6},
+    "relational_ease": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.15,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_teasing_rich_cues": {
+    "emotion": {"choice": "teasing", "probabilities": {"teasing": 0.8, "happy": 0.2}, "confidence": 0.75},
+    "intent": {"choice": "tease", "probabilities": {"tease": 0.8, "share_opinion": 0.2}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relational_ease": {"score": 4, "probabilities": {"4": 0.8, "3": 0.2}, "confidence": 0.75},
+    "romantic_signal": 0.25,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.2",
+    "conversation_context": [
+      {"speaker": "me", "text": "看我新拍的照片，自我感觉良好", "time": "2026-06-04 13:00"},
+      {"speaker": "them", "text": "哈哈哈哈你这pose是要去选秀吗", "time": "2026-06-04 13:02"},
+      {"speaker": "me", "text": "滚，这是艺术", "time": "2026-06-04 13:03"}
+    ]
+  },
+  "cs_explicit_busy_with_plan": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.7, "sad": 0.3}, "confidence": 0.7},
+    "intent": {"choice": "explain", "probabilities": {"explain": 0.6, "invite": 0.4}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.65},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.1,
+    "distancing_signal": 0.25,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_explicit_withdrawal": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.7, "sad": 0.3}, "confidence": 0.7},
+    "intent": {"choice": "distance", "probabilities": {"distance": 0.8, "end_topic": 0.2}, "confidence": 0.75},
+    "warmth": {"score": 2, "probabilities": {"2": 0.6, "1": 0.4}, "confidence": 0.7},
+    "engagement": {"score": 1, "probabilities": {"1": 0.7, "0": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 0, "probabilities": {"0": 0.8, "1": 0.2}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "relational_ease": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.6},
+    "romantic_signal": 0.15,
+    "distancing_signal": 0.85,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_care_polite_daily": {
+    "emotion": {"choice": "caring", "probabilities": {"caring": 0.7, "calm": 0.3}, "confidence": 0.75},
+    "intent": {"choice": "show_care", "probabilities": {"show_care": 0.8, "perfunctory": 0.2}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relationship_evidence_strength": {"score": 1, "probabilities": {"1": 1.0}, "confidence": 0.6},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.2,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_care_validation": {
+    "emotion": {"choice": "caring", "probabilities": {"caring": 0.8, "sad": 0.2}, "confidence": 0.75},
+    "intent": {"choice": "show_care", "probabilities": {"show_care": 0.9, "other": 0.1}, "confidence": 0.75},
+    "warmth": {"score": 3, "probabilities": {"3": 0.7, "4": 0.3}, "confidence": 0.75},
+    "engagement": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 2, "probabilities": {"2": 0.6, "3": 0.4}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.65},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.25,
+    "distancing_signal": 0.1,
+    "model": "fixture-baseline-v3.2"
+  },
+  "cs_care_understanding_help": {
+    "emotion": {"choice": "caring", "probabilities": {"caring": 0.9, "calm": 0.1}, "confidence": 0.8},
+    "intent": {"choice": "show_care", "probabilities": {"show_care": 0.8, "continue_topic": 0.2}, "confidence": 0.75},
+    "warmth": {"score": 4, "probabilities": {"4": 0.7, "3": 0.3}, "confidence": 0.8},
+    "engagement": {"score": 4, "probabilities": {"4": 0.7, "3": 0.3}, "confidence": 0.75},
+    "special_attention": {"score": 2, "probabilities": {"2": 0.6, "3": 0.4}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.65},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.25,
+    "distancing_signal": 0.05,
+    "model": "fixture-baseline-v3.2",
+    "conversation_context": [
+      {"speaker": "me", "text": "装修队又放我鸽子，工地全停了，钱也压着", "time": "2026-06-07 22:00"},
+      {"speaker": "me", "text": "真不知道找谁", "time": "2026-06-07 22:01"}
+    ]
+  },
+  "cs_romantic_boundary_continue": {
+    "emotion": {"choice": "calm", "probabilities": {"calm": 0.7, "caring": 0.3}, "confidence": 0.75},
+    "intent": {"choice": "share_opinion", "probabilities": {"share_opinion": 0.7, "distance": 0.3}, "confidence": 0.7},
+    "warmth": {"score": 2, "probabilities": {"2": 0.7, "3": 0.3}, "confidence": 0.7},
+    "engagement": {"score": 2, "probabilities": {"2": 0.7, "1": 0.3}, "confidence": 0.7},
+    "special_attention": {"score": 1, "probabilities": {"1": 0.7, "2": 0.3}, "confidence": 0.65},
+    "relationship_evidence_strength": {"score": 3, "probabilities": {"3": 0.7, "2": 0.3}, "confidence": 0.7},
+    "relational_ease": {"score": 2, "probabilities": {"2": 1.0}, "confidence": 0.6},
+    "romantic_signal": 0.3,
+    "distancing_signal": 0.25,
+    "model": "fixture-baseline-v3.2"
+  }
+}

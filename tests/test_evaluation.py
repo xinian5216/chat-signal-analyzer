@@ -945,3 +945,161 @@ def test_compare_same_schema_keeps_improvement_wording(tmp_path, capsys):
     assert "SCHEMA SEMANTICS CHANGED" not in out
     assert "resolved failures (improvement)" in out.replace("\n", " ") or \
         "regression: none" in out
+
+
+# ---------------------------------------------------------------------------
+# --from-raw 案例一致性安全检查（禁止拿同名不同内容的案例复用输出）
+# ---------------------------------------------------------------------------
+
+
+def _write_raw_with_cases(tmp_path, cases, meta=None):
+    fixtures = load_fixture_results()
+    raw = tmp_path / "raw.json"
+    payload = {"cases": cases,
+               "results": {c["id"]: fixtures[c["id"]] for c in cases}}
+    if meta is not None:
+        payload["meta"] = meta
+    raw.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return raw
+
+
+def test_from_raw_rejects_case_count_mismatch(tmp_path):
+    cases = load_cases()[:5]
+    raw = _write_raw_with_cases(tmp_path, cases)
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(json.dumps(cases[:4], ensure_ascii=False),
+                          encoding="utf-8")
+    with pytest.raises(ev.EvaluationError):
+        cli._regenerate_from_raw(str(raw), str(cases_path), None)
+
+
+def test_from_raw_rejects_same_id_different_content(tmp_path):
+    cases = load_cases()[:2]
+    raw = _write_raw_with_cases(tmp_path, cases)
+    tampered = json.loads(json.dumps(cases))
+    tampered[1]["chat"] = tampered[1]["chat"] + "\n\n额外消息"
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(json.dumps(tampered, ensure_ascii=False),
+                          encoding="utf-8")
+    with pytest.raises(ev.EvaluationError) as exc:
+        cli._regenerate_from_raw(str(raw), str(cases_path), None)
+    assert "id/顺序/聊天/target/身份" in str(exc.value)
+
+
+def test_from_raw_allows_expectation_only_differences(tmp_path):
+    """同源案例（仅阈值/说明不同）必须允许复用——这是修订集复算的基础。"""
+    original = load_cases()
+    revised_path = REPO_ROOT / "evaluation" / "cases_main34_v3.1.json"
+    revised = ev.load_cases(revised_path)
+    assert [c["id"] for c in original] == [c["id"] for c in revised]
+    raw = _write_raw_with_cases(tmp_path, original,
+                                meta={"schema_version": "chat-signal-v3.1",
+                                      "model": "jev-1.13.0"})
+    report = tmp_path / "regen.json"
+    assert cli._regenerate_from_raw(str(raw), str(revised_path),
+                                    str(report)) in (0, 1)
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["meta"]["benchmark_cases_file"].endswith(
+        "cases_main34_v3.1.json")
+    assert data["meta"]["schema_version"] == "chat-signal-v3.1"
+
+
+def test_from_raw_rejects_missing_cases_manifest(tmp_path):
+    fixtures = load_fixture_results()
+    raw = tmp_path / "raw.json"
+    raw.write_text(json.dumps({"results": fixtures}, ensure_ascii=False),
+                   encoding="utf-8")
+    with pytest.raises(ev.EvaluationError):
+        cli._regenerate_from_raw(str(raw), None, None)
+
+
+# ---------------------------------------------------------------------------
+# v3.1-era 修订集与全新对照案例集
+# ---------------------------------------------------------------------------
+
+MAIN34_V31 = REPO_ROOT / "evaluation" / "cases_main34_v3.1.json"
+CONTRAST = REPO_ROOT / "evaluation" / "cases_contrast_v3.2.json"
+
+
+def test_main34_v31_changes_only_reviewed_items():
+    original = json.loads((REPO_ROOT / "evaluation" / "cases.json")
+                          .read_text(encoding="utf-8"))
+    revised = json.loads(MAIN34_V31.read_text(encoding="utf-8"))
+    assert [c["id"] for c in original] == [c["id"] for c in revised]
+    assert all(a["chat"] == b["chat"] and a["target"] == b["target"]
+               for a, b in zip(original, revised))   # 身份字段零改动
+    changed = {c["id"] for a, c in zip(original, revised)
+               if a["expectations"] != c["expectations"]}
+    assert changed == {
+        "l_friendzone", "m_distant_stepback", "r_evidence_high_negative",
+        "d_tease_no_flirt", "h_topic_continue", "w_work_send",
+        "o_tired_low_mood", "z_media_voice_context"}
+    by_id = {c["id"]: c for c in revised}
+    for cid in ("l_friendzone", "m_distant_stepback",
+                "r_evidence_high_negative"):
+        assert "distancing_signal" not in by_id[cid]["expectations"]
+    assert "ambiguity_tolerant" in by_id["m_distant_stepback"]["tags"]
+    assert "teasing" in by_id["h_topic_continue"]["expectations"][
+        "emotion"]["allowed"]
+    assert "share_personal" in by_id["o_tired_low_mood"]["expectations"][
+        "intent"]["allowed"]
+    assert by_id["r_evidence_high_negative"]["expectations"][
+        "relationship_evidence_strength"] == {"min": 2, "max": 4}
+    # 贴线阈值未被放宽
+    assert by_id["i_disclosure_support"]["expectations"]["warmth"]["min"] == 3
+    assert by_id["c_shared_meme"]["expectations"]["warmth"]["min"] == 2
+    assert by_id["p_ease_high_romantic_low"]["expectations"][
+        "relational_ease"] == {"min": 4, "max": 4}
+
+
+def test_contrast_cases_preregistered_and_isolated():
+    cases = ev.load_cases(CONTRAST)
+    ids = [c["id"] for c in cases]
+    assert len(cases) >= 12 and len(ids) == len(set(ids))
+    assert all(i.startswith("cs_") for i in ids)
+    # 与所有既有案例集无交集（从未参与任何真实评估）
+    known = ({c["id"] for c in ev.load_cases()}
+             | {c["id"] for c in ev.load_cases(
+                 REPO_ROOT / "evaluation" / "cases_distancing.json")}
+             | {c["id"] for c in ev.load_cases(
+                 REPO_ROOT / "evaluation" / "cases_distancing_v3.1.json")}
+             | {c["id"] for c in ev.load_cases(
+                 REPO_ROOT / "evaluation" / "cases_phase2.json")})
+    assert not (set(ids) & known)
+    # 对照设计覆盖
+    joined = json.dumps(cases, ensure_ascii=False)
+    for marker in ("行吧", "真不想聊了", "别再联系我了", "凌晨才下班",
+                   "别像以前那样找对方", "选秀吗", "带伞"):
+        assert marker in joined
+    # 忙碌/疏离对照与收尾/拒绝对照成对存在
+    by_id = {c["id"]: c for c in cases}
+    assert (by_id["cs_explicit_busy_with_plan"]["expectations"]
+            ["distancing_signal"]["max_probability"]
+            < by_id["cs_explicit_withdrawal"]["expectations"]
+            ["distancing_signal"]["min_probability"])
+
+
+def test_contrast_fixture_and_cli_smoke():
+    cases = ev.load_cases(CONTRAST)
+    results = ev.load_fixture_results(
+        REPO_ROOT / "evaluation" / "fixtures" / "baseline_v3.2_contrast.json")
+    aggregate = ev.evaluate_cases(cases, results)
+    assert aggregate["passed_cases"] == aggregate["total_cases"]
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--fixtures",
+         "--cases", "evaluation/cases_contrast_v3.2.json",
+         "--fixture-file", "evaluation/fixtures/baseline_v3.2_contrast.json"],
+        capture_output=True, text=True, encoding="utf-8", timeout=300,
+        cwd=str(REPO_ROOT))
+    assert proc.returncode == 0, proc.stderr
+    assert "13/13" in proc.stdout
+
+
+def test_main34_v31_fixture_smoke_with_existing_fixtures():
+    """修订只放松约束：原合成 fixture 应仍全过（含于默认 fixture 冒烟之外）。"""
+    cases = ev.load_cases(MAIN34_V31)
+    results = ev.load_fixture_results()
+    aggregate = ev.evaluate_cases(cases, results)
+    assert aggregate["passed_cases"] == aggregate["total_cases"]
+    assert aggregate["total_constraints"] == 383   # 移除 3 条 distancing

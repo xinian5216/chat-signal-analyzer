@@ -22,13 +22,16 @@
 |---|---|
 | `cases.json` | benchmark 案例集（34 个，分类 A–Z） |
 | `cases_distancing.json` | **v3.0 独立疏离泛化案例集**（15 个，预期在真实运行前固定，DIS 类） |
+| `cases_main34_v3.1.json` | v3.1-era **修订**主案例集（仅应用 `reviews/main34_v31_revisions.md` 的 12 条经复核修订；`cases.json` 不动） |
 | `cases_distancing_v3.1.json` | v3.1 **修订**疏离案例集（仅应用 `reviews/distancing_v31_revisions.md` 记录的 6 处经复核确认的修订；原始案例集不动） |
 | `cases_phase2.json` | **全新 Phase 2 案例集**（10 个，从未用于真实 Jev 评估，预期已冻结） |
+| `cases_contrast_v3.2.json` | **全新对照案例集**（13 个：同句不同前文、拒绝话题+转向、收尾 vs 拒联、忙碌 vs 后撤、调侃有/无线索、关心分层、浪漫边界；从未用于真实评估，预期已冻结） |
 | `fixtures/baseline_v2.2.json` | **合成** baseline 结果（CI / 框架自测用；不代表真实 Jev 输出） |
 | `fixtures/baseline_v3_distancing.json` | 疏离案例集的合成结果（CI 冒烟） |
 | `fixtures/baseline_v3.1_distancing.json` | v3.1 修订疏离案例集的合成结果 |
 | `fixtures/baseline_v3.1_phase2.json` | Phase 2 新案例集的合成结果 |
-| `reviews/` | 人工复核记录（`distancing_v3.md`、`phase2_design_review.md`、`phase2_design.md`、`distancing_v31_revisions.md`） |
+| `fixtures/baseline_v3.2_contrast.json` | 对照案例集的合成结果 |
+| `reviews/` | 人工复核记录（`distancing_v3.md`、`phase2_design_review.md`、`phase2_design.md`、`distancing_v31_revisions.md`、`main34_v31_revisions.md`、`v32_design.md`） |
 
 不同案例集的通过率**不得直接比较**（`--compare` 会按 `meta.benchmark_sha256`
 强制拒绝）。真实评估的报告必须分案例集分别呈现：原始 34 案例、原始 15 疏离
@@ -127,7 +130,10 @@ schema 版本使用不同合成结果）。真实模式的请求语义：
   Context Builder 预算、**实际案例文件路径与 SHA256**），可被 `--compare`
   直接读取；`--raw-report PATH` 单独存放原始模型输出。
 - `--from-raw <raw.json>`：离线重建聚合报告（不调用 API；用于修复 meta 或
-  迁移旧数据）。**schema 版本绝不猜测**：按 raw 自带 meta >
+  迁移旧数据）。**案例一致性安全检查**：raw 内嵌的 cases 清单与 `--cases`
+  指定的案例必须在 ID、顺序、聊天内容、target 与双方身份上完全一致，
+  仅允许预期与说明文字不同（修订集复算的基础）；不一致直接拒绝。
+  **schema 版本绝不猜测**：按 raw 自带 meta >
   `--schema-from-report`（配套冻结报告 meta）> `--assume-schema`（用户显式
   指定并校验格式）的优先级确定；都无法确认时记 `schema_version: null`
   （`schema_source: "unknown"`）并告警，绝不用当前代码版本给旧输出贴标签。
