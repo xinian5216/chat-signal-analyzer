@@ -76,6 +76,11 @@ def _run_real(confirmed: bool, report_path: str | None) -> int:
         print("refusing to run --real under pytest "
               "(benchmark real mode is human-only)", file=sys.stderr)
         return 2
+    if os.environ.get("CI"):
+        # GitHub Actions 等处 CI=true：即使有人显式传了确认与 key 也拒绝
+        print("refusing to run --real in a CI environment "
+              "(benchmark real mode is human-only)", file=sys.stderr)
+        return 2
     if not confirmed:
         print("refusing to run --real without explicit --yes-run-live-api",
               file=sys.stderr)
