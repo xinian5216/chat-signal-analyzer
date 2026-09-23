@@ -574,6 +574,9 @@ mock 基击（100ms 延迟 / 20 个未命中）：串行 2.3s，并发 4 → 0.5
 
 ## 测试与冒烟
 
+- 全量测试使用合成 / mock 数据；`tests/test_field_study.py` 只使用合成
+  标注与合成模型输出，不接触任何真实个人数据；
+- `--real` 与 field study 的真实参与者流程都**不会**被 pytest / CI 触发。
 ```bash
 # 单元测试（mock 响应，绝不调用真实 API）
 pytest tests -v
@@ -603,10 +606,35 @@ Python 3.11 上运行同一套测试，**不需要任何 API Key**。
 ├─ components/rich_paste/index.html   # 剪贴板诊断组件（原生 JS，无依赖）
 ├─ tools/clipboard_probe/             # Clipboard Probe 报告格式化 + 实测清单
 ├─ launcher/         # Windows 一键启动（install.bat / start.bat）
+├─ evaluation/      # 离线评估设施：虚构案例基准 + 人工验证（field study）准备
+│  ├─ cases*.json / fixtures/         # benchmark 案例集与合成结果
+│  ├─ reviews/                        # 人工复核与设计记录
+│  └─ field_study/                    # 研究方案 / 同意书 / 脱敏 / 退出删除 /
+                                      # 标注 schema / 合成示例（未启动招募）
+├─ field_study.py   # 人工验证的离线指标工具（混淆矩阵 / AUC / 弃答覆盖率）
+├─ evaluation.py    # benchmark 约束评估器
+├─ scripts/evaluate.py                # 评估 CLI（fixtures / real / from-raw / compare）
 ├─ scripts/smoke_test.py
 └─ tests/            # parser / privacy / scoring / storage / analyzer /
-                     # report / media / launcher / ui / app flow（全部 mock）
+                     # report / media / launcher / ui / app flow /
+                     # evaluation / field study（全部 mock 或合成数据）
 ```
+
+## 人工验证设施（field study，试点准备）
+
+`evaluation/field_study/` 是与虚构案例基准**分开**的真实反馈验证设施，
+目前只包含方案与工具，**未启动任何招募**，未经单独批准不得收集真实
+个人聊天：
+
+- 明确三层标注分离：发送者当时的交流意图、接收者实际感受到的互动、
+  观察者仅根据文字能够识别的行为；允许「不确定 / 不愿回答 / 信息不足」；
+- `field_study.py` 完全离线：计算准确率（含 Wilson 置信区间）、混淆
+  矩阵、MAE/RMSE、AUC/Brier 与弃答覆盖率；Noul 数值**不**被解释为
+  现实事件概率；
+- 同一聊天双方的片段以 `group_id` 为单位划分，开发集与盲测集隔离；
+  数据集以 SHA256 清单冻结，篡改可检测；
+- 本项目是聊天行为分析工具：**不提供临床心理诊断**，不声称能直接读取
+  他人的真实心理。
 
 ## License
 

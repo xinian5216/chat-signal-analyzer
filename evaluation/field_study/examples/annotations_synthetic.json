@@ -1,0 +1,68 @@
+{
+  "dataset_version": "fs-synth-v1",
+  "schema_note": "合成示例数据：全部虚构，仅用于测试与演示；不含任何真实个人数据。",
+  "annotations": [
+    {
+      "item_id": "synth-001",
+      "group_id": "group-A",
+      "role": "observer",
+      "annotator_id": "a-01",
+      "labels": {
+        "emotion_observed": {"status": "labeled", "value": "caring"}
+      },
+      "notes": ""
+    },
+    {
+      "item_id": "synth-001",
+      "group_id": "group-A",
+      "role": "observer",
+      "annotator_id": "a-02",
+      "labels": {
+        "sender_intent": {"status": "labeled", "value": "show_care"},
+        "warmth_observed": {"status": "labeled", "value": 3},
+        "romantic_binary": {"status": "labeled", "value": false}
+      }
+    },
+    {
+      "item_id": "synth-002",
+      "group_id": "group-A",
+      "role": "sender",
+      "annotator_id": "p-A-1",
+      "labels": {
+        "sender_intent": {"status": "labeled", "value": "show_care"},
+        "receiver_felt_experience": {"status": "declined"}
+      }
+    },
+    {
+      "item_id": "synth-003",
+      "group_id": "group-B",
+      "role": "observer",
+      "annotator_id": "a-01",
+      "labels": {
+        "sender_intent": {"status": "labeled", "value": "invite"},
+        "engagement_observed": {"status": "labeled", "value": 4},
+        "distancing_binary": {"status": "labeled", "value": false}
+      }
+    },
+    {
+      "item_id": "synth-004",
+      "group_id": "group-B",
+      "role": "observer",
+      "annotator_id": "a-03",
+      "labels": {
+        "sender_intent": {"status": "unsure"},
+        "warmth_observed": {"status": "insufficient"},
+        "romantic_binary": {"status": "labeled", "value": true}
+      }
+    },
+    {
+      "item_id": "synth-005",
+      "group_id": "group-C",
+      "role": "receiver",
+      "annotator_id": "p-C-2",
+      "labels": {
+        "receiver_felt_experience": {"status": "labeled", "value": "被关心但有点压力"}
+      }
+    }
+  ]
+}

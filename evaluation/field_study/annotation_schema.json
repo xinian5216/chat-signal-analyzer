@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SignalLens field study annotation record",
+  "type": "object",
+  "required": ["item_id", "group_id", "role", "labels", "annotator_id"],
+  "additionalProperties": false,
+  "properties": {
+    "item_id": {"type": "string", "minLength": 1},
+    "group_id": {"type": "string", "minLength": 1},
+    "role": {"enum": ["sender", "receiver", "observer"]},
+    "annotator_id": {"type": "string", "minLength": 1},
+    "notes": {"type": "string", "description": "不得包含任何可识别信息"},
+    "labels": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/label_entry"}
+    }
+  },
+  "$defs": {
+    "label_entry": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {"enum": ["labeled", "unsure", "declined", "insufficient"]},
+        "value": {"description": "status=labeled 时必填；类型随维度而定"}
+      }
+    }
+  },
+  "x-dimensions": {
+    "sender_intent": {
+      "layer": "sender intent at the time",
+      "type": "choice",
+      "values": "analyzer.INTENT_OPTIONS keys"
+    },
+    "emotion_observed": {
+      "layer": "observer-identifiable behaviour",
+      "type": "choice",
+      "values": "analyzer.EMOTION_OPTIONS keys"
+    },
+    "warmth_observed": {"layer": "observer", "type": "score", "range": "0~4"},
+    "engagement_observed": {"layer": "observer", "type": "score", "range": "0~4"},
+    "special_attention_observed": {"layer": "observer", "type": "score", "range": "0~4"},
+    "relational_ease_observed": {"layer": "observer", "type": "score", "range": "0~4"},
+    "romantic_binary": {"layer": "observer", "type": "boolean"},
+    "distancing_binary": {"layer": "observer", "type": "boolean"},
+    "receiver_felt_experience": {
+      "layer": "receiver's felt experience（无模型对应项，仅描述统计）",
+      "type": "free choice with the same statuses"
+    }
+  },
+  "x-forbidden-fields": [
+    "text", "chat", "raw_speaker", "speaker_name", "email", "phone",
+    "exact_time", "timestamp", "user_id", "contact"
+  ],
+  "x-version": "field-study-annotation-v1"
+}

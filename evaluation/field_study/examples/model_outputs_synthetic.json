@@ -1,0 +1,47 @@
+{
+  "schema_version": "chat-signal-v3.2",
+  "model": "jev-1.13.0",
+  "note": "合成模型输出示例：字段与真实 --real 报告中的原始结果一致，但数值为虚构。",
+  "outputs": {
+    "synth-001": {
+      "emotion": {"choice": "caring", "probabilities": {"caring": 0.8}},
+      "intent": {"choice": "show_care", "probabilities": {"show_care": 0.7}},
+      "warmth": {"score": 3.0},
+      "engagement": {"score": 2.5},
+      "special_attention": {"score": 1.5},
+      "relational_ease": {"score": 2.0},
+      "romantic_signal": 0.05,
+      "distancing_signal": 0.02
+    },
+    "synth-002": {
+      "emotion": {"choice": "caring", "probabilities": {"caring": 0.6}},
+      "intent": {"choice": "show_care", "probabilities": {"show_care": 0.9}},
+      "warmth": {"score": 2.8},
+      "engagement": {"score": 2.2},
+      "special_attention": {"score": 1.8},
+      "relational_ease": {"score": 2.1},
+      "romantic_signal": 0.04,
+      "distancing_signal": 0.01
+    },
+    "synth-003": {
+      "emotion": {"choice": "happy", "probabilities": {"happy": 0.7}},
+      "intent": {"choice": "invite", "probabilities": {"invite": 0.9}},
+      "warmth": {"score": 3.0},
+      "engagement": {"score": 4.0},
+      "special_attention": {"score": 2.0},
+      "relational_ease": {"score": 2.5},
+      "romantic_signal": 0.2,
+      "distancing_signal": 0.03
+    },
+    "synth-004": {
+      "emotion": {"choice": "teasing", "probabilities": {"teasing": 0.6}},
+      "intent": {"choice": "tease", "probabilities": {"tease": 0.6}},
+      "warmth": {"score": 2.0},
+      "engagement": {"score": 3.0},
+      "special_attention": {"score": 1.0},
+      "relational_ease": {"score": 3.0},
+      "romantic_signal": 0.4,
+      "distancing_signal": 0.05
+    }
+  }
+}
