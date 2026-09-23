@@ -344,7 +344,7 @@ def _check_expectations(case: dict, result: dict) -> list[dict]:
         ok = actual in allowed
         constraints.append({
             "name": f"{dim}_allowed", "passed": ok,
-            "detail": "" if ok else f"emotion/intent={actual!r} 不在允许集合 {allowed}",
+            "detail": "" if ok else f"{dim}={actual!r} 不在允许集合 {allowed}",
             "failure": None if ok else FP_CONTEXT,
         })
     for dim in SCORE_DIMS:

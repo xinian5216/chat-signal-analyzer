@@ -18,12 +18,15 @@ from context_builder import select_context
 from parser import has_media_marker
 from storage import make_cache_key
 
-# 缓存 schema 版本。v2.2：9 个 Jev 问题**未变**，但 state 的两处语义都变了——
-# (1) conversation_context 的选择方式（previous 5 → Context Builder v2
-# turn-aware 有界预算），(2) 出站白名单（raw_speaker 等本地 metadata
-# 不再进入 state / cache key）。bump 使旧分析缓存条目自然失效
-# （不删除 .jev_cache，只自然 miss）。
-SCHEMA_VERSION = "chat-signal-v2.2"
+# 缓存 schema 版本。v3.0：**只修正了 distancing_signal 的语义**——旧定义把
+# “结束交流 / 回避互动 / 降低投入 / 拉开距离”混在一起，把会话层行为（礼貌
+# 收尾、计划稍后再聊、一次短回复、临时疲劳）误判成关系层疏离（v2.2 真实
+# 基线：k_polite_close 0.69、z_media_voice 0.67、o_tired 0.51）。distancing
+# 现在收窄为“对持续互动 / 双方关系的明确疏离”，显式区分 relationship
+# distancing / conversation closing / romantic boundary。其余 8 个问题、
+# scoring、Noul 转换阈值均不变；question 数仍为 9。instructions / criteria
+# 属于问题语义的一部分，因此 bump 使旧缓存条目自然失效（不删除缓存）。
+SCHEMA_VERSION = "chat-signal-v3.0"
 DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
@@ -135,9 +138,22 @@ ROMANTIC_QUESTION = (
     "普通礼貌、正常朋友关心、正常聊天不能单独算作浪漫信号。"
 )
 
+# distancing_signal（v3.0 语义修正）：只判断**关系层**疏离，显式区分五类
+# 情况，避免把会话层行为当成关系疏离：
+#   1. 暂时结束话题（conversation closing）——不是疏离；
+#   2. 当前疲劳 / 忙碌 / 暂时没意愿聊——不是疏离；
+#   3. 对当前话题的拒绝——不是疏离；
+#   4. 对浪漫关系的明确边界（只想做朋友）——不是疏离；
+#   5. 对持续互动 / 双方关系的明确疏离——这才是 true
+#（v2.2 真实基线的误报全部来自 1~4 被旧定义归入 true。）
 DISTANCING_QUESTION = (
-    "这条消息是否提供了对方正在结束交流、回避互动、降低投入"
-    "或刻意拉开距离的信号？"
+    "这条消息是否提供了**关系层面**的疏离信号：对方正在明确减少或结束"
+    "持续的互动、回避这段关系本身，或明确拒绝继续保持联系？"
+    "只在“对持续互动 / 双方关系的明确疏离”上判 true；"
+    "礼貌收尾、计划稍后再聊、一次短回复、当前疲劳或忙碌、"
+    "对单个话题的拒绝，以及仅划定浪漫边界（如只想做朋友）都**不是**"
+    "关系疏离，除非同时带有明确的减少联系或结束关系的表述"
+    "（如“别再找我了”“我们还是别联系了”）。"
 )
 
 # relationship_evidence_strength：
@@ -225,8 +241,12 @@ def build_questions() -> dict:
         "distancing_signal": Noul(
             instructions=DISTANCING_QUESTION,
             criteria={
-                "true": "存在结束交流、回避、降低投入或拉开距离的信号",
-                "false": "没有明显的疏离或结束对话信号",
+                "true": "存在明确的持续性疏离证据：明确拒绝继续保持联系、反复回避"
+                        "互动、宣布结束关系或长期后撤（如“别再找我了”"
+                        "“我们还是别联系了”）",
+                "false": "只是暂时结束话题、礼貌收尾、计划稍后再聊、一次短回复、"
+                         "当前疲劳或忙碌、对单个话题的拒绝，或仅划定浪漫边界"
+                         "（如只想做朋友）而不拒绝普通往来",
             },
         ),
     }

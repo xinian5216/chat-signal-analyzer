@@ -602,7 +602,7 @@ def test_real_path_selects_entry_by_index_not_text():
     cases = load_cases()[:3]
     aggregate, raw, failures = cli.run_real_evaluation(
         cases, _make_analyze_fn(omit_index=True),
-        model="jev-test", schema_version="chat-signal-v2.2")
+        model="jev-test", schema_version=ANALYZER_SCHEMA)
     assert len(failures) == len(cases)                    # 全部按缺失记录
     assert all("error" in raw[c["id"]] for c in cases)
     assert aggregate["passed_cases"] == 0
@@ -614,7 +614,7 @@ def test_real_path_single_failure_does_not_abort_baseline():
     doomed = {cases[2]["target"], cases[5]["target"]}
     aggregate, raw, failures = cli.run_real_evaluation(
         cases, _make_analyze_fn(fail_for=doomed),
-        model="jev-test", schema_version="chat-signal-v2.2")
+        model="jev-test", schema_version=ANALYZER_SCHEMA)
     assert set(failures) == {cases[2]["id"], cases[5]["id"]}
     # 其余案例照常产出结果并被评估
     ok_cases = [c for c in cases if c["id"] not in failures]
@@ -627,7 +627,7 @@ def test_real_report_is_comparable_and_records_meta(tmp_path):
     cases = load_cases()
     aggregate, _, _ = cli.run_real_evaluation(
         cases, _make_analyze_fn(), model="jev-test",
-        schema_version="chat-signal-v2.2")
+        schema_version=ANALYZER_SCHEMA)
     baseline_path = tmp_path / "baseline.json"
     cli._write_json(str(baseline_path), aggregate)
     saved = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -639,7 +639,7 @@ def test_real_report_is_comparable_and_records_meta(tmp_path):
 
     # meta 记录 schema / 模型 / 评估配置
     meta = saved["meta"]
-    assert meta["schema_version"] == "chat-signal-v2.2"
+    assert meta["schema_version"] == ANALYZER_SCHEMA == "chat-signal-v3.0"
     assert meta["model"] == "jev-test"
     assert meta["mode"] == "real"
     assert meta["benchmark_cases"] == len(cases)
@@ -650,7 +650,7 @@ def test_real_report_is_comparable_and_records_meta(tmp_path):
     raw_path = tmp_path / "raw.json"
     _, raw, _ = cli.run_real_evaluation(
         cases, _make_analyze_fn(), model="jev-test",
-        schema_version="chat-signal-v2.2")
+        schema_version=ANALYZER_SCHEMA)
     cli._write_json(str(raw_path), {"cases": cases, "results": raw})
     raw_saved = json.loads(raw_path.read_text(encoding="utf-8"))
     assert set(raw_saved) == {"cases", "results"}
@@ -704,7 +704,7 @@ def test_collect_real_results_matches_run_real_evaluation_raw():
         cases, _make_analyze_fn())
     aggregate, raw2, failures2 = cli.run_real_evaluation(
         cases, _make_analyze_fn(), model="jev-test",
-        schema_version="chat-signal-v2.2")
+        schema_version=ANALYZER_SCHEMA)
     assert raw == raw2 and failures == failures2
     assert set(raw) == {c["id"] for c in cases}
     assert "meta" in aggregate and aggregate["meta"]["benchmark_cases"] == 5

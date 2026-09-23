@@ -2,6 +2,7 @@
 
 import json
 
+import analyzer
 from report import (
     build_json_report,
     build_markdown_report,
@@ -112,7 +113,8 @@ def test_json_schema_and_validity():
                   "relation_confidence", "message_weight"):
         assert field in m
     assert set(m["romantic_signal"]) == {"raw", "evidence"}
-    assert "v2" in data["metadata"]["schema_version"]
+    assert data["metadata"]["schema_version"] == analyzer.SCHEMA_VERSION
+    assert data["metadata"]["schema_version"].startswith("chat-signal-v")
 
 
 def test_json_respects_privacy_option():

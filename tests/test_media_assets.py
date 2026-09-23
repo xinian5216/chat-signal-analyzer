@@ -227,10 +227,11 @@ def test_media_fields_never_enter_jev_state():
     state2 = analyzer.build_state(
         [{"speaker": "me", "text": "在忙吗", "time": None}], projected)
     assert set(state2["target_message"]) == {"speaker", "text", "time"}
-    # 白名单 + v2.2：raw_speaker 不进入 state；版本号随 Context Builder v2
-    # （上下文选择语义）与出站白名单（本地 metadata 剥离）变更而 bump，
-    # 问题 schema 本身与 v2.1 完全一致
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v2.2"
+def test_schema_v30_allowlist_and_version_bump():
+    # 白名单 + v3.0：raw_speaker 不进入 state；版本号随 distancing 语义修正
+    # （relationship distancing / conversation closing / romantic boundary
+    # 三者的区分）bump，问题集合与评分接口不变
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.0"
 
 
 def test_pure_text_cache_key_unchanged():

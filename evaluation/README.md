@@ -21,7 +21,13 @@
 | 文件 | 说明 |
 |---|---|
 | `cases.json` | benchmark 案例集（34 个，分类 A–Z） |
+| `cases_distancing.json` | **v3.0 独立疏离泛化案例集**（15 个，预期在真实运行前固定，DIS 类） |
 | `fixtures/baseline_v2.2.json` | **合成** baseline 结果（CI / 框架自测用；不代表真实 Jev 输出） |
+| `fixtures/baseline_v3_distancing.json` | 疏离案例集的合成结果（CI 冒烟） |
+| `reviews/` | 人工复核记录（如 `distancing_v3.md`：v3.0 语义修正动因与争议案例处置） |
+
+`reviews/`、两个 cases 文件的阈值是**冻结的**：不得通过修改预期或阈值来
+提高既有基线分数；事后调整必须作为新记录追加到 `reviews/`，不得静默改标签。
 
 ### case schema
 
@@ -83,6 +89,11 @@ them 连续短消息 turn（V）、工作事务（W）、夜间聊天（X）、�
 python scripts/evaluate.py --fixtures
 python scripts/evaluate.py --fixtures --report evaluation/reports/base.json
 
+# 独立案例集（v3.0 疏离泛化集；预期 pre-registered）
+python scripts/evaluate.py --fixtures \
+  --cases evaluation/cases_distancing.json \
+  --fixture-file evaluation/fixtures/baseline_v3_distancing.json
+
 # baseline vs candidate（约束维度对比，只按人工约束定义改善/回归）
 python scripts/evaluate.py --compare base.json candidate.json
 
@@ -91,7 +102,9 @@ python scripts/evaluate.py --real --yes-run-live-api    # 且需 TYPESAFE_API_KE
 ```
 
 `--real` 双重门禁：必须显式 `--yes-run-live-api` 且存在 `TYPESAFE_API_KEY`，
-否则拒绝运行（pytest / CI 环境另外直接拒绝）。真实模式的请求语义：
+否则拒绝运行（pytest / CI 环境另外直接拒绝）。`--cases` 选择案例文件、
+`--fixture-file` 选择对应 fixture（fixture 与 cases 文件分开，便于不同
+schema 版本使用不同合成结果）。真实模式的请求语义：
 
 - 每个案例**只分析指定的 TA target**（内部使用 `analyze_messages` 的
   `only_indices`），N 个案例 = N 次请求；案例内其他 TA 历史消息不会被
@@ -107,6 +120,25 @@ python scripts/evaluate.py --real --yes-run-live-api    # 且需 TYPESAFE_API_KE
 
 真实模式的结果可保存为匿名 JSON，作为后续 v3 的 baseline / candidate
 对比输入。
+
+## v3.0：distancing 语义修正（Psychological Evidence v3 Phase 1）
+
+v2.2 真实基线（jev-1.13.0）的主要误报模式：礼貌收尾 0.69、
+语音+推迟 0.67、疲劳短句 0.51——旧定义把**会话层行为**当成了**关系层疏离**。
+v3.0 只修正 `distancing_signal` 的问题语义，显式区分五类：
+
+| 类别 | 例子 | distancing |
+|---|---|---|
+| 暂时结束话题（conversation closing） | “那先这样，早点睡” | 否 |
+| 当前疲劳 / 忙碌 / 暂时没意愿 | “这周加班，周末再约” | 否 |
+| 对当前话题的拒绝 | “这个话题不想聊，聊点别的” | 否 |
+| 对浪漫关系的明确边界 | “我只把你当朋友” | 否 |
+| **对持续互动 / 关系的明确疏离** | “以后别联系我了” | **是** |
+
+`SCHEMA_VERSION` 同步 bump 到 `chat-signal-v3.0`（旧缓存自然失效），
+其余 8 个问题、scoring、Noul 转换阈值不变。`cases_distancing.json` 是
+为这次修正预先登记的独立泛化案例集（预期在看到任何 v3 模型输出前固定）；
+人工复核记录见 `reviews/distancing_v3.md`。
 
 ## 修改算法前必须先跑 benchmark
 

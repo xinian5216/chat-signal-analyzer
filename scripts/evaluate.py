@@ -43,17 +43,15 @@ if str(ROOT) not in sys.path:
 import evaluation as ev  # noqa: E402
 
 
-def _run_fixtures(report_path: str | None) -> int:
-    cases = ev.load_cases()
-    results = ev.load_fixture_results()
+def _run_fixtures(report_path: str | None, cases_path: str | None = None,
+                  fixture_path: str | None = None) -> int:
+    cases = ev.load_cases(cases_path)
+    results = ev.load_fixture_results(fixture_path)
     aggregate = ev.evaluate_cases(cases, results)
     print(ev.format_report(aggregate))
     if report_path:
-        path = Path(report_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(aggregate, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
-        print(f"report written: {path}")
+        _write_json(report_path, aggregate)
+        print(f"report written: {report_path}")
     return 0 if aggregate["passed_cases"] == aggregate["total_cases"] else 1
 
 
@@ -228,7 +226,8 @@ def _gate_real(confirmed: bool) -> str | None:
 
 
 def _run_real(confirmed: bool, report_path: str | None,
-              raw_report_path: str | None = None) -> int:
+              raw_report_path: str | None = None,
+              cases_path: str | None = None) -> int:
     """真实模式：人工显式确认 + API key 才允许调用 Jev。"""
     refusal = _gate_real(confirmed)
     if refusal:
@@ -244,7 +243,7 @@ def _run_real(confirmed: bool, report_path: str | None,
 
     client = TypeSafeClient(api_key=os.environ["TYPESAFE_API_KEY"],
                             model=DEFAULT_MODEL)
-    cases = ev.load_cases()
+    cases = ev.load_cases(cases_path)
     estimate = estimate_live_requests(cases)
     print(f"planned live requests: {estimate['estimated_live_requests']} "
           f"({estimate['cases']} cases x {estimate['targets_per_case']} "
@@ -308,6 +307,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="聚合评估报告（含 meta；可被 --compare 读取）")
     parser.add_argument("--raw-report", metavar="PATH",
                         help="原始模型输出（单独存放，不参与 compare）")
+    parser.add_argument("--cases", metavar="PATH",
+                        help="benchmark 案例文件（默认 evaluation/cases.json；"
+                             "v3 起可用 evaluation/cases_distancing.json）")
+    parser.add_argument("--fixture-file", metavar="PATH",
+                        help="fixture 结果文件（默认 v2.2 合成基线）")
     parser.add_argument("--compare", nargs=2, metavar=("BASELINE", "CANDIDATE"),
                         help="比较两份评估报告（constraint 维度）")
     args = parser.parse_args(argv)
@@ -316,8 +320,8 @@ def main(argv: list[str] | None = None) -> int:
         return _compare(args.compare[0], args.compare[1])
     if args.real:
         return _run_real(args.yes_run_live_api, args.report,
-                         args.raw_report)
-    return _run_fixtures(args.report)
+                         args.raw_report, args.cases)
+    return _run_fixtures(args.report, args.cases, args.fixture_file)
 
 
 if __name__ == "__main__":

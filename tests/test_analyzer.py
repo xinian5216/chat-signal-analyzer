@@ -90,27 +90,30 @@ def test_extract_answers_shape():
     assert out["distancing_signal"] == 0.9
 
 
-def test_schema_v22_questions_unchanged_context_semantics_bumped():
-    """v2.2：9 个问题与 v2.1 完全一致；变的是上下文选择语义 → 版本 bump。
+def test_schema_v30_only_distancing_semantics_changed():
+    """v3.0：只修正 distancing 语义；其余 8 问与 state 构造不变。
 
-    旧 v2 / v2.1 缓存 key 都不能与 v2.2 混用（自然失效）。
+    v2.2 之前的版本变化（v2→v2.1 加 relational_ease；v2.2 改上下文选择 +
+    出站白名单）依旧通过版本差让旧缓存自然失效。
     """
     from storage import make_cache_key
 
-    schema_v22 = analyzer.build_questions_schema()
-    assert "relational_ease" in schema_v22
-    assert len(schema_v22) == 9  # 问题集合自 v2.1 未变
-
-    state = {"conversation_context": [], "target_message": {"speaker": "them", "text": "哦"}}
+    schema_v30 = analyzer.build_questions_schema()
+    assert "relational_ease" in schema_v30
+    assert len(schema_v30) == 9
+    assert schema_v30["distancing_signal"] == {"type": "noul"}
 
     # 模拟 v2 时代的 schema（无 relational_ease 问题）与版本号
-    schema_v2 = {k: v for k, v in schema_v22.items() if k != "relational_ease"}
+    schema_v2 = {k: v for k, v in schema_v30.items() if k != "relational_ease"}
+    state = {"conversation_context": [], "target_message": {"speaker": "them", "text": "哦"}}
     key_v2 = make_cache_key(state, schema_v2, "jev-latest", "chat-signal-v2")
-    key_v21 = make_cache_key(state, schema_v22, "jev-latest", "chat-signal-v2.1")
-    key_v22 = make_cache_key(state, schema_v22, "jev-latest", analyzer.SCHEMA_VERSION)
-    assert key_v2 != key_v21 != key_v22
-    assert key_v21 != key_v22  # 同问题、同 state：仅版本不同 → key 不同
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v2.2"
+    key_v22 = make_cache_key(state, schema_v30, "jev-latest",
+                             "chat-signal-v2.2")
+    key_v30 = make_cache_key(state, schema_v30, "jev-latest",
+                             analyzer.SCHEMA_VERSION)
+    assert key_v2 != key_v22 != key_v30
+    assert key_v22 != key_v30  # 同问题、同 state：仅版本不同 → key 不同
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.0"
 
 
 def test_relational_ease_question_is_score_with_five_levels():
