@@ -714,3 +714,122 @@ def test_default_raw_path_is_gitignored_reports_dir(tmp_path):
     path = cli._default_raw_path()
     assert path.replace("\\", "/").endswith(".json")
     assert "/evaluation/reports/" in path.replace("\\", "/")
+
+
+# ---------------------------------------------------------------------------
+# meta 记录实际案例文件；--compare 案例集身份检查；--from-raw 离线重建
+# ---------------------------------------------------------------------------
+
+
+DIST_CASES = REPO_ROOT / "evaluation" / "cases_distancing.json"
+
+
+def test_meta_records_actual_cases_file_default():
+    cases = load_cases()
+    aggregate, _, _ = cli.run_real_evaluation(
+        cases, _make_analyze_fn(), model="jev-test",
+        schema_version="chat-signal-v3.0")
+    meta = aggregate["meta"]
+    assert meta["benchmark_cases_file"].endswith("evaluation/cases.json")
+    import hashlib
+    assert meta["benchmark_sha256"] == hashlib.sha256(
+        (REPO_ROOT / "evaluation" / "cases.json").read_bytes()).hexdigest()
+
+
+def test_meta_records_actual_cases_file_custom():
+    cases = load_cases(DIST_CASES)
+    assert cases and cases[0]["id"].startswith("dis_")
+    aggregate, _, _ = cli.run_real_evaluation(
+        cases, _make_analyze_fn(), model="jev-test",
+        schema_version="chat-signal-v3.0", cases_path=str(DIST_CASES))
+    meta = aggregate["meta"]
+    assert meta["benchmark_cases_file"].endswith(
+        "evaluation/cases_distancing.json")
+    import hashlib
+    assert meta["benchmark_sha256"] == hashlib.sha256(
+        DIST_CASES.read_bytes()).hexdigest()
+    assert meta["benchmark_cases"] == len(cases)
+
+
+def _write_report(path, *, cases, schema, cases_path, model="jev-test",
+                  sabotage=None):
+    aggregate = ev.evaluate_cases(
+        cases, {c["id"]: _valid_result() for c in cases})
+    if sabotage != "drop_meta":
+        meta = {"mode": "test", "model": model, "schema_version": schema,
+                "benchmark_cases": len(cases),
+                "benchmark_cases_file": str(cases_path),
+                "benchmark_sha256": _sha(cases_path)}
+        if sabotage == "wrong_sha":
+            meta["benchmark_sha256"] = "0" * 64
+        if sabotage == "wrong_count":
+            meta["benchmark_cases"] = 999
+        aggregate["meta"] = meta
+    Path(path).write_text(json.dumps(aggregate, ensure_ascii=False),
+                          encoding="utf-8")
+
+
+def _sha(path) -> str:
+    import hashlib
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def test_compare_refuses_different_case_sets(tmp_path, capsys):
+    default_cases = load_cases()[:4]
+    dist_cases = load_cases(DIST_CASES)[:4]
+    base = tmp_path / "base.json"
+    cand = tmp_path / "cand.json"
+    _write_report(base, cases=default_cases, schema="chat-signal-v3.0",
+                  cases_path=REPO_ROOT / "evaluation" / "cases.json")
+    _write_report(cand, cases=dist_cases, schema="chat-signal-v3.0",
+                  cases_path=DIST_CASES)
+    code = cli._compare(str(base), str(cand))
+    assert code == 3
+    captured = capsys.readouterr()
+    assert "案例集不一致" in (captured.out + captured.err)
+
+
+def test_compare_refuses_missing_meta(tmp_path, capsys):
+    cases = load_cases()[:4]
+    base = tmp_path / "a.json"
+    cand = tmp_path / "b.json"
+    _write_report(base, cases=cases, schema="chat-signal-v3.0",
+                  cases_path=REPO_ROOT / "evaluation" / "cases.json",
+                  sabotage="drop_meta")
+    _write_report(cand, cases=cases, schema="chat-signal-v3.0",
+                  cases_path=REPO_ROOT / "evaluation" / "cases.json")
+    code = cli._compare(str(base), str(cand))
+    assert code == 3
+    assert "缺少" in capsys.readouterr().err
+
+
+def test_compare_same_case_set_but_schema_change_warns(tmp_path, capsys):
+    cases = load_cases()[:4]
+    cases_path = REPO_ROOT / "evaluation" / "cases.json"
+    base = tmp_path / "a.json"
+    cand = tmp_path / "b.json"
+    _write_report(base, cases=cases, schema="chat-signal-v2.2",
+                  cases_path=cases_path)
+    _write_report(cand, cases=cases, schema="chat-signal-v3.0",
+                  cases_path=cases_path)
+    code = cli._compare(str(base), str(cand))
+    assert code == 0                       # 约束级无回归
+    out = capsys.readouterr().out
+    assert "SCHEMA SEMANTICS CHANGED" in out
+    assert "chat-signal-v2.2" in out and "chat-signal-v3.0" in out
+
+
+def test_from_raw_regenerates_meta_offline(tmp_path):
+    cases = load_cases()
+    fixtures = load_fixture_results()
+    raw = tmp_path / "raw.json"
+    payload = {"cases": cases, "results": fixtures}
+    raw.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    report = tmp_path / "regen.json"
+    code = cli._regenerate_from_raw(str(raw), None, str(report))
+    assert code == 0
+    data = json.loads(report.read_text(encoding="utf-8"))
+    assert data["meta"]["mode"] == "real-offline-regen"
+    assert data["meta"]["benchmark_cases_file"].endswith("cases.json")
+    assert data["meta"]["benchmark_cases"] == 34
+    assert data["total_cases"] == 34 and data["passed_cases"] == 34

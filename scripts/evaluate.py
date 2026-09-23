@@ -55,9 +55,44 @@ def _run_fixtures(report_path: str | None, cases_path: str | None = None,
     return 0 if aggregate["passed_cases"] == aggregate["total_cases"] else 1
 
 
+def _case_set_identity(report: dict) -> dict | None:
+    """从聚合报告中提取案例集身份；没有 meta 身份信息时返回 None。"""
+    meta = report.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    return {
+        "sha": meta.get("benchmark_sha256"),
+        "count": meta.get("benchmark_cases"),
+        "schema": meta.get("schema_version"),
+        "file": meta.get("benchmark_cases_file"),
+    }
+
+
 def _compare(baseline_path: str, candidate_path: str) -> int:
     baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
     candidate = json.loads(Path(candidate_path).read_text(encoding="utf-8"))
+    base_id = _case_set_identity(baseline)
+    cand_id = _case_set_identity(candidate)
+    if (base_id is None or cand_id is None
+            or not base_id.get("sha") or not cand_id.get("sha")):
+        print("refusing to compare: 报告缺少 benchmark 案例集身份"
+              "（meta.benchmark_sha256 / benchmark_cases）。", file=sys.stderr)
+        print("请用带 meta 的新版报告重新生成；历史报告可用 "
+              "--from-raw <raw.json> --cases <cases.json> 离线重建。",
+              file=sys.stderr)
+        return 3
+    if (base_id["sha"] != cand_id["sha"]
+            or base_id["count"] != cand_id["count"]):
+        print("refusing to compare: 两份报告的 benchmark 案例集不一致——"
+              "无法定义同一把尺子上的“改善率”。", file=sys.stderr)
+        print(f"  baseline : {base_id['file']} "
+              f"({base_id['count']} cases, sha256 {base_id['sha'][:16]}…)",
+              file=sys.stderr)
+        print(f"  candidate: {cand_id['file']} "
+              f"({cand_id['count']} cases, sha256 {cand_id['sha'][:16]}…)",
+              file=sys.stderr)
+        return 3
+
     diff = ev.compare_reports(baseline, candidate)
     print(f"baseline pass rate : {diff['baseline_pass_rate']:.1%}")
     print(f"candidate pass rate: {diff['candidate_pass_rate']:.1%}")
@@ -69,8 +104,45 @@ def _compare(baseline_path: str, candidate_path: str) -> int:
         print("introduced failures (regression):")
         for item in diff["introduced_failures"]:
             print(f"  + {item}")
-    print("regression:" , "YES" if diff["regression"] else "none")
+    if base_id["schema"] != cand_id["schema"]:
+        print("\n!! SCHEMA SEMANTICS CHANGED !!")
+        print(f"  baseline schema : {base_id['schema']}")
+        print(f"  candidate schema: {cand_id['schema']}")
+        print("  两份报告的 question 语义不同：通过率差异**不是**同一把尺子上的"
+              "改善/回归，只能作为约束级 diff 参考；案例集一致也不代表语义可比。")
+    print("regression:", "YES" if diff["regression"] else "none")
     return 1 if diff["regression"] else 0
+
+
+def _regenerate_from_raw(raw_path: str, cases_path: str | None,
+                         report_path: str | None) -> int:
+    """离线从原始结果重建聚合报告（不调用任何 API；用于修复 meta 或迁移旧数据）。"""
+    payload = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, dict) or not raw_results:
+        print(f"raw 文件没有 results：{raw_path}", file=sys.stderr)
+        return 2
+    from analyzer import DEFAULT_MODEL, SCHEMA_VERSION
+
+    cases = ev.load_cases(cases_path)
+    aggregate = ev.evaluate_cases(cases, raw_results)
+    model = next(
+        (r.get("model") for r in raw_results.values()
+         if isinstance(r, dict) and r.get("model")), DEFAULT_MODEL)
+    failed = sum(1 for r in raw_results.values()
+                 if not isinstance(r, dict) or r.get("error"))
+    aggregate["meta"] = _report_meta(
+        cases, model=model, mode="real-offline-regen",
+        schema_version=SCHEMA_VERSION, failed=failed,
+        cases_path=cases_path or ev.DEFAULT_CASES_PATH)
+    print(ev.format_report(aggregate))
+    print(f"cases file: {aggregate['meta']['benchmark_cases_file']}; "
+          f"cases sha256: {aggregate['meta']['benchmark_sha256'][:16]}…; "
+          f"model: {model}")
+    if report_path:
+        _write_json(report_path, aggregate)
+        print(f"regenerated aggregate report written: {report_path}")
+    return 0 if aggregate["passed_cases"] == aggregate["total_cases"] else 1
 
 
 def estimate_live_requests(cases: list[dict]) -> dict:
@@ -161,6 +233,7 @@ def run_real_evaluation(
     model: str,
     mode: str = "real",
     schema_version: str | None = None,
+    cases_path: str | Path | None = None,
 ) -> tuple[dict, dict, list[str]]:
     """真实模式的编排核心（与网络/门禁解耦，便于完全 mock 测试）。
 
@@ -182,23 +255,26 @@ def run_real_evaluation(
     aggregate = ev.evaluate_cases(cases, raw_results)
     aggregate["meta"] = _report_meta(cases, model=model, mode=mode,
                                      schema_version=schema_version,
-                                     failed=len(failures))
+                                     failed=len(failures),
+                                     cases_path=cases_path)
     return aggregate, raw_results, failures
 
 
 def _report_meta(cases: list[dict], *, model: str, mode: str,
-                 schema_version: str | None, failed: int) -> dict:
-    """报告 meta：记录 schema、模型与评估配置，便于后续比较与复现。"""
+                 schema_version: str | None, failed: int,
+                 cases_path: str | Path | None = None) -> dict:
+    """报告 meta：记录 schema、模型与**实际使用的**案例文件（便于对比与复现）。"""
     from context_builder import (CONTEXT_MAX_CHARS, CONTEXT_MAX_MESSAGES,
                                  CONTEXT_MAX_TURNS)
 
+    cases_file = Path(cases_path) if cases_path else ev.DEFAULT_CASES_PATH
     return {
         "mode": mode,
         "model": model,
         "schema_version": schema_version,
         "benchmark_cases": len(cases),
-        "benchmark_sha256": hashlib.sha256(
-            ev.DEFAULT_CASES_PATH.read_bytes()).hexdigest(),
+        "benchmark_cases_file": str(cases_file).replace("\\", "/"),
+        "benchmark_sha256": hashlib.sha256(cases_file.read_bytes()).hexdigest(),
         "context_builder": {
             "max_turns": CONTEXT_MAX_TURNS,
             "max_messages": CONTEXT_MAX_MESSAGES,
@@ -263,11 +339,15 @@ def _run_real(confirmed: bool, report_path: str | None,
     aggregate = ev.evaluate_cases(cases, raw_results)
     aggregate["meta"] = _report_meta(cases, model=DEFAULT_MODEL, mode="real",
                                      schema_version=SCHEMA_VERSION,
-                                     failed=len(failures))
+                                     failed=len(failures),
+                                     cases_path=cases_path
+                                     or ev.DEFAULT_CASES_PATH)
 
     print(ev.format_report(aggregate))
     print(f"schema version: {SCHEMA_VERSION}; "
           f"model: {DEFAULT_MODEL}; cache: off")
+    print(f"cases file: {aggregate['meta']['benchmark_cases_file']}; "
+          f"cases sha256: {aggregate['meta']['benchmark_sha256'][:16]}…")
     if failures:
         print(f"failed cases (recorded, baseline continued): "
               f"{len(failures)} → {', '.join(failures)}")
@@ -275,9 +355,6 @@ def _run_real(confirmed: bool, report_path: str | None,
         _write_json(report_path, aggregate)
         print(f"aggregate report written: {report_path} "
               f"(readable by --compare)")
-    if raw_report_path:
-        _write_json(raw_report_path, {"cases": cases, "results": raw_results})
-        print(f"raw model outputs written: {raw_report_path}")
     return 0 if aggregate["passed_cases"] == aggregate["total_cases"] else 1
 
 
@@ -313,11 +390,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fixture-file", metavar="PATH",
                         help="fixture 结果文件（默认 v2.2 合成基线）")
     parser.add_argument("--compare", nargs=2, metavar=("BASELINE", "CANDIDATE"),
-                        help="比较两份评估报告（constraint 维度）")
+                        help="比较两份评估报告（constraint 维度；案例集身份"
+                             "不一致或 schema 语义变化会被拒绝/显式警告）")
+    parser.add_argument("--from-raw", metavar="PATH",
+                        help="离线从原始结果重建聚合报告（不调用 API）")
     args = parser.parse_args(argv)
 
     if args.compare:
         return _compare(args.compare[0], args.compare[1])
+    if args.from_raw:
+        return _regenerate_from_raw(args.from_raw, args.cases, args.report)
     if args.real:
         return _run_real(args.yes_run_live_api, args.report,
                          args.raw_report, args.cases)

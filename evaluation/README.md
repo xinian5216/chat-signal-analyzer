@@ -24,7 +24,7 @@
 | `cases_distancing.json` | **v3.0 独立疏离泛化案例集**（15 个，预期在真实运行前固定，DIS 类） |
 | `fixtures/baseline_v2.2.json` | **合成** baseline 结果（CI / 框架自测用；不代表真实 Jev 输出） |
 | `fixtures/baseline_v3_distancing.json` | 疏离案例集的合成结果（CI 冒烟） |
-| `reviews/` | 人工复核记录（如 `distancing_v3.md`：v3.0 语义修正动因与争议案例处置） |
+| `reviews/` | 人工复核记录（`distancing_v3.md`：v3.0 语义修正动因与争议案例处置；`phase2_design_review.md`：v3 distancing 真实评估 12 条失败约束的人工复核；`phase2_design.md`：v3 Phase 2 设计方案） |
 
 `reviews/`、两个 cases 文件的阈值是**冻结的**：不得通过修改预期或阈值来
 提高既有基线分数；事后调整必须作为新记录追加到 `reviews/`，不得静默改标签。
@@ -115,8 +115,14 @@ schema 版本使用不同合成结果）。真实模式的请求语义：
 - 单条请求失败 / 结果缺失只记录该案例（聚合里计 `api_error` /
   `missing_result`），不中断整个基线；
 - `--report PATH` 写**聚合评估报告**（含 meta：schema 版本、模型、
-  Context Builder 预算、案例数、cases.json SHA256），可被 `--compare`
+  Context Builder 预算、**实际案例文件路径与 SHA256**），可被 `--compare`
   直接读取；`--raw-report PATH` 单独存放原始模型输出。
+- `--from-raw <raw.json>` 离线重建聚合报告（不调用 API；用于修复 meta 或
+  迁移旧数据）。
+- `--compare` 带案例集身份检查：两份报告的 `benchmark_sha256` /
+  案例数不一致或缺少 meta 身份时**拒绝**计算改善率（exit 3）；
+  schema 版本不同时会显式提示“语义已变，通过率不可直接当作同一把尺子的
+  改善/回归”，只可作约束级 diff 参考。
 
 真实模式的结果可保存为匿名 JSON，作为后续 v3 的 baseline / candidate
 对比输入。
