@@ -18,14 +18,13 @@ from context_builder import select_context
 from parser import has_media_marker
 from storage import make_cache_key
 
-# 缓存 schema 版本。v3.2：**只改 engagement 的问题描述与等级说明**——把投入度
-# 从“是否同意话题/是否亲密”重新锚定为“当前消息对互动的实际参与和贡献”：
-# 拒绝话题但主动追问、暂时忙碌但给出具体安排、礼貌收尾但内容具体，都不再
-# 机械判为低投入；只有反复无实质回应或明确拒绝继续交流才计入低投入；
-# 且 engagement 与关系疏离（distancing_signal）显式解耦。其余 8 问、scoring、
-# Noul 转换、Context Builder 均不变；仍 9 问一次 system_one。bump 使旧缓存
-# 自然失效（不删除缓存）。
-SCHEMA_VERSION = "chat-signal-v3.2"
+# 缓存 schema 版本。v3.3：**不改变任何问题、评分或判断规则**，只修一个
+# 数据正确性问题：合并多片段后先按可靠时间线排序（timeline.sort_messages）
+# 再交给 Context Builder。此前“从最新往更早追加”的导入方式会得到逆序列表，
+# target 会把更晚的消息当成上下文（未来泄漏）。因为 conversation_context
+# 的内容随排序变化，cache key 必须变化 → bump 使旧（错误顺序下的）缓存
+# 自然失效；不删除缓存、不改九问。
+SCHEMA_VERSION = "chat-signal-v3.3"
 DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明

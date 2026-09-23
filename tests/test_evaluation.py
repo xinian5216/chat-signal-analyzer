@@ -641,7 +641,7 @@ def test_real_report_is_comparable_and_records_meta(tmp_path):
 
     # meta 记录 schema / 模型 / 评估配置
     meta = saved["meta"]
-    assert meta["schema_version"] == ANALYZER_SCHEMA == "chat-signal-v3.2"
+    assert meta["schema_version"] == ANALYZER_SCHEMA == "chat-signal-v3.3"
     assert meta["model"] == "jev-test"
     assert meta["mode"] == "real"
     assert meta["benchmark_cases"] == len(cases)

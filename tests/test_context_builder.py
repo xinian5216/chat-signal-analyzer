@@ -373,7 +373,7 @@ def test_repeated_runs_produce_identical_context():
 
 def test_v30_cache_key_differs_from_v22():
     """需求 19：SCHEMA_VERSION=v3.2（engagement 语义重定义），旧 key 不同。"""
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.2"
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.3"
     state = build_state([_msg("me", "在吗")], _msg("them", "在"))
     schema = analyzer.build_questions_schema()
     key_v32 = make_cache_key(state, schema, analyzer.DEFAULT_MODEL,

@@ -98,8 +98,8 @@ TA
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_is_v32():
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.2"
+def test_schema_version_is_v33():
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.3"
 
 
 def test_v32_cache_key_isolated_from_v31_v22():

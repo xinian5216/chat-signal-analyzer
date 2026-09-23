@@ -111,11 +111,11 @@ def test_schema_v30_only_distancing_semantics_changed():
                              "chat-signal-v3.0")
     key_v31 = make_cache_key(state, schema_v31, "jev-latest",
                              "chat-signal-v3.1")
-    key_v32 = make_cache_key(state, schema_v31, "jev-latest",
+    key_v33 = make_cache_key(state, schema_v31, "jev-latest",
                              analyzer.SCHEMA_VERSION)
-    assert key_v2 != key_v30 != key_v31
+    assert key_v2 != key_v30 != key_v31 != key_v33
     assert key_v30 != key_v31  # 同问题、同 state：仅版本不同 → key 不同
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.2"
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.3"
 
 
 def test_relational_ease_question_is_score_with_five_levels():

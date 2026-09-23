@@ -231,7 +231,7 @@ def test_schema_v32_allowlist_and_version_bump():
     # 白名单 + v3.2：raw_speaker 不进入 state；版本号随 engagement 语义重定义
     # （参与和贡献 vs 同意话题 vs 亲密度，且与 distancing 解耦）bump，
     # 问题集合与评分接口不变
-    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.2"
+    assert analyzer.SCHEMA_VERSION == "chat-signal-v3.3"
 
 
 def test_pure_text_cache_key_unchanged():

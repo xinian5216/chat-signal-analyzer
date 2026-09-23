@@ -85,6 +85,16 @@ from ui_helpers import (
     evidence_short,
     visible_behaviors,
 )
+
+# 时间线排序（本地纯函数：合并去重后、Context Builder 之前必须排序；
+# 否则“从最新往更早追加”的导入方式会把未来消息当成上下文）
+from timeline import (
+    page_time_range,
+    preview_page,
+    sort_messages,
+    order_signature,
+    migrate_bindings,
+)
 DISCLAIMER = (
     "“互动亲近信号指数”仅代表聊天文本中可以观察到的亲近、主动、投入、暧昧、"
     "疏离等信号的组合，**不代表对方真实心理状态**，更不是“TA 喜欢你的概率”。"
@@ -196,6 +206,13 @@ def init_state() -> None:
         ("order_proven", False),         # 用户是否已实测确认顺序一致
         ("probe_value", None),           # Probe 区组件返回值（若协议可用）
         ("probe_open", False),           # Clipboard Probe 是否已显式打开（默认不加载）
+        # ---- 时间线（排序 / 预览 / 不确定性）----
+        ("timeline_info", None),         # timeline.TimelineResult（时间校验摘要）
+        ("order_signature", None),       # 消息顺序指纹（变化即失效旧结果）
+        ("media_bindings_dropped", []),  # 排序后无法安全迁移而被丢弃的绑定
+        ("preview_mode", "recent"),      # 预览方式：recent / earliest / all
+        ("preview_page", 1),             # 分页预览页码
+        ("order_confirmed", False),      # 用户已确认“时间不完整消息的顺序风险”
     ):
         if key not in st.session_state:
             st.session_state[key] = default
@@ -535,6 +552,12 @@ def _reset_chat_state() -> None:
     st.session_state["sel_ta"] = "（未指定）"
     st.session_state["applied_me"] = None
     st.session_state["applied_ta"] = None
+    # 时间线 / 顺序状态：换聊天必须全部作废
+    st.session_state["timeline_info"] = None
+    st.session_state["order_signature"] = None
+    st.session_state["media_bindings_dropped"] = []
+    st.session_state["order_confirmed"] = False
+    st.session_state["preview_page"] = 1
 
 
 def set_input_notice(level: str, text: str) -> None:
@@ -559,6 +582,18 @@ def _warn_media_errors(errors) -> None:
         set_input_notice("warning", err)
 
 
+def _tag_chunk(messages: list[dict], chunk_idx: int) -> list[dict]:
+    """给一条片段解析出的消息打上本地 chunk 序号（仅用于时间线同刻歧义判定）。
+
+    ``_chunk_idx`` 是纯本地 metadata：analyzer.build_state 的出站白名单只
+    放行 speaker/text/time，merge fingerprint 也不含它，因此绝不进入
+    Jev state / 缓存 key / 报告。
+    """
+    for m in messages:
+        m["_chunk_idx"] = chunk_idx
+    return messages
+
+
 def rebuild_messages_from_chunks(my_name: str | None,
                                  them_name: str | None) -> list[dict]:
     """用**显式传入**的昵称映射，从所有已追加的片段重新解析并本地合并。
@@ -571,16 +606,16 @@ def rebuild_messages_from_chunks(my_name: str | None,
     映射，导致所有消息都变成 unknown。
     """
     merged: list[dict] = []
-    for chunk in st.session_state.get("raw_chunks") or []:
+    for idx, chunk in enumerate(st.session_state.get("raw_chunks") or []):
         if not chunk or not chunk.strip():
             continue
         parsed = mask_messages(parse_chat(chunk, my_name, them_name))
+        parsed = _tag_chunk(parsed, idx)
         if not merged:
             merged = parsed
         else:
             merged = merge_messages(merged, parsed).messages
     return merged
-
 
 def handle_replace_chunk(text: str, uploaded: list) -> None:
     """解析并替换当前聊天（本地解析 + 本地脱敏，0 Jev API）。"""
@@ -595,7 +630,7 @@ def handle_replace_chunk(text: str, uploaded: list) -> None:
     _reset_chat_state()
     st.session_state["raw_text"] = text
     st.session_state["raw_chunks"] = [text]
-    st.session_state["messages"] = mask_messages(parsed)
+    set_messages(_tag_chunk(mask_messages(parsed), 0))
     st.session_state["skipped_media"] = 0
     assets, errors = assets_from_uploader(uploaded)
     st.session_state["media_assets"] = dedupe_assets(assets)
@@ -624,26 +659,26 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
 
     existing = st.session_state.get("messages") or []
     before_participants = set(detect_participants(existing))
-    result = merge_messages(existing, mask_messages(parsed))
+    incoming = mask_messages(parsed)
+    # 追加片段打上本地 chunk 序号：时间线据此判定“跨片段同刻”歧义
+    incoming = _tag_chunk(
+        incoming, len(st.session_state.get("raw_chunks") or []))
+    result = merge_messages(existing, incoming)
 
     chunks = list(st.session_state.get("raw_chunks") or [])
     chunks.append(text)
     st.session_state["raw_chunks"] = chunks
     st.session_state["raw_text"] = "\n\n".join(chunks)
-    st.session_state["messages"] = result.messages
+    # 走唯一入口：时间线排序 + 绑定迁移 + 顺序变化时失效旧结果
+    set_messages(result.messages)
     st.session_state["append_stats"] = result
-
-    # 消息列表变了 → 旧结果的下标全部失效，必须重新分析（缓存命中不重复请求）
-    st.session_state["analysis_messages"] = None
-    st.session_state["analysis_state"] = "idle"
-    clear_analysis_results()
 
     # 身份映射：参与者集合不变 → 保留；出现新参与者 → 要求重新确认
     had_mapping = bool(
         st.session_state.get("applied_me") or st.session_state.get("applied_ta")
     )
     new_participants = sorted(
-        set(detect_participants(result.messages)) - before_participants
+        set(detect_participants(st.session_state["messages"])) - before_participants
     )
     if had_mapping and new_participants:
         st.session_state["applied_me"] = None
@@ -651,7 +686,7 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
         st.session_state["sel_me"] = "（未指定）"
         st.session_state["sel_ta"] = "（未指定）"
         # 映射已清空：显式传 None，按“未知发言人”重建（不猜身份）
-        st.session_state["messages"] = rebuild_messages_from_chunks(None, None)
+        set_messages(rebuild_messages_from_chunks(None, None))
         set_input_notice(
             "warning",
             "追加的片段里出现新的参与者：" + "、".join(new_participants)
@@ -779,6 +814,49 @@ def apply_media_bindings(messages: list[dict]) -> object:
     st.session_state["media_bindings"] = dict(result.auto)
     st.session_state["media_manual"] = {}
     return result
+
+
+def set_messages(new_messages: list[dict], *, source: str = "import") -> None:
+    """消息列表唯一入口：时间线排序 + 媒体绑定迁移 + 失效旧状态。
+
+    为什么必须走这里：合并去重后的列表是“复制顺序”，用户从最新往更早
+    追加时会变成逆序 —— Context Builder 会把更晚的消息当成更早消息的
+    上下文（未来泄漏）。因此任何消息赋值都要先排成可靠时间线。
+
+    - 排序改变 order_signature → 旧分析结果与依赖 index 的状态全部失效；
+    - 媒体绑定按 fingerprint 迁移：无法唯一对应的绑定被丢弃，要求用户
+      重新确认，绝不允许图片错配到另一条消息；
+    - 纯本地操作，不调用 Jev API。
+    """
+    old_messages = st.session_state.get("messages") or []
+    old_bindings = dict(st.session_state.get("media_bindings") or {})
+    timeline = sort_messages(
+        new_messages,
+        multi_chunk=len(st.session_state.get("raw_chunks") or []) > 1,
+    )
+    st.session_state["messages"] = timeline.messages
+    st.session_state["timeline_info"] = timeline
+
+    new_bindings, dropped = migrate_bindings(
+        old_messages, timeline.messages, old_bindings)
+    st.session_state["media_bindings"] = new_bindings
+    if dropped:
+        st.session_state["media_bindings_dropped"] = sorted(dropped)
+
+    previous_sig = st.session_state.get("order_signature")
+    new_sig = order_signature(timeline.messages)
+    st.session_state["order_signature"] = new_sig
+    if previous_sig is not None and previous_sig != new_sig:
+        # 顺序变了（不只是追加）：旧结果的下标全部失效
+        st.session_state["analysis_messages"] = None
+        st.session_state["analysis_state"] = "idle"
+        clear_analysis_results()
+    if timeline.order_changed and source == "import":
+        set_input_notice(
+            "info",
+            "已按时间重新排序（最早在前）："
+            + timeline.summary_text(),
+        )
 
 
 def show_media_binding_panel(messages: list[dict]) -> None:
@@ -1039,9 +1117,10 @@ def show_confirm_stage(messages: list[dict]) -> None:
                         st.session_state["applied_ta"] = (
                             None if sel_ta == "（未指定）" else sel_ta
                         )
-                        st.session_state["messages"] = merged
-                        st.session_state["analysis_messages"] = None
-                        clear_analysis_results()
+                        # 走唯一入口：从全部原始片段重建后仍保持时间排序，
+                        # 而不是恢复到导入顺序；顺序变化自动失效旧结果
+                        set_messages(merged)
+                        apply_media_bindings(st.session_state["messages"])
                         st.rerun()
         else:
             mapping = " · ".join(
@@ -1073,16 +1152,70 @@ def show_confirm_stage(messages: list[dict]) -> None:
         # ---- 富媒体图片绑定 / 手动匹配 ----
         show_media_binding_panel(messages)
 
-        # ---- 预览表（安全门禁，保留）----
+        # ---- 时间校验摘要（预览区域）----
+        tlinfo = st.session_state.get("timeline_info")
+        if tlinfo is not None:
+            st.caption(
+                f"⏱ 时间校验：{tlinfo.summary_text()}"
+                + (" · 已按时间重排（最早在前）" if tlinfo.order_changed else "")
+            )
+        dropped = st.session_state.get("media_bindings_dropped") or []
+        if dropped:
+            st.warning(
+                f"重新排序后 {len(dropped)} 个图片绑定无法唯一对应，已失效，"
+                "请在上方重新确认绑定（不会把图片错配到别的消息）。"
+            )
+
+        # ---- 预览表：最近 15 / 最早 15 / 分页全部（只影响展示）----
+        mode = st.radio(
+            "预览方式",
+            options=["recent", "earliest", "all"],
+            format_func=lambda v: {"recent": "最近 15 条",
+                                   "earliest": "最早 15 条",
+                                   "all": "分页浏览全部"}[v],
+            index={"recent": 0, "earliest": 1, "all": 2}.get(
+                st.session_state.get("preview_mode") or "recent", 0),
+            horizontal=True,
+            key="preview_mode_radio",
+        )
+        st.session_state["preview_mode"] = mode
+        if mode != "all":
+            window, total, _pages = preview_page(messages, mode=mode, limit=15)
+        else:
+            page = min(max(1, st.session_state.get("preview_page") or 1),
+                       10 ** 9)
+            window, total, pages = preview_page(
+                messages, mode="all", page=page, page_size=40)
+            page = min(max(1, page), pages)
+            st.session_state["preview_page"] = page
+            cols = st.columns([1, 1, 3])
+            with cols[0]:
+                if st.button("← 上一页", key="prev_page"):
+                    st.session_state["preview_page"] = max(1, page - 1)
+                    st.rerun()
+            with cols[1]:
+                if st.button("下一页 →", key="next_page"):
+                    st.session_state["preview_page"] = min(pages, page + 1)
+                    st.rerun()
+            with cols[2]:
+                st.caption(f"第 {page} / {pages} 页 · 每页 40 条 · "
+                           f"本页 {page_time_range(window)}")
+        # 两种模式都按时间升序阅读；编号与媒体绑定使用真实全局 index
+        window_messages = [m for _, m in window]
         st.dataframe(
-            preview_rows(messages, bindings=st.session_state.get("media_bindings") or {}),
+            preview_rows(
+                window_messages,
+                limit=len(window_messages),
+                bindings=st.session_state.get("media_bindings") or {},
+                start=window[0][0] if window else 0,
+            ),
             use_container_width=True, hide_index=True,
         )
-        if len(messages) > 15:
-            st.caption(f"仅预览前 15 条，共 {len(messages)} 条。预览内容已本地脱敏；"
-                       "unknown = 无法确定发言人（未根据内容猜测）。")
-        else:
-            st.caption("预览内容已本地脱敏。unknown = 该行无法确定发言人（未根据内容猜测）。")
+        st.caption(
+            f"共 {total} 条（预览按时间升序阅读；预览只影响展示，"
+            "不改变分析列表、不调用 Jev）"
+            "。预览内容已本地脱敏；unknown = 无法确定发言人（未根据内容猜测）。"
+        )
 
         # ---- 分析按钮 ----
         them_n = counts["them"]
@@ -1102,7 +1235,25 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 value=False,
             )
 
-        can_run = them_n > 0 and (unknown_n == 0 or ignore_unknown)
+        # 时间不完整 / 同刻顺序无法确定 → 分析前必须显式确认
+        order_ok = True
+        if tlinfo is not None and tlinfo.requires_order_confirm:
+            st.warning(
+                "有消息的时间不完整或同刻顺序无法自动确定（"
+                + tlinfo.summary_text() + "）。这些消息不会被猜测日期后插入"
+                "时间线，而是按各自可确定的顺序排在完整时间消息之后。"
+                "如果它们实际发生在中途，相关上下文判断可能不可靠 —— "
+                "请确认后继续，或回到上一步排除这些片段。"
+            )
+            order_ok = st.checkbox(
+                "我确认：上述时间不完整的消息按当前顺序参与分析",
+                value=bool(st.session_state.get("order_confirmed")),
+                key="order_confirm_checkbox",
+            )
+            st.session_state["order_confirmed"] = order_ok
+
+        can_run = (them_n > 0 and (unknown_n == 0 or ignore_unknown)
+                   and order_ok)
         ta_text_n = sum(
             1 for m in messages
             if m["speaker"] == "them" and m.get("content_type") != "media"

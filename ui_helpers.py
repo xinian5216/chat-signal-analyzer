@@ -122,10 +122,16 @@ def content_type_label(m: dict) -> str:
 
 
 def preview_rows(messages: list[dict], limit: int = 15,
-                 bindings: dict | None = None) -> list[dict]:
-    """解析预览表行。媒体内容列使用中性脱敏展示，不暴露本地文件名。"""
+                 bindings: dict | None = None, start: int = 0) -> list[dict]:
+    """解析预览表行。媒体内容列使用中性脱敏展示，不暴露本地文件名。
+
+    ``start`` 是窗口在全局消息列表中的起始下标：`"#"` 列与媒体绑定都使用
+    **真实全局 index**（``start + 局部序号 + 1``），因此“最近 15 条”等
+    切片预览不会把编号和媒体绑定错位到别的消息上。
+    """
     rows = []
-    for idx, m in enumerate(messages[:limit]):
+    for offset, m in enumerate(messages[:limit]):
+        idx = start + offset
         if m.get("content_type") == "media":
             content = media_placeholder_label(
                 m.get("media_kinds") or [], m.get("duration_seconds")
