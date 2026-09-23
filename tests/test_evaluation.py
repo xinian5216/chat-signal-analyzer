@@ -479,9 +479,13 @@ def test_pytest_suite_stays_offline_for_evaluation():
 
 
 def _scrubbed_env() -> dict:
-    """门禁测试专用环境：剥掉泄漏源，确保测的是门禁本身而非真实路径。"""
+    """门禁测试专用环境：剥掉泄漏源，确保测的是门禁本身而非真实路径。
+
+    必须剥掉 CI：GitHub Actions 的父进程带 CI=true，不剥的话子进程会走
+    CI 守卫分支（守卫本身是对的），只是断言的消息就变成 CI 那条了。
+    """
     env = dict(os.environ)
-    for key in ("TYPESAFE_API_KEY", "PYTEST_CURRENT_TEST"):
+    for key in ("TYPESAFE_API_KEY", "PYTEST_CURRENT_TEST", "CI"):
         env.pop(key, None)
     return env
 
