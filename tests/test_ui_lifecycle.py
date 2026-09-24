@@ -348,7 +348,9 @@ def test_overview_render_does_not_render_hidden_views(counting_client):
     # 隐藏视图的内容一次都没有渲染（用只在那些视图里出现的文案判断）
     assert "#### 报告导出" not in body
     assert "下载 Markdown" not in body
-    assert "每页" not in body               # 全部消息视图的分页说明
+    # 全部消息视图的分页说明（用只属于该视图的“每页 25 条”判断，
+    # 不用泛化的“每页”——确认阶段的预览分页说明也含这个词）
+    assert "每页 25 条" not in body
     # 报告 memo 也为空：只有进入报告视图才会生成
     assert at.session_state["report_cache"] is None
 

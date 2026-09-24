@@ -2,6 +2,7 @@
 data/
 dist/
 build/
+/SignalLens/
 !SignalLens.spec
 *.manifest
 *.spec.bak

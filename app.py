@@ -1214,25 +1214,14 @@ def show_confirm_stage(messages: list[dict]) -> None:
             page = min(max(1, st.session_state.get("preview_page") or 1),
                        10 ** 9)
             window, total, pages = preview_page(
-                messages, mode="all", page=page, page_size=40)
+                messages, mode="all", page=page,
+                page_size=PREVIEW_PAGE_SIZE)
             page = min(max(1, page), pages)
             st.session_state["preview_page"] = page
 
-            # 顶部导航：切页后新一页开头就在视口里，不必先向上滚
-            c1, c2, c3 = st.columns([1, 1, 3])
-            with c1:
-                if st.button("◀ 上一页", key="preview_prev_top"):
-                    st.session_state["preview_page"] = max(1, page - 1)
-                    request_scroll(PREVIEW_SCROLL_AREA, page - 1)
-                    st.rerun()
-            with c2:
-                if st.button("下一页 ▶", key="preview_next_top"):
-                    st.session_state["preview_page"] = min(pages, page + 1)
-                    request_scroll(PREVIEW_SCROLL_AREA, page + 1)
-                    st.rerun()
-            with c3:
-                st.caption(f"第 {page} / {pages} 页 · 每页 40 条 · "
-                           f"本页 {page_time_range(window)}")
+            # 顶部导航（与底部共用同一个渲染函数）：切页后新一页开头就在
+            # 视口里，不必先向上滚
+            _render_preview_nav(page, pages, window, "top")
 
         # 滚动锚点（表格上方）：只在明确的翻页请求后渲染并滚动，nonce 保证
         # 连续翻页每次都触发；同时把表格内部滚动容器归零。
@@ -1253,21 +1242,10 @@ def show_confirm_stage(messages: list[dict]) -> None:
         )
         if mode == "all" and pages > 1:
             # 底部导航：读完当前 40 条后无需先向上滚再翻页
-            c1, c2, c3 = st.columns([1, 1, 3])
-            with c1:
-                if st.button("◀ 上一页", key="preview_prev_bottom",
-                             disabled=(page == 1), use_container_width=True):
-                    st.session_state["preview_page"] = max(1, page - 1)
-                    request_scroll(PREVIEW_SCROLL_AREA, page - 1)
-                    st.rerun()
-            c2.markdown(f"第 {page} / {pages} 页")
-            if c3.button("下一页 ▶", key="preview_next_bottom",
-                         disabled=(page >= pages), use_container_width=True):
-                st.session_state["preview_page"] = min(pages, page + 1)
-                request_scroll(PREVIEW_SCROLL_AREA, page + 1)
-                st.rerun()
+            _render_preview_nav(page, pages, window, "bottom")
         st.caption(
-            f"共 {total} 条（预览按时间升序阅读；预览只影响展示，"
+            f"共 {total} 条 · 分页每页 {PREVIEW_PAGE_SIZE} 条"
+            "（预览按时间升序阅读；预览只影响展示，"
             "不改变分析列表、不调用 Jev）"
             "。预览内容已本地脱敏；unknown = 无法确定发言人（未根据内容猜测）。"
         )
@@ -1467,8 +1445,52 @@ MESSAGES_PER_PAGE = 25
 # 预览区滚动锚点区域名（与结果视图的 MSG_SCROLL_AREA 互相隔离）
 PREVIEW_SCROLL_AREA = "import_preview"
 
+# 导入预览“分页浏览全部”每页条数
+PREVIEW_PAGE_SIZE = 40
 
 MSG_SCROLL_AREA = "all_messages"
+
+
+def _goto_preview_page(next_page: int) -> None:
+    """切换到指定预览页码；**只有页码真正变化**才登记滚动并 rerun。
+
+    边界按钮本身已禁用，这里仍是安全网：页码没变就什么都不做——既不做
+    多余的重渲染，也不登记滚动请求（滚动只属于“真的翻了一页”）。
+    """
+    current = int(st.session_state.get("preview_page") or 1)
+    target = max(1, int(next_page))
+    if target == current:
+        return
+    st.session_state["preview_page"] = target
+    request_scroll(PREVIEW_SCROLL_AREA, target)
+    st.rerun()
+
+
+def _render_preview_nav(page: int, pages: int, window: list,
+                        position: str) -> None:
+    """导入预览区**顶部与底部共用**的翻页导航（同一个函数渲染，布局一致）。
+
+    - 左右对称：``◀ 上一页`` | 居中页码 | ``下一页 ▶``；
+    - 日期范围单独一行 caption，不与页码挤在同一行；
+    - 首页禁用“上一页”、末页禁用“下一页”；
+    - 翻页只改 ``preview_page`` + 登记一次滚动请求（``request_scroll``），
+      绝不在回调里做别的副作用；nonce 由 request_scroll 递增，保证连续
+      翻页每页的锚点 HTML 都不同（Streamlit 不会因相同 HTML 跳过挂载）。
+    """
+    col_prev, col_page, col_next = st.columns([1, 2, 1])
+    if col_prev.button("◀ 上一页", key=f"preview_prev_{position}",
+                       disabled=(page <= 1), use_container_width=True):
+        _goto_preview_page(page - 1)
+    # 居中页码：居中只是排版；HTML 被清理时退化为普通文本，不影响任何行为
+    col_page.markdown(
+        f"<div style='text-align:center'>第 {page} / {pages} 页</div>",
+        unsafe_allow_html=True,
+    )
+    if col_next.button("下一页 ▶", key=f"preview_next_{position}",
+                       disabled=(page >= pages), use_container_width=True):
+        _goto_preview_page(page + 1)
+    # 日期范围单独展示（不是滚动锚点，也不参与翻页逻辑）
+    st.caption(f"本页 {page_time_range(window)}")
 
 
 def _render_messages_nav(page: int, pages: int, position: str) -> None:
