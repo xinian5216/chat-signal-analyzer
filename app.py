@@ -232,7 +232,8 @@ def init_state() -> None:
         # ---- 好友档案 / 纵向历史（全部本地，0 Jev API）----
         ("friend_store", None),          # friend_history.FriendStore（懒创建）
         ("friend_alias_input", ""),      # 档案查找：昵称/备注/别名（本地）
-        ("friend_matches", None),        # 最近一次查找的候选列表
+        ("friend_matches", None),        # 最近一次查找的候选列表（④阶段）
+        ("history_matches", None),       # 最近一次查找的候选列表（②阶段）
         ("friend_selected", None),       # 用户选定的 friend_id
         ("friend_save_evidence", False), # 是否保留匿名化证据片段（默认否）
         ("friend_saved_revision", None),  # 已保存的分析版本号（防重复点击）
@@ -2066,15 +2067,12 @@ def show_history_panel(messages: list[dict]) -> None:
     alias = (st.session_state.get("history_alias_input") or "").strip()
     if st.button("查找历史档案", key="history_lookup") and alias:
         matches = store.find_by_alias(alias)
-        st.session_state["friend_matches"] = matches
-        if len(matches) == 1:
-            st.session_state["history_friend_id"] = matches[0].friend_id
-        elif not matches:
-            st.session_state["history_friend_id"] = None
-        else:
-            st.session_state["history_friend_id"] = None
+        # 与④结果阶段的候选列表分开存：两个阶段互不串味
+        st.session_state["history_matches"] = matches
+        st.session_state["history_friend_id"] = (
+            matches[0].friend_id if len(matches) == 1 else None)
 
-    matches = st.session_state.get("friend_matches")
+    matches = st.session_state.get("history_matches")
     if matches:
         if len(matches) > 1:
             st.warning(f"找到 {len(matches)} 个同名/同称呼的档案，"
