@@ -95,6 +95,12 @@ from timeline import (
     order_signature,
     migrate_bindings,
 )
+from scroll_anchor import (
+    clear_scroll_request,
+    consume_scroll,
+    request_scroll,
+    _scroll_anchor as _render_scroll_anchor,
+)
 DISCLAIMER = (
     "“互动亲近信号指数”仅代表聊天文本中可以观察到的亲近、主动、投入、暧昧、"
     "疏离等信号的组合，**不代表对方真实心理状态**，更不是“TA 喜欢你的概率”。"
@@ -865,6 +871,9 @@ def set_messages(new_messages: list[dict], *, source: str = "import") -> None:
         # 顺序歧义的确认也失效：新导入/新歧义必须重新显式确认，
         # 绝不让上一次勾选放行新的不确定记录
         st.session_state["order_confirmed"] = False
+        # 消息集变了 → 待执行的滚动请求作废（重新导入时旧页码无意义）
+        clear_scroll_request(PREVIEW_SCROLL_AREA)
+        clear_scroll_request(MSG_SCROLL_AREA)
     if timeline.order_changed and source == "import":
         set_input_notice(
             "info",
@@ -1208,18 +1217,29 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 messages, mode="all", page=page, page_size=40)
             page = min(max(1, page), pages)
             st.session_state["preview_page"] = page
-            cols = st.columns([1, 1, 3])
-            with cols[0]:
-                if st.button("← 上一页", key="prev_page"):
+
+            # 顶部导航：切页后新一页开头就在视口里，不必先向上滚
+            c1, c2, c3 = st.columns([1, 1, 3])
+            with c1:
+                if st.button("◀ 上一页", key="preview_prev_top"):
                     st.session_state["preview_page"] = max(1, page - 1)
+                    request_scroll(PREVIEW_SCROLL_AREA, page - 1)
                     st.rerun()
-            with cols[1]:
-                if st.button("下一页 →", key="next_page"):
+            with c2:
+                if st.button("下一页 ▶", key="preview_next_top"):
                     st.session_state["preview_page"] = min(pages, page + 1)
+                    request_scroll(PREVIEW_SCROLL_AREA, page + 1)
                     st.rerun()
-            with cols[2]:
+            with c3:
                 st.caption(f"第 {page} / {pages} 页 · 每页 40 条 · "
                            f"本页 {page_time_range(window)}")
+
+        # 滚动锚点（表格上方）：只在明确的翻页请求后渲染并滚动，nonce 保证
+        # 连续翻页每次都触发；同时把表格内部滚动容器归零。
+        scroll_req = consume_scroll(PREVIEW_SCROLL_AREA)
+        if scroll_req is not None:
+            _render_scroll_anchor("preview-page-anchor", scroll_req["nonce"])
+
         # 两种模式都按时间升序阅读；编号与媒体绑定使用真实全局 index
         window_messages = [m for _, m in window]
         st.dataframe(
@@ -1231,6 +1251,21 @@ def show_confirm_stage(messages: list[dict]) -> None:
             ),
             use_container_width=True, hide_index=True,
         )
+        if mode == "all" and pages > 1:
+            # 底部导航：读完当前 40 条后无需先向上滚再翻页
+            c1, c2, c3 = st.columns([1, 1, 3])
+            with c1:
+                if st.button("◀ 上一页", key="preview_prev_bottom",
+                             disabled=(page == 1), use_container_width=True):
+                    st.session_state["preview_page"] = max(1, page - 1)
+                    request_scroll(PREVIEW_SCROLL_AREA, page - 1)
+                    st.rerun()
+            c2.markdown(f"第 {page} / {pages} 页")
+            if c3.button("下一页 ▶", key="preview_next_bottom",
+                         disabled=(page >= pages), use_container_width=True):
+                st.session_state["preview_page"] = min(pages, page + 1)
+                request_scroll(PREVIEW_SCROLL_AREA, page + 1)
+                st.rerun()
         st.caption(
             f"共 {total} 条（预览按时间升序阅读；预览只影响展示，"
             "不改变分析列表、不调用 Jev）"
@@ -1429,45 +1464,33 @@ def show_key_messages_tab(results: list[dict]) -> None:
 # 切页只读 session_state 里已有的 results，0 次 Jev API。
 MESSAGES_PER_PAGE = 25
 
+# 预览区滚动锚点区域名（与结果视图的 MSG_SCROLL_AREA 互相隔离）
+PREVIEW_SCROLL_AREA = "import_preview"
 
-def _scroll_anchor(anchor_id: str) -> None:
-    """渲染一个滚动锚点，并在挂载后把它滚动进视口。
 
-    使用 Streamlit 官方 `st.html` 的受信 HTML + JS 通道
-    （`unsafe_allow_javascript=True`），而不是把脚本塞进
-    `st.markdown(..., unsafe_allow_html=True)`——后者在不同 Streamlit
-    版本下可能被转义或清掉。不含任何聊天文本，只接收锚点 id；
-    脚本只对自身渲染的锚点调用 scrollIntoView，不读取其它 DOM。
-    """
-    st.html(
-        f"""
-        <div id="{anchor_id}" style="height:0;margin:0;padding:0"></div>
-        <script>
-          (function () {{
-            var el = document.getElementById({json.dumps(anchor_id)});
-            if (el && el.scrollIntoView) {{
-              el.scrollIntoView({{block: "start", behavior: "smooth"}});
-            }}
-          }})();
-        </script>
-        """,
-        unsafe_allow_javascript=True,
-    )
+MSG_SCROLL_AREA = "all_messages"
 
 
 def _render_messages_nav(page: int, pages: int, position: str) -> None:
-    """消息列表上方/下方的翻页导航（position 仅用于生成唯一 widget key）。"""
+    """消息列表上方/下方的翻页导航（position 仅用于生成唯一 widget key）。
+
+    按钮回调只改页码 + 登记一次滚动请求（``request_scroll``），绝不在
+    回调里做别的副作用；nonce 由 request_scroll 递增，保证连续翻页每页
+    的滚动锚点 HTML 都不同（Streamlit 不会因为“相同 HTML”而跳过挂载）。
+    """
     if pages <= 1:
         return
     c1, c2, c3 = st.columns([1, 2, 1])
     if c1.button("◀ 上一页", key=f"msg_prev_{position}",
                  disabled=(page == 0), use_container_width=True):
         st.session_state["msg_page"] = page - 1
+        request_scroll(MSG_SCROLL_AREA, page - 1)
         st.rerun()
     c2.markdown(f"第 {page + 1} / {pages} 页")
     if c3.button("下一页 ▶", key=f"msg_next_{position}",
                  disabled=(page >= pages - 1), use_container_width=True):
         st.session_state["msg_page"] = page + 1
+        request_scroll(MSG_SCROLL_AREA, page + 1)
         st.rerun()
 
 
@@ -1516,8 +1539,11 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
     # 顶部导航：进入本视图 / 从底部翻页后都能立即看到翻页控件
     _render_messages_nav(page, pages, "top")
 
-    # 本页首条消息的锚点：切页后滚动到这里，而不是页面最顶部或旧页底部
-    _scroll_anchor("msg-page-anchor")
+    # 本页首条消息的锚点：只在明确的翻页请求后滚动到这里，而不是页面
+    # 最顶部或旧页底部；nonce 保证每次翻页都重新挂载并触发。
+    scroll_req = consume_scroll(MSG_SCROLL_AREA)
+    if scroll_req is not None:
+        _render_scroll_anchor("msg-page-anchor", scroll_req["nonce"])
 
     start = page * MESSAGES_PER_PAGE
     for entry in visible[start:start + MESSAGES_PER_PAGE]:
