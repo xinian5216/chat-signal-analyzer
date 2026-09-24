@@ -173,3 +173,50 @@ def test_session_nonce_survives_within_session(monkeypatch):
         entry = sa.consume_scroll("messages")
         assert entry["nonce"] == page - 1            # 同一会话内单调递增
     assert session[sa._SESSION_NONCE_KEY]["messages"] == 3
+
+
+# ---------------------------------------------------------------------------
+# 锚点 HTML 健全性（浏览器回归踩坑的回归防线）
+# ---------------------------------------------------------------------------
+
+
+def _render_anchor_html(monkeypatch, nonce: int = 3,
+                        position: str = "bottom") -> str:
+    """捕获 _scroll_anchor 实际提交给 st.html 的 HTML（不启动 Streamlit）。"""
+    captured = {}
+    monkeypatch.setattr(sa.st, "html",
+                        lambda body, **kw: captured.update(
+                            {"body": body, "kw": kw}), raising=False)
+    sa._scroll_anchor("preview-page-anchor", nonce, position)
+    assert "body" in captured, "st.html 未被调用"
+    return captured["body"]
+
+
+def test_anchor_html_has_single_script_pair(monkeypatch):
+    """整段 HTML 必须只有一个 script 开标签 + 一个闭标签。"""
+    body = _render_anchor_html(monkeypatch)
+    assert body.count("<script") == 1
+    assert body.count("</script>") == 1
+
+
+def test_anchor_script_body_has_no_nested_script_literal(monkeypatch):
+    """脚本内容里绝不能出现 script 标签字面量（含注释）。
+
+    浏览器回归实测：脚本文本里出现 ``<script>`` 字样时，HTML 解析器会
+    提前结束脚本元素，DOMPurify 把整段脚本丢弃 → 锚点 JS 全程不执行
+    （data-scroll-nonce 永不写入、内部滚动复位失效）。这是真实发生过的
+    P0/P1 回归，用单测试看住。
+    """
+    body = _render_anchor_html(monkeypatch)
+    inner = body.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    lowered = inner.lower()
+    assert "<script" not in lowered
+    assert "</script" not in lowered
+
+
+def test_anchor_html_carries_nonce_and_position(monkeypatch):
+    body = _render_anchor_html(monkeypatch, nonce=7, position="top")
+    assert 'id="preview-page-anchor"' in body
+    assert '"data-scroll-nonce"' in body
+    assert 'var nonce = 7' in body
+    assert 'var position = "top"' in body

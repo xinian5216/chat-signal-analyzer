@@ -25,9 +25,11 @@
   - 其它来源（例如表格内部）：同样只做一次定位，不做二次修正。
 
 - **不使用私有 DOM 选择器作为唯一可靠机制**：主路径是从锚点元素向上遍历
-  祖先并计算偏移；表格内部滚动的复位优先靠 Streamlit 的**组件 key**
-  （app.py 把预览模式 / 页码 / 消息集版本纳入 ``st.dataframe`` 的 key，
-  换页即新组件，内部滚动状态自然重置），DOM 复位只是兜底，且失败静默。
+  祖先并计算偏移；表格内部滚动的复位由 DOM 兜底完成——浏览器回归实测
+  （Streamlit 1.64）：换页时 ``st.dataframe`` 的组件 key 变化**并不保证**
+  节点重挂载（连续翻页时探针标记同一节点仍在，glide 保留内部 scrollTop），
+  因此 ``findTableAfter()`` 的逐级向上定位 + ``resetInner()`` 才是稳态下
+  真正生效的复位路径，失败静默、不影响主滚动定位。
 - HTML 不含任何聊天文本，只含锚点 id 与 nonce。
 """
 
@@ -140,16 +142,25 @@ def _scroll_anchor(anchor_id: str, nonce: int,
               return scrollable && el.scrollHeight > el.clientHeight + 4;
             }}
 
-            // 找到锚点之后的数据表（向后走几个兄弟节点：中间可能夹着
-            // st.html 渲染出来的 <script>，不能假设表格一定紧邻锚点）。
+            // 找到锚点之后的数据表。锚点自己住在 st.html 的容器里，容器内
+            // 只有它和注入的脚本节点；表格在**外层块容器**的后续节点里，
+            // 因此必须逐级向上爬父节点、在每一层继续向后找兄弟子树
+            //（只找 stDataFrame，找不到就静默返回 null）。
             function findTableAfter() {{
-              var node = anchor.nextElementSibling;
-              for (var i = 0; node && i < 6; i++) {{
-                if (node.querySelector) {{
-                  var df = node.querySelector('[data-testid="stDataFrame"]');
-                  if (df) {{ return df; }}
+              var node = anchor;
+              for (var depth = 0; depth < 4 && node; depth++) {{
+                var sib = node.nextElementSibling;
+                for (var i = 0; sib && i < 8; i++) {{
+                  if (sib.matches && sib.matches('[data-testid="stDataFrame"]')) {{
+                    return sib;
+                  }}
+                  if (sib.querySelector) {{
+                    var df = sib.querySelector('[data-testid="stDataFrame"]');
+                    if (df) {{ return df; }}
+                  }}
+                  sib = sib.nextElementSibling;
                 }}
-                node = node.nextElementSibling;
+                node = node.parentElement;
               }}
               return null;
             }}

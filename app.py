@@ -2159,8 +2159,6 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
         # 输入 / 勾选触发整页 rerun（真实浏览器验证过），只有点提交时才
         # 提交。这样编辑证据、勾选删除、勾选“保留证据”都不会让页面跳动，
         # 也不会反复重建这段长面板。
-        blocked = bool(saved_elsewhere) and not st.session_state.get(
-            "friend_save_confirm")
         with st.form(key=f"friend_save_form_{revision}_{selected}"):
             # 预览**始终显示**：表单内的勾选不会触发 rerun，如果把预览藏在
             # 复选框后面，用户勾了也看不到内容，必须点提交才出现——体验很差。
@@ -2185,26 +2183,38 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
                     f"确认这份分析属于「{friend.display_name}」，仍然保存",
                     key="friend_save_confirm",
                 )
+            # 注意：**不能**用表单内控件的值来禁用提交按钮——表单里的值在
+            # 提交前不会送到 Python，disabled 会永远是 True，用户就再也点
+            # 不动了（与「应用昵称映射」按钮同类的真实浏览器死锁）。串档
+            # 校验移到提交之后：未确认时给出明确错误，勾选后再次提交即放行。
             submitted = st.form_submit_button(
-                "保存至好友档案", type="primary", disabled=blocked,
-                help="可能存在串档：请先勾选上面的确认框" if blocked else None)
+                "保存至好友档案", type="primary",
+                help="这份分析之前已保存到其他档案，提交时需勾选确认框"
+                     if saved_elsewhere else None)
 
         if submitted:
-            evidence = (_collect_confirmed_evidence(candidates, revision,
-                                                    selected)
-                        if keep_evidence else [])
-            run_id = save_run_to_friend(
-                selected, results, stats, messages, evidence=evidence)
-            if run_id:
-                note = (f"已保存为一条历史分析快照（run_id {run_id[:12]}…）。"
-                        "历史记录不可修改；再次保存同一批消息会产生新记录并提示重复。")
-                if evidence:
-                    note += ("已保留你最终确认的证据片段（本地脱敏 + 截断到 "
-                             f"{fh.EVIDENCE_MAX_CHARS} 字以内）。")
-                set_input_notice("success", note)
-                st.rerun()
+            if saved_elsewhere and not st.session_state.get(
+                    "friend_save_confirm"):
+                st.error(
+                    "这份分析之前已经保存到其他档案。如果它确实属于"
+                    f"「{friend.display_name}」，请勾选上面的确认框后"
+                    "再次点击「保存至好友档案」。")
             else:
-                st.error("没有可保存的分析消息，或证据校验未通过。")
+                evidence = (_collect_confirmed_evidence(candidates, revision,
+                                                        selected)
+                            if keep_evidence else [])
+                run_id = save_run_to_friend(
+                    selected, results, stats, messages, evidence=evidence)
+                if run_id:
+                    note = (f"已保存为一条历史分析快照（run_id {run_id[:12]}…）。"
+                            "历史记录不可修改；再次保存同一批消息会产生新记录并提示重复。")
+                    if evidence:
+                        note += ("已保留你最终确认的证据片段（本地脱敏 + 截断到 "
+                                 f"{fh.EVIDENCE_MAX_CHARS} 字以内）。")
+                    set_input_notice("success", note)
+                    st.rerun()
+                else:
+                    st.error("没有可保存的分析消息，或证据校验未通过。")
 
     # ---- 历史列表 ----
     runs = store.list_runs(selected)
@@ -2427,7 +2437,7 @@ def show_history_panel(messages: list[dict]) -> None:
     """
     _apply_pending_widget_reset()
     with st.expander("历史档案（可选：查看这位好友以前的分析）",
-                     expanded=False):
+                     expanded=False, key="history_panel"):
         st.caption(
             "如果你以前把这位好友的分析保存到本机档案，这里可以看到旧总结、"
             "聊天时间覆盖范围，以及**当前导入与历史的重叠区间**。"

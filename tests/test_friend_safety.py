@@ -421,7 +421,14 @@ def test_same_person_multiple_nicknames_lookup(history, counting_client):
 
 def test_save_identity_allows_second_profile_after_confirmation(
         history, counting_client):
-    """同一份分析已存到 A；明确选 B 后必须勾选确认才允许保存。"""
+    """同一份分析已存到 A；明确选 B 后必须勾选确认才允许保存。
+
+    串档校验在**提交之后**执行，而不是把提交按钮禁用：表单内控件的值在
+    提交前不会送到 Python，禁用按钮在真实浏览器里是死锁（与「应用昵称
+    映射」按钮同类的 bug，已由浏览器回归修复并验证）。AppTest 会立即提交
+    表单值，测不出死锁，所以这里按修复后的产品行为断言：
+    按钮始终可点 → 未确认提交被拒绝且有明确错误 → 勾选后再提交放行。
+    """
     at = _fresh()
     store = fh.FriendStore(history)
     _import_and_map(at, CHAT_A, "甲一方", "乙一方")
@@ -440,12 +447,19 @@ def test_save_identity_allows_second_profile_after_confirmation(
     texts = _texts(at)
     assert "已经保存到" in texts                    # 串档提示
     save_button = [b for b in at.button if b.label == "保存至好友档案"]
-    assert save_button and save_button[0].disabled   # 未确认前禁用
-
-    _checkbox(at, "确认这份分析属于「乙一方备用档案」，仍然保存").check()
-    at.run()
-    save_button = [b for b in at.button if b.label == "保存至好友档案"]
+    # 不能禁用：禁用 = 真实浏览器死锁（表单值提交前不到 Python）
     assert save_button and not save_button[0].disabled
+
+    # 未勾选确认直接提交 -> 被拒绝，不写库，错误指引明确
+    friend_b = [f for f in store.list_friends()
+                if f.friend_id != friend_a.friend_id][0]
+    _button(at, "保存至好友档案").click()
+    at.run()
+    assert "请勾选上面的确认框" in _texts(at)
+    assert store.run_count(friend_b.friend_id) == 0   # 什么都没写
+
+    # 勾选确认后再提交 -> 放行
+    _checkbox(at, "确认这份分析属于「乙一方备用档案」，仍然保存").check()
     _button(at, "保存至好友档案").click()
     at.run()
 
