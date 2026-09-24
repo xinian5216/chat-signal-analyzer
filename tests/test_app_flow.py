@@ -238,7 +238,7 @@ def test_full_flow_mapping_persists_and_zero_api(counting_client):
     # ④ 结果视图导航出现，且阶段指示器到 ④
     assert [s.label for s in at.segmented_control] == ["结果视图"]
     assert [o for o in at.segmented_control[0].options] == [
-        "概览", "关键消息", "全部消息", "报告"
+        "概览", "关键消息", "全部消息", "报告", "长期观察"
     ]
     steps = [str(e.value) for e in at.markdown if "① 粘贴聊天" in str(e.value)]
     assert steps and ":blue[④ 查看 / 导出结果]" in steps[0], steps

@@ -136,6 +136,17 @@ def settings_env_path() -> Path:
     return app_dir() / ".env"
 
 
+def friend_history_db_path() -> Path:
+    """好友档案 / 历史分析数据库路径（与 analysis_cache **完全分离**）。
+
+    portable：``data/friend_history.db``；开发模式：``.friend_history/friend_history.db``
+    （独立目录，清 API 缓存不会碰它，删档案也不会影响 API 缓存）。
+    """
+    if portable_style():
+        return data_dir() / "friend_history.db"
+    return app_dir() / ".friend_history" / "friend_history.db"
+
+
 def dev_env_path() -> Path:
     """开发模式的仓库 ``.env``（portable release 不携带）。"""
     return app_dir() / ".env"
@@ -174,6 +185,7 @@ def describe() -> dict[str, str]:
         "resource_dir": str(resource_dir()),
         "data_dir": str(data_dir()),
         "cache_db": str(cache_db_path()),
+        "friend_history_db": str(friend_history_db_path()),
         "settings_env": str(settings_env_path()),
         "media_cache": str(media_cache_dir()),
         "logs_dir": str(logs_dir()),
@@ -198,4 +210,5 @@ def ensure_runtime_dirs() -> Path:
     media_cache_dir().mkdir(parents=True, exist_ok=True)
     logs_dir().mkdir(parents=True, exist_ok=True)
     cache_db_path().parent.mkdir(parents=True, exist_ok=True)
+    friend_history_db_path().parent.mkdir(parents=True, exist_ok=True)
     return directory

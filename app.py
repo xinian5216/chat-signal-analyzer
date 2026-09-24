@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 
 import streamlit as st
 
@@ -101,6 +102,12 @@ from scroll_anchor import (
     request_scroll,
     _scroll_anchor as _render_scroll_anchor,
 )
+
+# 好友档案 / 纵向历史（本地，0 Jev API）
+import friend_history as fh
+import longitudinal as lg
+from analyzer import SCHEMA_VERSION as ANALYSIS_SCHEMA_VERSION
+
 DISCLAIMER = (
     "“互动亲近信号指数”仅代表聊天文本中可以观察到的亲近、主动、投入、暧昧、"
     "疏离等信号的组合，**不代表对方真实心理状态**，更不是“TA 喜欢你的概率”。"
@@ -202,6 +209,8 @@ def init_state() -> None:
         # ---- 分析状态机（UI 生命周期）----
         # idle / pending / running / complete / error / interrupted
         ("analysis_state", "idle"),
+        ("analysis_started_at", None),    # 本次分析开始时间（档案字段）
+        ("analysis_completed_at", None),  # 本次分析完成时间（档案字段）
         ("pending_target", None),        # pending 阶段待分析的消息列表
         ("result_view", "概览"),          # 结果视图导航（懒渲染）
         ("report_cache", None),          # 报告 memo（结果未变则复用）
@@ -220,6 +229,16 @@ def init_state() -> None:
         ("preview_mode", "recent"),      # 预览方式：recent / earliest / all
         ("preview_page", 1),             # 分页预览页码
         ("order_confirmed", False),      # 用户已确认“时间不完整消息的顺序风险”
+        # ---- 好友档案 / 纵向历史（全部本地，0 Jev API）----
+        ("friend_store", None),          # friend_history.FriendStore（懒创建）
+        ("friend_alias_input", ""),      # 档案查找：昵称/备注/别名（本地）
+        ("friend_matches", None),        # 最近一次查找的候选列表
+        ("friend_selected", None),       # 用户选定的 friend_id
+        ("friend_save_evidence", False), # 是否保留匿名化证据片段（默认否）
+        ("friend_saved_revision", None),  # 已保存的分析版本号（防重复点击）
+        ("friend_confirm_delete", False),  # 删除档案前的显式确认
+        ("friend_run_delete", None),      # 待删除的单条历史 run_id
+        ("history_friend_id", None),     # 确认阶段正在浏览的历史档案
     ):
         if key not in st.session_state:
             st.session_state[key] = default
@@ -299,10 +318,23 @@ def get_cache() -> Cache:
     return st.session_state["cache"]
 
 
+def get_friend_store() -> fh.FriendStore:
+    """好友档案 / 历史分析数据库（与 analysis_cache 完全分离的独立文件）。
+
+    portable：``data/friend_history.db``；开发模式：``.friend_history/friend_history.db``。
+    清 API 缓存不会碰它，删档案也不会影响 API 缓存。
+    """
+    if not st.session_state.get("friend_store"):
+        st.session_state["friend_store"] = fh.FriendStore()
+    return st.session_state["friend_store"]
+
+
 def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
     """对 TA 的消息逐条分析（含缓存）。失败项不中断，写入 error 字段。"""
     st.session_state["run_error"] = None
     st.session_state["append_stats"] = None  # 分析已开始，追加横幅不再适用
+    # 分析发生时间（与聊天发生时间是两件事，档案里分开保存）
+    st.session_state["analysis_started_at"] = time.time()
     api_key = os.environ.get("TYPESAFE_API_KEY", "").strip()
     if not api_key:
         st.session_state["run_error"] = (
@@ -371,6 +403,7 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
                 st.session_state["results"]
             )
         st.session_state["skipped_media"] = skipped_media_count(messages)
+        st.session_state["analysis_completed_at"] = time.time()
         bump_analysis_revision()   # 新的一整份结果 → 报告 memo 身份失效
 
         cached_n = sum(1 for e in st.session_state["results"] if e.get("cached"))
@@ -1154,6 +1187,9 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 f"✓ 身份映射完成（{mapping}）— 我：{counts['me']} 条 · "
                 f"TA：{counts['them']} 条 · unknown：{counts['unknown']} 条"
             )
+            # 身份确认之后才允许按昵称查找历史档案（否则无法确定是谁）
+            with _Stage("confirm:history"):
+                show_history_panel(messages)
             if st.button("重新选择身份", key="remap"):
                 st.session_state["applied_me"] = None
                 st.session_state["applied_ta"] = None
@@ -1638,7 +1674,467 @@ def show_report_tab(results: list[dict], stats: dict) -> None:
     st.caption("需要 PDF？使用浏览器 Ctrl+P → 另存为 PDF。")
 
 
-RESULT_VIEWS = ["概览", "关键消息", "全部消息", "报告"]
+RESULT_VIEWS = ["概览", "关键消息", "全部消息", "报告", "长期观察"]
+
+FRIEND_PRIVACY_NOTE = (
+    "好友档案**只保存在本机**（`friend_history.db`，与 Jev 分析缓存是两个独立文件）。"
+    "档案里不会写入好友昵称当作身份，也不会把昵称 / 档案 ID 发给 Jev——"
+    "出站白名单仍然只放行规范化角色、脱敏文本、时间与分析规则。"
+    "请注意：**正式分析本身**仍会把脱敏后的必要聊天内容与上下文发送至 Jev，"
+    "这一点不会因为保存到档案而改变。"
+)
+
+ALIAS_KIND_LABELS = {"wechat_name": "微信昵称", "remark": "备注",
+                     "alias": "自定义别名"}
+
+
+def _friend_alias_label(match) -> str:
+    """候选档案的可读标签（本地展示用，绝不外发）。"""
+    kind = ALIAS_KIND_LABELS.get(match.kind, match.kind)
+    runs = f"{match.run_count} 条历史" if match.run_count else "暂无历史"
+    return f"{match.display_name}（匹配到{kind}“{match.display}”· {runs}）"
+
+
+def save_run_to_friend(results: list[dict], stats: dict,
+                       messages: list[dict]) -> str | None:
+    """把本次**已完成**的分析存成一条不可变快照（纯本地写入）。
+
+    绝不在此处调用 Jev；``messages`` 用分析时使用的完整消息列表
+    （``analysis_messages``），保证指纹与时间范围可复现。
+    """
+    if not messages:
+        return None
+    evidence = []
+    if st.session_state.get("friend_save_evidence"):
+        auto = lg.supporting_evidence(results, limit=5)
+        auto += lg.counter_evidence(results, limit=5)
+        by_index = {e["index"]: e for e in results}
+        for item in auto:
+            entry = by_index.get(item["index"])
+            if entry is not None:
+                # 用户显式选择后，才保留匿名化证据片段（脱敏 + 截断）
+                item["snippet"] = entry.get("text") or ""
+        evidence = fh.normalize_evidence(auto)
+
+    snapshot = fh.build_run_snapshot(
+        friend_id=st.session_state["friend_selected"],
+        messages=messages,
+        results=results,
+        stats=stats,
+        skipped_media=int(st.session_state.get("skipped_media") or 0),
+        analysis_started_at=st.session_state.get("analysis_started_at"),
+        analysis_completed_at=st.session_state.get("analysis_completed_at"),
+        schema_version=ANALYSIS_SCHEMA_VERSION,
+        request_model=DEFAULT_MODEL,
+        summary_text=build_summary_text(results, stats),
+        evidence=evidence,
+    )
+    store = get_friend_store()
+    run_id = store.save_run(snapshot)
+    st.session_state["friend_saved_revision"] = \
+        st.session_state.get("analysis_revision")
+    return run_id
+
+
+def show_friend_panel(results: list[dict], stats: dict) -> None:
+    """结果里的「好友档案」区：可选地保存本次分析 + 浏览历史。
+
+    默认**不**自动保存：只有用户显式点击“保存至好友档案”才写档案。
+    """
+    st.markdown("#### 好友档案（可选，全部本地）")
+    st.caption(FRIEND_PRIVACY_NOTE)
+    st.caption("默认不自动保存。只有点击下面的按钮，本次分析才会写入本机档案。")
+
+    store = get_friend_store()
+    selected = st.session_state.get("friend_selected")
+
+    # ---- 查找 / 新建档案 ----
+    if not selected:
+        st.text_input(
+            "用微信昵称 / 备注 / 别名查找已有档案（只在本机查找）",
+            key="friend_alias_input",
+        )
+        # 只读 widget 的值：绝不在 widget 实例化之后再写回它的 state
+        alias = (st.session_state.get("friend_alias_input") or "").strip()
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("查找档案", key="friend_lookup") and alias:
+                st.session_state["friend_matches"] = store.find_by_alias(alias)
+                st.rerun()
+        with c2:
+            if st.button("用这个名字新建档案", key="friend_create") and alias:
+                friend = store.create_friend(alias, aliases=[alias])
+                st.session_state["friend_matches"] = None
+                st.session_state["friend_selected"] = friend.friend_id
+                st.rerun()
+
+        matches = st.session_state.get("friend_matches")
+        if matches is not None:
+            if not matches:
+                st.info("没有匹配的档案。可以改用上面的按钮新建，"
+                        "或换个昵称 / 备注 / 别名再试。")
+            else:
+                st.warning(
+                    f"找到 {len(matches)} 个可能匹配的档案。"
+                    "重名或身份不确定时 SignalLens **不会自动合并**，"
+                    "请你自己确认要保存到哪一个。"
+                )
+                labels = [_friend_alias_label(m) for m in matches]
+                choice = st.radio("选择档案", labels,
+                                  key="friend_match_radio")
+                if st.button("确认使用这个档案", key="friend_match_confirm"):
+                    st.session_state["friend_selected"] = matches[
+                        labels.index(choice)].friend_id
+                    st.session_state["friend_matches"] = None
+                    st.rerun()
+        return
+
+    # ---- 已选定档案：保存 + 历史 ----
+    friend = store.get_friend(selected)
+    if friend is None:
+        # 档案被删了（例如另一个标签页）→ 回到查找状态
+        st.session_state["friend_selected"] = None
+        st.rerun()
+        return
+
+    aliases = store.aliases_of(selected)
+    st.success(
+        f"已选择档案：**{friend.display_name}**"
+        f"（本地 ID `{friend.friend_id}`）"
+        + (f" · 已知称呼：{'、'.join(a['display'] for a in aliases)}"
+           if aliases else "")
+    )
+    if st.button("换一个档案", key="friend_reset"):
+        st.session_state["friend_selected"] = None
+        st.session_state["friend_matches"] = None
+        st.rerun()
+
+    # 追加称呼（同一个人有多个昵称/备注时）
+    if st.checkbox("给这个档案追加一个称呼（同人多昵称）",
+                   key="friend_add_alias_open"):
+        extra = st.text_input("新的昵称 / 备注 / 别名", key="friend_new_alias")
+        kind = st.selectbox("类型", ["wechat_name", "remark", "alias"],
+                            format_func=lambda v: ALIAS_KIND_LABELS[v],
+                            key="friend_alias_kind")
+        if st.button("追加称呼", key="friend_add_alias") and extra.strip():
+            if store.add_alias(selected, extra.strip(), kind):
+                st.success("已追加（以后用这个名字也能找到同一档案）")
+            else:
+                st.info("这个称呼已经在该档案里了。")
+            st.rerun()
+
+    # ---- 保存本次分析 ----
+    st.divider()
+    st.markdown("##### 保存本次分析到该档案")
+    messages = (st.session_state.get("analysis_messages")
+                or st.session_state.get("messages") or [])
+    signature = fh.case_signature(messages) if messages else ""
+    duplicates = (store.find_runs_by_case(selected, signature)
+                  if signature else [])
+    saved_revision = st.session_state.get("friend_saved_revision")
+    if duplicates:
+        st.warning(
+            f"这个档案里已经有 {len(duplicates)} 次对**同一批消息**的分析"
+            f"（最近一次保存于 {_fmt_wall_time(duplicates[-1].saved_at)}）。"
+            "再次保存会产生一条**新的**历史记录（历史不可修改），"
+            "可以用来对比不同时间点的分析结果。")
+    elif saved_revision == st.session_state.get("analysis_revision"):
+        st.caption("本次分析的结果已经保存过了。")
+
+    if duplicates or saved_revision != st.session_state.get("analysis_revision"):
+        st.checkbox(
+            "保留匿名化证据片段（最多 5+5 条，脱敏后截断，"
+            "方便以后回头核对结论依据）",
+            key="friend_save_evidence",
+            help="不勾选时档案里只有统计、消息编号与指标，"
+                 "不含任何聊天文本。",
+        )
+        if st.button("保存至好友档案", key="friend_save"):
+            run_id = save_run_to_friend(
+                results, stats,
+                st.session_state.get("analysis_messages")
+                or st.session_state.get("messages") or [])
+            if run_id:
+                st.session_state["friend_saved_revision"] = \
+                    st.session_state.get("analysis_revision")
+                st.success(
+                    f"已保存为一条历史分析快照（run_id `{run_id[:12]}`）。"
+                    "历史记录不可修改；再次保存同一批消息会产生新记录并提示重复。"
+                )
+                if st.session_state.get("friend_save_evidence"):
+                    st.caption(
+                        "已保留匿名化证据片段（已过本地脱敏并截断到 "
+                        f"{fh.EVIDENCE_MAX_CHARS} 字以内）。")
+            else:
+                st.error("没有可保存的分析消息。")
+
+    # ---- 历史列表 ----
+    runs = store.list_runs(selected)
+    st.divider()
+    st.markdown("##### 该档案的历史分析")
+    _render_history_list(store, friend, runs,
+                         current_messages=st.session_state.get(
+                             "analysis_messages") or [])
+
+    # ---- 删除 ----
+    st.divider()
+    with st.expander("删除这个档案（不可恢复）"):
+        st.warning(
+            "删除会同时清空该好友的全部历史分析快照与证据片段。"
+            "这只是本机档案，**不影响** Jev 分析缓存——要清缓存请用侧栏的"
+            "“清除本地分析缓存”。")
+        st.checkbox("我确认要删除这个档案及其全部历史",
+                    key="friend_confirm_delete")
+        if st.button("删除档案", key="friend_delete"):
+            if not st.session_state.get("friend_confirm_delete"):
+                st.error("请先勾选上面的确认框。")
+            elif store.delete_friend(selected):
+                st.session_state["friend_selected"] = None
+                st.session_state["friend_confirm_delete"] = False
+                st.success("档案及其历史已删除。")
+                st.rerun()
+
+
+def _render_history_list(store, friend, runs, *,
+                         current_messages: list[dict] | None = None) -> None:
+    """历史记录列表：覆盖范围 / 摘要 / 与当前导入的重叠 / 限制。"""
+    if not runs:
+        st.caption("还没有保存过历史分析。")
+        return
+
+    full_runs = [store.get_run(r.run_id) for r in runs]
+    elig = {e.run_id: e for e in lg.eligibility(runs)}
+
+    rows = []
+    for run in runs:
+        e = elig.get(run.run_id)
+        rows.append({
+            "保存于": _fmt_wall_time(run.saved_at),
+            "聊天时间范围": _span_text(run),
+            "消息": run.message_count,
+            "已分析": run.analyzed_count,
+            "schema": run.schema_version,
+            "纵向可用": "可比较" if (e and e.usable) else "需重新评估",
+        })
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    # 与当前导入的重叠（用户在②阶段导入后，这里能看出重复/新增）
+    if current_messages:
+        report = lg.overlap_with_history(current_messages, full_runs)
+        if report.fingerprint_total:
+            bits = [f"当前导入 {report.fingerprint_total} 条消息："
+                    f"已在档案中 {report.duplicate_count} 条，"
+                    f"新消息 {report.new_count} 条"]
+            if report.identical_cases:
+                bits.append(f"其中 {len(report.identical_cases)} 次历史与本次是"
+                            "**同一批消息**（重复分析）")
+            if report.time_overlap:
+                bits.append(f"聊天时间重叠区间 {report.overlap_first} ~ "
+                            f"{report.overlap_last}")
+            st.info(" · ".join(bits))
+
+    # 每次的摘要 + 限制
+    for i, run in enumerate(runs, start=1):
+        title = (f"{i}. 聊天 {_span_text(run)} · 保存于 "
+                 f"{_fmt_wall_time(run.saved_at)}")
+        with st.expander(title):
+            st.markdown(run.summary_text or "（无摘要）")
+            notes = lg.missing_data_notes(run)
+            if notes:
+                st.caption("缺失 / 限制：" + "；".join(notes))
+            e = elig.get(run.run_id)
+            if e and e.reasons:
+                st.caption("纵向比较限制：" + "；".join(e.reasons))
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("导出这条的快照 JSON", key=f"friend_run_json_{run.run_id}"):
+                    st.session_state["friend_run_export"] = run.run_id
+                    st.rerun()
+            with c2:
+                if st.button("删除这条历史", key=f"friend_run_del_{run.run_id}"):
+                    st.session_state["friend_run_delete"] = run.run_id
+                    st.rerun()
+
+    # 单条删除 / 导出的实际执行（放在列表外，避免在 expander 内直接写库）
+    pending_delete = st.session_state.get("friend_run_delete")
+    if pending_delete:
+        st.warning(f"确认删除历史记录 `{pending_delete[:12]}` 吗？（不可恢复）")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("确认删除", key="friend_run_delete_yes"):
+                store.delete_run(pending_delete)
+                st.session_state["friend_run_delete"] = None
+                st.success("已删除该条历史。")
+                st.rerun()
+        with c2:
+            if st.button("取消", key="friend_run_delete_no"):
+                st.session_state["friend_run_delete"] = None
+                st.rerun()
+
+    pending_export = st.session_state.get("friend_run_export")
+    if pending_export:
+        full = store.get_run(pending_export) or {}
+        st.session_state["friend_run_export"] = None
+        st.download_button(
+            "下载该条历史快照 JSON",
+            data=json.dumps(_exportable_snapshot(full), ensure_ascii=False,
+                            indent=2),
+            file_name=f"friend-run-{pending_export[:8]}.json",
+            mime="application/json",
+            key="friend_run_download",
+        )
+
+
+def _exportable_snapshot(full: dict) -> dict:
+    """导出快照：只含本地字段（指纹是哈希，不是昵称或正文）。"""
+    keep = ("run_id", "friend_id", "saved_at", "analysis_started_at",
+            "analysis_completed_at", "chat_first_time", "chat_last_time",
+            "full_time_ratio", "message_count", "analyzed_count",
+            "failed_count", "skipped_media_count", "case_signature",
+            "schema_version", "request_model", "response_model",
+            "summary_text", "warnings", "messages", "results", "evidence")
+    return {k: full.get(k) for k in keep if full.get(k) is not None}
+
+
+def _span_text(run) -> str:
+    if run.chat_first_time and run.chat_last_time:
+        return f"{run.chat_first_time} ~ {run.chat_last_time}"
+    return "（无完整时间）"
+
+
+def _fmt_wall_time(value) -> str:
+    if not value:
+        return "-"
+    return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
+
+
+def show_longitudinal_tab(results: list[dict], stats: dict) -> None:
+    """「长期观察」：本地档案 + 跨期比较（0 Jev API，不改评分公式）。
+
+    历史记录只用于**本地**展示与报告，绝不进入 Jev state / cache key——
+    因此“不把未来事件放进更早目标的上下文”在本阶段是**结构性**保证
+    （``longitudinal.future_leakage_allowed`` 供将来若要做历史上下文注入时
+    作为门禁使用）。按聊天发生时间归位，不按保存时间。
+    """
+    show_friend_panel(results, stats)
+
+    friend_id = st.session_state.get("friend_selected")
+    if not friend_id:
+        st.caption("选择或新建上面的档案后，这里会显示该好友的长期观察报告。")
+        return
+    store = get_friend_store()
+    friend = store.get_friend(friend_id)
+    if friend is None:
+        return
+    runs = store.list_runs(friend_id)
+    if not runs:
+        return
+    st.divider()
+    st.markdown("#### 长期观察报告（本地聚合）")
+    st.caption(
+        "完全由本机档案聚合生成：没有调用任何 TypeSafe API，"
+        "没有修改九问定义或评分公式，也不新增任何评分。")
+    full_runs = [store.get_run(r.run_id) for r in runs]
+    messages = st.session_state.get("analysis_messages") or \
+        st.session_state.get("messages") or []
+    current_case = fh.case_signature(messages) if messages else None
+    markdown = lg.build_longitudinal_report(friend, runs, full_runs,
+                                            current_case=current_case)
+    st.download_button(
+        "下载长期观察报告（Markdown）",
+        data=markdown,
+        file_name="longitudinal-observation.md",
+        mime="text/markdown",
+        key="friend_longitudinal_download",
+    )
+    with st.expander("查看报告内容", expanded=False):
+        st.markdown(markdown)
+
+
+def show_history_panel(messages: list[dict]) -> None:
+    """② 确认阶段的「历史档案（可选）」：导入相同好友时看到旧总结与重叠。"""
+    st.divider()
+    st.markdown("#### 历史档案（可选）")
+    st.caption(
+        "如果你以前把这位好友的分析保存到本机档案，这里可以看到旧总结、"
+        "聊天时间覆盖范围，以及**当前导入与历史的重叠区间**。"
+        "加载档案不会重新调用 Jev，也不会改动分析列表。")
+
+    store = get_friend_store()
+    st.text_input("好友昵称 / 备注 / 别名（只在本机查找）",
+                  key="history_alias_input")
+    alias = (st.session_state.get("history_alias_input") or "").strip()
+    if st.button("查找历史档案", key="history_lookup") and alias:
+        matches = store.find_by_alias(alias)
+        st.session_state["friend_matches"] = matches
+        if len(matches) == 1:
+            st.session_state["history_friend_id"] = matches[0].friend_id
+        elif not matches:
+            st.session_state["history_friend_id"] = None
+        else:
+            st.session_state["history_friend_id"] = None
+
+    matches = st.session_state.get("friend_matches")
+    if matches:
+        if len(matches) > 1:
+            st.warning(f"找到 {len(matches)} 个同名/同称呼的档案，"
+                       "SignalLens 不会自动合并，请选择要查看哪一个。")
+            labels = [_friend_alias_label(m) for m in matches]
+            choice = st.radio("查看哪个档案", labels, key="history_match_radio")
+            if st.button("查看这个档案的历史", key="history_match_confirm"):
+                st.session_state["history_friend_id"] = matches[
+                    labels.index(choice)].friend_id
+                st.rerun()
+        else:
+            st.success(f"找到档案：{matches[0].display_name}"
+                       f"（{matches[0].run_count} 条历史）")
+
+    friend_id = st.session_state.get("history_friend_id")
+    if not friend_id:
+        return
+    friend = store.get_friend(friend_id)
+    if friend is None:
+        return
+
+    runs = store.list_runs(friend_id)
+    if not runs:
+        st.caption(f"档案「{friend.display_name}」还没有历史分析。")
+        return
+
+    full_runs = [store.get_run(r.run_id) for r in runs]
+    report = lg.overlap_with_history(messages, full_runs)
+    if report.fingerprint_total:
+        bits = [f"本次导入 {report.fingerprint_total} 条："
+                f"与历史重复 {report.duplicate_count} 条，"
+                f"新增 {report.new_count} 条"]
+        if report.identical_cases:
+            bits.append("⚠ 与历史中 "
+                        f"{len(report.identical_cases)} 次是同一批消息（重复导入）")
+        if report.time_overlap:
+            bits.append(f"时间重叠：{report.overlap_first} ~ "
+                        f"{report.overlap_last}")
+        st.info(" · ".join(bits))
+
+        stale = sorted({i for run in full_runs
+                        for i in lg.stale_targets(run, messages)})
+        if stale:
+            st.warning(
+                f"当前导入包含 {len(stale)} 条早于历史目标的新消息：这些目标的"
+                "完整上下文与当时不同。逐条缓存按当时**实际发给 Jev 的上下文**"
+                "判定是否复用（上下文不同就不会命中），因此不会盲目套用旧结论；"
+                "如要纵向结论可靠，建议对这些消息重新分析。")
+
+    elig = {e.run_id: e for e in lg.eligibility(runs)}
+    for i, run in enumerate(runs, start=1):
+        with st.expander(f"{i}. 聊天 {_span_text(run)} · "
+                         f"{run.analyzed_count} 条已分析"):
+            st.markdown(run.summary_text or "（无摘要）")
+            notes = lg.missing_data_notes(run)
+            if notes:
+                st.caption("缺失 / 限制：" + "；".join(notes))
+            e = elig.get(run.run_id)
+            if e and e.reasons:
+                st.caption("纵向比较限制：" + "；".join(e.reasons))
 
 
 def show_results(results: list[dict], stats: dict) -> None:
@@ -1665,6 +2161,9 @@ def show_results(results: list[dict], stats: dict) -> None:
     elif view == "报告":
         with _Stage("results:report"):
             show_report_tab(results, stats)
+    elif view == "长期观察":
+        with _Stage("results:longitudinal"):
+            show_longitudinal_tab(results, stats)
     else:
         with _Stage("results:overview"):
             show_overview_tab(results, stats)
@@ -1693,9 +2192,14 @@ def show_sidebar() -> None:
         st.caption("隐私")
         st.markdown("本地脱敏后发送")
         st.divider()
-        if st.button("清除本地分析缓存", use_container_width=True):
+        if st.button("清除分析缓存", use_container_width=True):
             get_cache().clear()
-            st.toast("本地缓存已清除。")
+            st.toast("已清空 Jev 逐条分析缓存。")
+        st.caption(
+            "只清空 **Jev 逐条分析缓存**（独立文件 analysis_cache）。"
+            "好友档案与历史分析在另一个独立文件里，**不受影响**；"
+            "要删除档案请在④结果 →「长期观察」里操作。"
+        )
         if st.session_state.get("analysis_state") in ("running", "interrupted"):
             st.divider()
             st.caption("界面状态")

@@ -59,6 +59,9 @@ coverage.xml
 *.sqlite
 *.sqlite3
 
+# ===== 好友档案 / 历史分析（含昵称与本地指纹，禁止提交）=====
+.friend_history/
+
 # ===== 运行状态 / 日志 =====
 runtime.json
 *.log
