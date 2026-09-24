@@ -1430,6 +1430,47 @@ def show_key_messages_tab(results: list[dict]) -> None:
 MESSAGES_PER_PAGE = 25
 
 
+def _scroll_anchor(anchor_id: str) -> None:
+    """渲染一个滚动锚点，并在挂载后把它滚动进视口。
+
+    使用 Streamlit 官方 `st.html` 的受信 HTML + JS 通道
+    （`unsafe_allow_javascript=True`），而不是把脚本塞进
+    `st.markdown(..., unsafe_allow_html=True)`——后者在不同 Streamlit
+    版本下可能被转义或清掉。不含任何聊天文本，只接收锚点 id；
+    脚本只对自身渲染的锚点调用 scrollIntoView，不读取其它 DOM。
+    """
+    st.html(
+        f"""
+        <div id="{anchor_id}" style="height:0;margin:0;padding:0"></div>
+        <script>
+          (function () {{
+            var el = document.getElementById({json.dumps(anchor_id)});
+            if (el && el.scrollIntoView) {{
+              el.scrollIntoView({{block: "start", behavior: "smooth"}});
+            }}
+          }})();
+        </script>
+        """,
+        unsafe_allow_javascript=True,
+    )
+
+
+def _render_messages_nav(page: int, pages: int, position: str) -> None:
+    """消息列表上方/下方的翻页导航（position 仅用于生成唯一 widget key）。"""
+    if pages <= 1:
+        return
+    c1, c2, c3 = st.columns([1, 2, 1])
+    if c1.button("◀ 上一页", key=f"msg_prev_{position}",
+                 disabled=(page == 0), use_container_width=True):
+        st.session_state["msg_page"] = page - 1
+        st.rerun()
+    c2.markdown(f"第 {page + 1} / {pages} 页")
+    if c3.button("下一页 ▶", key=f"msg_next_{position}",
+                 disabled=(page >= pages - 1), use_container_width=True):
+        st.session_state["msg_page"] = page + 1
+        st.rerun()
+
+
 def show_all_messages_tab(results: list[dict], stats: dict) -> None:
     st.markdown("#### 全部消息")
     c1, c2 = st.columns([2, 3])
@@ -1444,15 +1485,18 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
 
     skipped = st.session_state.get("skipped_media", 0)
     mode = st.session_state.get("msg_filter_mode", "全部消息")
-    # 过滤条件变化时回到第 1 页（避免停在一个越界页）
-    if st.session_state.get("msg_filter_last") != mode:
-        st.session_state["msg_filter_last"] = mode
+    show_media = bool(st.session_state.get("show_media_events", False))
+    # 过滤条件变化时回到第 1 页（避免停在一个越界页）。
+    # 媒体事件开关同样是过滤条件：打開会插入额外条目，必须重置页码。
+    filter_key = (mode, show_media)
+    if st.session_state.get("msg_filter_last") != filter_key:
+        st.session_state["msg_filter_last"] = filter_key
         st.session_state["msg_page"] = 0
 
     visible = filter_entries(
         results,
         mode=mode,
-        include_media=st.session_state.get("show_media_events", False),
+        include_media=show_media,
         messages=st.session_state.get("analysis_messages") or [],
     )
     if not visible:
@@ -1469,6 +1513,12 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
         f"第 {page + 1} / {pages} 页（每页 {MESSAGES_PER_PAGE} 条）"
     )
 
+    # 顶部导航：进入本视图 / 从底部翻页后都能立即看到翻页控件
+    _render_messages_nav(page, pages, "top")
+
+    # 本页首条消息的锚点：切页后滚动到这里，而不是页面最顶部或旧页底部
+    _scroll_anchor("msg-page-anchor")
+
     start = page * MESSAGES_PER_PAGE
     for entry in visible[start:start + MESSAGES_PER_PAGE]:
         if entry.get("media_event"):
@@ -1476,17 +1526,8 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
         else:
             show_message_card(entry)
 
-    if pages > 1:
-        c1, c2, c3 = st.columns(3)
-        if c1.button("◀ 上一页", key="msg_prev_page",
-                     disabled=(page == 0), use_container_width=True):
-            st.session_state["msg_page"] = page - 1
-            st.rerun()
-        c2.markdown(f"第 {page + 1} / {pages} 页")
-        if c3.button("下一页 ▶", key="msg_next_page",
-                     disabled=(page >= pages - 1), use_container_width=True):
-            st.session_state["msg_page"] = page + 1
-            st.rerun()
+    # 底部导航：读完当前 25 条后无需先向上滚再翻页
+    _render_messages_nav(page, pages, "bottom")
 
 
 def report_memo_key(revision: int, include_text: bool) -> tuple:

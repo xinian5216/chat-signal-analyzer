@@ -92,6 +92,25 @@ def _button(at, label):
     raise AssertionError(f"button {label!r} not found; have {[b.label for b in at.button]}")
 
 
+def _buttons(at, label):
+    return [b for b in at.button if b.label == label]
+
+
+def _select(at, label, value):
+    for s in at.selectbox:
+        if s.label == label:
+            s.select(value)
+            return
+    raise AssertionError(f"selectbox {label!r} not found")
+
+
+def _checkbox(at, label):
+    for c in at.checkbox:
+        if c.label == label:
+            return c
+    raise AssertionError(f"checkbox {label!r} not found")
+
+
 def _texts(at) -> str:
     chunks = []
     for attr in ("markdown", "success", "info", "warning", "error", "caption",
@@ -383,20 +402,66 @@ def test_all_messages_is_paginated(counting_client):
     assert "第 1 /" in body and "每页 25 条" in body
     n = len(counting_client)
 
-    _button(at, "下一页 ▶").click()
+    # 顶部与底部都有翻页导航（读完当前 25 条后无需先向上滚）
+    assert len(_buttons(at, "下一页 ▶")) == 2
+    assert len(_buttons(at, "◀ 上一页")) == 2
+    assert _buttons(at, "◀ 上一页")[0].disabled       # 第 1 页：上一页禁用
+
+    # 点底部“下一页”
+    _buttons(at, "下一页 ▶")[1].click()
     at.run()
     body = _texts(at)
     assert "第 2 /" in body
     assert len(counting_client) == n              # 切页 0 API
+    assert not _buttons(at, "◀ 上一页")[1].disabled  # 第 2 页：底部上一页可用
 
     # 到末页后“下一页”必须禁用（不越界，也不得请求 API）
-    while not _button(at, "下一页 ▶").disabled:
-        _button(at, "下一页 ▶").click()
-        at.run()
-    assert _button(at, "下一页 ▶").disabled
+    for b in _buttons(at, "下一页 ▶"):
+        while not b.disabled:
+            b.click()
+            at.run()
+    for b in _buttons(at, "下一页 ▶"):
+        assert b.disabled
     body = _texts(at)
     m = re.search(r"第 (\d+) / (\d+) 页", body)
     assert m and m.group(1) == m.group(2), body[-200:]   # 已在末页
+    assert len(counting_client) == n
+    assert not at.exception
+
+
+def test_all_messages_filter_change_resets_page(counting_client):
+    """切换“仅有效关系消息”/Top 5 / 媒体事件必须重置页码（时间升序不变）。"""
+    at = _fresh(counting_client)
+    chat = "\n\n".join(
+        f"我\n2026年08月21日 {9 + i % 8:02d}:{i % 60:02d}\n问 {i}\n\n"
+        f"TA\n2026年08月21日 {9 + i % 8:02d}:{i % 60:02d}\n答 {i}"
+        for i in range(30)
+    )
+    _parse(at, chat)
+    _analyze(at)
+    at.segmented_control[0].set_value("全部消息")
+    at.run()
+    n = len(counting_client)
+
+    # 翻到第 2 页
+    _buttons(at, "下一页 ▶")[1].click()
+    at.run()
+    assert "第 2 /" in _texts(at)
+
+    # 切换过滤模式 → 回到第 1 页
+    _select(at, "显示消息", "仅有效关系消息")
+    at.run()
+    body = _texts(at)
+    assert "第 1 /" in body
+    assert len(counting_client) == n
+
+    # 打开媒体事件开关也是过滤条件：同样重置页码，且不重新请求 API
+    _buttons(at, "下一页 ▶")[1].click()
+    at.run()
+    _checkbox(at, "显示媒体事件").check()
+    at.run()
+    body = _texts(at)
+    assert "第 1 /" in body
     assert len(counting_client) == n
     assert not at.exception
 
