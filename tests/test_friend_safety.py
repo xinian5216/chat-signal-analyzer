@@ -17,6 +17,7 @@
 from pathlib import Path
 
 import pytest
+import streamlit as streamlit
 from streamlit.testing.v1 import AppTest
 
 import analyzer
@@ -43,6 +44,21 @@ CHAT_B = """丙二方
 丁二方
 2026年09月02日 10:05
 收到"""
+
+
+@pytest.fixture(autouse=True)
+def _fresh_friend_store():
+    """每个测试后清掉 get_friend_store() 的缓存。
+
+    在脚本运行上下文之外，`st.session_state` 是进程级的裸 SessionState，
+    不清理会把上一个测试的临时数据库路径带给下一个测试。
+    （真实应用里每个浏览器会话各有自己的 session_state，不受影响。）
+    """
+    yield
+    try:
+        streamlit.session_state.pop("friend_store", None)
+    except Exception:
+        pass
 
 
 @pytest.fixture
@@ -478,7 +494,7 @@ def test_evidence_editor_previews_anonymized_text(monkeypatch, tmp_path,
     _open_longitudinal(at)
     _create_profile(at, '乙一方')
 
-    _checkbox(at, '保留匿名化证据片段（最多 5+5 条，脱敏后截断；保存前会先给你预览，可改可删）').check()
+    _checkbox(at, '保留匿名化证据片段（已去重，最多 5+5 条，脱敏后截断；下面就是最终会写入本机档案的内容，可改可删）').check()
     at.run()
 
     texts = _texts(at)
@@ -502,6 +518,122 @@ def test_evidence_editor_previews_anonymized_text(monkeypatch, tmp_path,
     for item in full['evidence']:
         assert '13800138000' not in str(item)
         assert len(item['note']) <= fh.EVIDENCE_MAX_CHARS + 1
+
+
+def _fake_result(index, warmth=2.0, evidence=2.4, distancing=0.2, text='内容'):
+    return {'index': index, 'speaker': 'them',
+            'time': f'2026-08-21 21:{index % 60:02d}', 'text': text,
+            'context': [], 'cached': False,
+            'result': {
+                'warmth': {'score': warmth, 'probabilities': {},
+                           'confidence': 0.9},
+                'engagement': {'score': 2.0, 'probabilities': {},
+                               'confidence': 0.9},
+                'special_attention': {'score': 1.0, 'probabilities': {},
+                                      'confidence': 0.9},
+                'relationship_evidence_strength': {'score': evidence,
+                                                   'probabilities': {},
+                                                   'confidence': 0.9},
+                'relational_ease': {'score': 2.0, 'probabilities': {},
+                                    'confidence': 0.9},
+                'intent': {'choice': 'other',
+                           'probabilities': {'other': 1.0},
+                           'confidence': 0.9},
+                'emotion': {'choice': 'calm',
+                            'probabilities': {'calm': 1.0},
+                            'confidence': 0.9},
+                'romantic_signal': 0.2, 'distancing_signal': distancing}}
+
+
+def test_evidence_candidates_dedupe_mixed_signals():
+    """同一条消息同时入选两类 → 只保留一份，标为混合信号且两类解释都在。"""
+    results = [_fake_result(1, warmth=3.0, evidence=3.0, distancing=0.75,
+                            text='我的手机号 13800138000'),
+               _fake_result(5, warmth=2.0, evidence=2.6, distancing=0.5)]
+    candidates = app_module._evidence_candidates(results)
+    indices = [c['index'] for c in candidates]
+    assert len(indices) == len(set(indices)), indices      # 没有重复 index
+    mixed = [c for c in candidates if c['index'] == 1]
+    assert len(mixed) == 1
+    assert mixed[0]['stance'] == 'mixed'
+    # 两类来源的解释都保留（不能简单丢掉相反证据）
+    assert '关系信息量' in mixed[0]['note']
+    assert '疏离' in mixed[0]['note']
+    assert app_module._evidence_stance_label('mixed').find('混合信号') >= 0
+
+
+def test_evidence_candidates_never_merge_different_messages():
+    """两条不同消息即使内容/时间相同也不合并。"""
+    results = [_fake_result(1, text='完全相同的内容'),
+               _fake_result(2, text='完全相同的内容')]
+    candidates = app_module._evidence_candidates(results)
+    assert sorted(c['index'] for c in candidates) == [1, 2]
+
+
+def test_evidence_widget_keys_are_scoped_by_friend_and_revision():
+    """控件 key 绑定分析版本 + 好友 ID + 消息身份：换好友不串编辑内容。"""
+    a = app_module._evidence_keys(3, 'friendA', 7)
+    b = app_module._evidence_keys(3, 'friendB', 7)
+    c = app_module._evidence_keys(4, 'friendA', 7)
+    d = app_module._evidence_keys(3, 'friendA', 8)
+    assert a['del'] != b['del'] and a['txt'] != b['txt']
+    assert a['del'] != c['del']
+    assert a['del'] != d['del']
+    assert len({a['del'], a['txt']}) == 2
+
+
+def test_normalize_evidence_dedupes_before_writing(monkeypatch, tmp_path):
+    """写入前的最后一道校验：按消息身份去重 + 限量。"""
+    items = [{'index': 1, 'stance': 'supporting', 'note': 'a', 'snippet': 'x'},
+             {'index': 1, 'stance': 'counter', 'note': 'b', 'snippet': 'y'},
+             {'index': 2, 'stance': 'mixed', 'note': 'c', 'snippet': 'z'}]
+    normalized = fh.normalize_evidence(items)
+    assert [e['index'] for e in normalized] == [1, 2]
+    assert normalized[1]['stance'] == 'mixed'
+
+
+def test_save_run_rejects_duplicate_evidence(monkeypatch, tmp_path,
+                                             counting_client):
+    """即使调用方传了重复候选，写入前也会被去掉。"""
+    monkeypatch.setattr(paths, 'friend_history_db_path',
+                        lambda: tmp_path / 'friend_history.db')
+    messages = [{'speaker': 'me', 'raw_speaker': '甲', 'time': '2026-08-21 21:00',
+                 'text': '问', 'media_kinds': [], 'content_type': 'text'},
+                {'speaker': 'them', 'raw_speaker': '乙',
+                 'time': '2026-08-21 21:05', 'text': '答',
+                 'media_kinds': [], 'content_type': 'text'}]
+    results = [_fake_result(1)]
+    stats = compute_stats(results)
+    evidence = [{'index': 1, 'stance': 'supporting', 'note': 'a',
+                 'snippet': '第一份'},
+                {'index': 1, 'stance': 'counter', 'note': 'b',
+                 'snippet': '第二份'},
+                {'index': 2, 'stance': 'counter', 'note': 'c',
+                 'snippet': '第三份'}]
+    run_id = app_module.save_run_to_friend('friend-x', results, stats, messages,
+                                           evidence=evidence)
+    store = fh.FriendStore(tmp_path / 'friend_history.db')
+    kept = store.get_run(run_id)['evidence']
+    assert [e['index'] for e in kept] == [1, 2]
+    assert kept[0]['snippet'] == '第一份'          # 保留第一份，不合并文本
+
+
+def test_evidence_editor_renders_unique_widget_keys(monkeypatch, tmp_path,
+                                                    counting_client):
+    """真实界面：混合证据也不会再抛 StreamlitDuplicateElementKey。"""
+    monkeypatch.setattr(paths, 'friend_history_db_path',
+                        lambda: tmp_path / 'friend_history.db')
+    at = _fresh()
+    _import_and_map(at, CHAT_A, '甲一方', '乙一方')
+    _analyze(at)
+    _open_longitudinal(at)
+    _create_profile(at, '乙一方')
+    _checkbox(at, '保留匿名化证据片段（已去重，最多 5+5 条，脱敏后截断；'
+                  '下面就是最终会写入本机档案的内容，可改可删）').check()
+    at.run()
+    assert not at.exception, at.exception
+    texts = _texts(at)
+    assert '混合信号，需核对' in texts or '最终会写入本机档案' in texts
 
 
 def test_evidence_candidates_are_masked_and_capped(monkeypatch, tmp_path,
@@ -559,7 +691,7 @@ def test_evidence_candidates_are_masked_and_capped(monkeypatch, tmp_path,
     assert '<PHONE>' in str(candidates)
     assert all(len(c.get('snippet') or '') <= fh.EVIDENCE_MAX_CHARS + 1
                for c in candidates)
-    kept = app_module._render_evidence_editor(results)
+    kept = app_module._render_evidence_editor(results, 7, 'friend-x')
     assert kept == list(candidates)
     # 用户改写后的最终内容不受 normalize 破坏（只是再过一次脱敏+截断）
     final = fh.normalize_evidence([

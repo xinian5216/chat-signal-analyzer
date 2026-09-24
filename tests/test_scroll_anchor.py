@@ -43,17 +43,17 @@ def _use_session(monkeypatch):
 
 def test_request_consume_request_consume_keeps_incrementing_nonce(monkeypatch):
     _use_process(monkeypatch)
-    sa.request_scroll("area", 1)
+    sa.request_scroll("area", 1, "bottom")
     first = sa.consume_scroll("area")
-    assert first == {"page": 1, "nonce": 1}
+    assert first == {"page": 1, "nonce": 1, "position": "bottom"}
 
-    sa.request_scroll("area", 2)
+    sa.request_scroll("area", 2, "top")
     second = sa.consume_scroll("area")
-    assert second == {"page": 2, "nonce": 2}
+    assert second == {"page": 2, "nonce": 2, "position": "top"}
 
     sa.request_scroll("area", 3)
     third = sa.consume_scroll("area")
-    assert third == {"page": 3, "nonce": 3}
+    assert third == {"page": 3, "nonce": 3, "position": "auto"}
 
     # nonce 单调递增 → 连续翻页的 HTML 永不重复（Streamlit 不去重）
     assert [first["nonce"], second["nonce"], third["nonce"]] == [1, 2, 3]
@@ -99,7 +99,8 @@ def test_multi_turn_html_unique(monkeypatch):
 def test_consume_is_one_shot(monkeypatch):
     _use_process(monkeypatch)
     sa.request_scroll("area", 4)
-    assert sa.consume_scroll("area") == {"page": 4, "nonce": 1}
+    assert sa.consume_scroll("area") == {"page": 4, "nonce": 1,
+                                     "position": "auto"}
     assert sa.consume_scroll("area") is None      # 普通 rerun 不会二次滚动
 
 
@@ -152,13 +153,15 @@ def test_two_sessions_do_not_share_scroll_state(monkeypatch):
 
     # B 自己翻页，nonce 从 1 开始
     sa.request_scroll("preview", 9)
-    assert sa.consume_scroll("preview") == {"page": 9, "nonce": 1}
+    assert sa.consume_scroll("preview") == {"page": 9, "nonce": 1,
+                                     "position": "auto"}
 
     # ---- 切回会话 A：nonce 仍是 2（B 的操作不影响 A） ----
     monkeypatch.setattr(sa.st, "session_state", session_a, raising=False)
     assert sa.current_nonce("preview") == 2
     sa.request_scroll("preview", 3)
-    assert sa.consume_scroll("preview") == {"page": 3, "nonce": 3}
+    assert sa.consume_scroll("preview") == {"page": 3, "nonce": 3,
+                                     "position": "auto"}
     # 进程级兜底仍保持干净（没有跨会话泄漏）
     assert sa._PROCESS_PENDING == {} and sa._PROCESS_NONCE == {}
 

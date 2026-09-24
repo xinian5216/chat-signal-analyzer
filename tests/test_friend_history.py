@@ -222,11 +222,13 @@ def test_evidence_is_opt_in_anonymized_and_capped(store):
     results = [result(1, "2026-08-01 09:05")]
     evidence = fh.normalize_evidence([
         {"index": 1, "stance": "supporting", "note": messages[1]["text"]},
-        {"index": 1, "stance": "bogus_stance", "note": "另一条"},
+        {"index": 2, "stance": "bogus_stance", "note": "另一条"},
         {"index": "坏下标", "stance": "supporting", "note": "无效"},
         {"index": 0, "stance": "supporting", "note": "   "},
+        # 同一条消息的第二份证据：写入前必须被去重（P0）
+        {"index": 1, "stance": "counter", "note": "重复的同一消息"},
     ])
-    assert len(evidence) == 2
+    assert [e["index"] for e in evidence] == [1, 2]
     assert "<PHONE>" in evidence[0]["note"] and "<EMAIL>" in evidence[0]["note"]
     assert "13800138000" not in evidence[0]["note"]
     assert len(evidence[0]["note"]) <= fh.EVIDENCE_MAX_CHARS + 1
