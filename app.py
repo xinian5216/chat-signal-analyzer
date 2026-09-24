@@ -235,9 +235,12 @@ def init_state() -> None:
         ("friend_matches", None),        # 最近一次查找的候选列表（④阶段）
         ("history_matches", None),       # 最近一次查找的候选列表（②阶段）
         ("friend_selected", None),       # 用户选定的 friend_id
+        ("friend_binding", None),        # 档案↔当前 TA 身份的绑定（防串档）
         ("friend_save_evidence", False), # 是否保留匿名化证据片段（默认否）
-        ("friend_saved_revision", None),  # 已保存的分析版本号（防重复点击）
+        ("friend_save_marks", {}),       # {(revision, case): {friend_id: saved_at}}
+        ("friend_save_confirm", False),  # 跨档案可能串档时的显式确认
         ("friend_confirm_delete", False),  # 删除档案前的显式确认
+        ("friend_checkboxes_reset", False),  # 下次渲染前重置上述勾选（widget 安全）
         ("friend_run_delete", None),      # 待删除的单条历史 run_id
         ("history_friend_id", None),     # 确认阶段正在浏览的历史档案
     ):
@@ -577,6 +580,97 @@ def reset_media_state() -> None:
     st.session_state["media_manual"] = {}
 
 
+def _clear_friend_selection(notice: str | None = None) -> None:
+    """清除当前选定的好友档案（换聊天 / TA 身份变化时调用）。
+
+    ``friend_binding`` 是“档案 ↔ 当前 TA 身份”的绑定；一并清掉才能防止
+    把另一位好友的聊天存进上一个档案。仅在调用方给出提示语时才写入
+    ``input_notice``（换聊天这种正常路径不打扰用户）。
+
+    注意：**不能**在这里直接写 ``friend_confirm_delete`` /
+    ``friend_save_confirm``——它们是 checkbox widget 的 key，在 widget
+    实例化之后再写会抛 ``StreamlitWidgetAlreadyInstantiatedError``
+    （真实浏览器里就是这么把删除流程打断的）。改为打一个重置标记，
+    由 ``_reset_friend_checkboxes`` 在下次渲染、widget 创建之前处理。
+    """
+    st.session_state["friend_selected"] = None
+    st.session_state["friend_binding"] = None
+    st.session_state["friend_matches"] = None
+    st.session_state["friend_checkboxes_reset"] = True
+    if notice:
+        set_input_notice("warning", notice)
+
+
+def _reset_friend_checkboxes() -> None:
+    """在创建任何 widget 之前重置档案相关的勾选状态（幂等）。"""
+    if not st.session_state.get("friend_checkboxes_reset"):
+        return
+    st.session_state["friend_checkboxes_reset"] = False
+    # pop 而非赋值：widget 尚未实例化，删除其 state 是允许的
+    for key in ("friend_confirm_delete", "friend_save_confirm",
+                "friend_save_evidence", "friend_add_alias_open"):
+        st.session_state.pop(key, None)
+
+
+def _select_friend_profile(friend_id: str) -> None:
+    """用户显式选择档案：记录选择，并绑定**当前**确认过的 TA 身份。
+
+    之后只要 TA 身份变化（重新选择身份 / 换了聊天），绑定就会失效，
+    必须重新显式选择才能保存——避免串档。
+    """
+    st.session_state["friend_selected"] = friend_id
+    st.session_state["friend_binding"] = {
+        "friend_id": friend_id,
+        "ta_alias": fh.normalize_alias(st.session_state.get("applied_ta") or ""),
+        "me_alias": fh.normalize_alias(st.session_state.get("applied_me") or ""),
+        "bound_at": time.time(),
+    }
+    st.session_state["friend_checkboxes_reset"] = True
+
+
+def _sync_friend_binding() -> None:
+    """校验“档案 ↔ 当前 TA 身份”绑定；身份变了就失效并提示（幂等）。
+
+    在②阶段每次渲染时调用：换聊天、重新选择身份、追加片段引入新参与者
+    从而导致身份重建——所有路径都覆盖到，不依赖某一条代码路径记得清理。
+    同一个人的追加（TA 身份不变）不会触动绑定。
+    """
+    if not st.session_state.get("friend_binding"):
+        return
+    ta_alias = fh.normalize_alias(st.session_state.get("applied_ta") or "")
+    if not ta_alias:
+        _clear_friend_selection(
+            "身份需要重新确认：之前选定的好友档案关联已失效，"
+            "请重新选择要把本次分析保存到哪个档案。")
+        return
+    if ta_alias != (st.session_state["friend_binding"].get("ta_alias") or ""):
+        _clear_friend_selection(
+            "检测到 TA 身份已改变：旧档案关联失效，请重新选择要保存到"
+            "哪个档案（避免把这位好友的聊天存进别人的档案）。")
+
+
+def _friend_save_mark_key(revision, signature) -> tuple:
+    return (int(revision or 0), signature or "")
+
+
+def _mark_friend_saved(revision, signature, friend_id: str) -> None:
+    """记录“这份分析（版本 + 案例指纹）已保存到该档案”。"""
+    marks = st.session_state.get("friend_save_marks")
+    if not isinstance(marks, dict):
+        # 不用 setdefault：真实脚本运行时的 session_state 代理不支持它
+        # （只有裸 SessionState 支持），显式 get/set 两种情况都对。
+        marks = {}
+        st.session_state["friend_save_marks"] = marks
+    key = _friend_save_mark_key(revision, signature)
+    marks.setdefault(key, {})[friend_id] = time.time()
+
+
+def _friends_saved_for(revision, signature) -> dict:
+    """这份分析（版本 + 案例指纹）已经保存到过哪些档案。"""
+    return dict((st.session_state.get("friend_save_marks") or {})
+                .get(_friend_save_mark_key(revision, signature)) or {})
+
+
 def _reset_chat_state() -> None:
     """清空当前聊天与结果（解析失败 / 替换聊天时使用）。"""
     st.session_state["messages"] = None
@@ -593,6 +687,9 @@ def _reset_chat_state() -> None:
     st.session_state["sel_ta"] = "（未指定）"
     st.session_state["applied_me"] = None
     st.session_state["applied_ta"] = None
+    # 换聊天 = 可能换了一个人：好友档案关联必须失效，绝不把新聊天
+    # 存入上一个好友的档案（串档防护）
+    _clear_friend_selection()
     # 时间线 / 顺序状态：换聊天必须全部作废
     st.session_state["timeline_info"] = None
     st.session_state["order_signature"] = None
@@ -727,6 +824,8 @@ def handle_append_chunk(text: str, uploaded: list) -> None:
         st.session_state["applied_ta"] = None
         st.session_state["sel_me"] = "（未指定）"
         st.session_state["sel_ta"] = "（未指定）"
+        # 身份被清空 → 好友档案关联同时失效（绝不猜这是谁）
+        _clear_friend_selection()
         # 映射已清空：显式传 None，按“未知发言人”重建（不猜身份）
         set_messages(rebuild_messages_from_chunks(None, None))
         set_input_notice(
@@ -1099,6 +1198,8 @@ def steps_markdown(current: int) -> str:
 # ---------------------------------------------------------------------------
 
 def show_confirm_stage(messages: list[dict]) -> None:
+    # 档案↔身份绑定校验：换聊天 / TA 身份变化后旧关联必须失效（串档防护）
+    _sync_friend_binding()
     counts = {"me": 0, "them": 0, "unknown": 0}
     for m in messages:
         counts[m["speaker"]] = counts.get(m["speaker"], 0) + 1
@@ -1116,7 +1217,7 @@ def show_confirm_stage(messages: list[dict]) -> None:
             f"当前总消息 {appended.total} 条（全部本机处理，未调用 Jev）"
         )
 
-    # 输入处理的提示（替换 / 追加成功后 rerun，提示需跨 rerun 显示一次）
+    # 输入处理的提示（替换 / 追加 / 档案操作成功后 rerun，提示需跨 rerun 显示一次）
     notice = st.session_state.get("input_notice")
     if notice:
         st.session_state["input_notice"] = None
@@ -1126,6 +1227,8 @@ def show_confirm_stage(messages: list[dict]) -> None:
             st.error(text)
         elif level == "info":
             st.info(text)
+        elif level == "success":
+            st.success(text)
         else:
             st.warning(text)
 
@@ -1198,6 +1301,10 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 st.session_state["sel_ta"] = "（未指定）"
                 st.session_state["analysis_messages"] = None
                 clear_analysis_results()
+                # 身份要重新选 → 档案关联失效，保存前必须重新显式选择
+                _clear_friend_selection(
+                    "身份需要重新确认：之前选定的好友档案关联已失效，"
+                    "请重新选择要把本次分析保存到哪个档案。")
                 st.rerun()
 
         # ---- 媒体提示（非错误）----
@@ -1696,29 +1803,20 @@ def _friend_alias_label(match) -> str:
     return f"{match.display_name}（匹配到{kind}“{match.display}”· {runs}）"
 
 
-def save_run_to_friend(results: list[dict], stats: dict,
-                       messages: list[dict]) -> str | None:
+def save_run_to_friend(friend_id: str, results: list[dict], stats: dict,
+                       messages: list[dict],
+                       evidence: list[dict] | None = None) -> str | None:
     """把本次**已完成**的分析存成一条不可变快照（纯本地写入）。
 
     绝不在此处调用 Jev；``messages`` 用分析时使用的完整消息列表
     （``analysis_messages``），保证指纹与时间范围可复现。
+    ``evidence`` 是用户在预览里最终保留（可编辑、可删除）的片段。
+    ``friend_id`` 由调用方显式传入（不读 session_state），便于测试与复用。
     """
-    if not messages:
+    if not messages or not friend_id:
         return None
-    evidence = []
-    if st.session_state.get("friend_save_evidence"):
-        auto = lg.supporting_evidence(results, limit=5)
-        auto += lg.counter_evidence(results, limit=5)
-        by_index = {e["index"]: e for e in results}
-        for item in auto:
-            entry = by_index.get(item["index"])
-            if entry is not None:
-                # 用户显式选择后，才保留匿名化证据片段（脱敏 + 截断）
-                item["snippet"] = entry.get("text") or ""
-        evidence = fh.normalize_evidence(auto)
-
     snapshot = fh.build_run_snapshot(
-        friend_id=st.session_state["friend_selected"],
+        friend_id=friend_id,
         messages=messages,
         results=results,
         stats=stats,
@@ -1728,13 +1826,70 @@ def save_run_to_friend(results: list[dict], stats: dict,
         schema_version=ANALYSIS_SCHEMA_VERSION,
         request_model=DEFAULT_MODEL,
         summary_text=build_summary_text(results, stats),
-        evidence=evidence,
+        evidence=evidence or [],
     )
     store = get_friend_store()
     run_id = store.save_run(snapshot)
-    st.session_state["friend_saved_revision"] = \
-        st.session_state.get("analysis_revision")
+    _mark_friend_saved(st.session_state.get("analysis_revision"),
+                       snapshot.get("case_signature"), friend_id)
     return run_id
+
+
+def _evidence_candidates(results: list[dict]) -> list[dict]:
+    """保存前的候选证据：从既有指标取 top 支持性/相反证据 + 匿名化原文片段。
+
+    片段一定经过 ``fh.anonymize_evidence_text``（本地脱敏 + 截断），
+    但正则脱敏**不保证完全匿名**——所以下面必须让用户预览后才能写入。
+    """
+    auto = lg.supporting_evidence(results, limit=5)
+    auto += lg.counter_evidence(results, limit=5)
+    by_index = {e["index"]: e for e in results}
+    out: list[dict] = []
+    for item in auto:
+        entry = by_index.get(item["index"])
+        if entry is None:
+            continue
+        normalized = fh.normalize_evidence(
+            [{**item, "snippet": entry.get("text") or ""}])
+        if normalized:
+            out.append(normalized[0])
+    return out
+
+
+def _render_evidence_editor(results: list[dict]) -> list[dict]:
+    """证据预览编辑器：显示**最终会写入本机档案**的内容，容许改/删。
+
+    返回用户最终保留的片段（文本以 text_area 里的值为准，勾选删除的剔除）。
+    默认完全不保存任何正文——只有用户勾选“保留匿名化证据片段”才会到这里。
+    """
+    candidates = _evidence_candidates(results)
+    if not candidates:
+        st.caption("（本次分析没有可保留的证据片段。）")
+        return []
+    st.caption("下面是**最终会写入本机档案**的预览（已过本地脱敏并截断）：")
+    st.warning(
+        "正则脱敏**不能保证完全匿名**：姓名、地址、第三方经历、公司 / 学校 /"
+        "地点等信息可能仍留在文本里。请逐条检查——可以直接改写，"
+        "或勾选“删除这条”把它整个去掉。")
+    kept: list[dict] = []
+    for item in candidates:
+        index = item["index"]
+        stance = "支持性" if item["stance"] == "supporting" else "相反/其它"
+        st.caption(f"消息 #{index + 1} · {stance} · {item['note']}")
+        c1, c2 = st.columns([1, 6])
+        with c1:
+            drop = st.checkbox("删除这条", key=f"friend_evidence_del_{index}")
+        with c2:
+            text = st.text_area(
+                "证据片段（可编辑）",
+                value=item.get("snippet") or "",
+                key=f"friend_evidence_txt_{index}",
+                height=90,
+                label_visibility="collapsed",
+            )
+        if not drop and text.strip():
+            kept.append({**item, "snippet": text})
+    return kept
 
 
 def show_friend_panel(results: list[dict], stats: dict) -> None:
@@ -1742,6 +1897,8 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
 
     默认**不**自动保存：只有用户显式点击“保存至好友档案”才写档案。
     """
+    # 在任何 widget 创建之前重置上次留下的勾选状态（换档案 / 删除后）
+    _reset_friend_checkboxes()
     st.markdown("#### 好友档案（可选，全部本地）")
     st.caption(FRIEND_PRIVACY_NOTE)
     st.caption("默认不自动保存。只有点击下面的按钮，本次分析才会写入本机档案。")
@@ -1766,7 +1923,7 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
             if st.button("用这个名字新建档案", key="friend_create") and alias:
                 friend = store.create_friend(alias, aliases=[alias])
                 st.session_state["friend_matches"] = None
-                st.session_state["friend_selected"] = friend.friend_id
+                _select_friend_profile(friend.friend_id)
                 st.rerun()
 
         matches = st.session_state.get("friend_matches")
@@ -1784,8 +1941,8 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
                 choice = st.radio("选择档案", labels,
                                   key="friend_match_radio")
                 if st.button("确认使用这个档案", key="friend_match_confirm"):
-                    st.session_state["friend_selected"] = matches[
-                        labels.index(choice)].friend_id
+                    _select_friend_profile(
+                        matches[labels.index(choice)].friend_id)
                     st.session_state["friend_matches"] = None
                     st.rerun()
         return
@@ -1794,7 +1951,7 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
     friend = store.get_friend(selected)
     if friend is None:
         # 档案被删了（例如另一个标签页）→ 回到查找状态
-        st.session_state["friend_selected"] = None
+        _clear_friend_selection()
         st.rerun()
         return
 
@@ -1806,8 +1963,7 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
            if aliases else "")
     )
     if st.button("换一个档案", key="friend_reset"):
-        st.session_state["friend_selected"] = None
-        st.session_state["friend_matches"] = None
+        _clear_friend_selection()
         st.rerun()
 
     # 追加称呼（同一个人有多个昵称/备注时）
@@ -1819,9 +1975,11 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
                             key="friend_alias_kind")
         if st.button("追加称呼", key="friend_add_alias") and extra.strip():
             if store.add_alias(selected, extra.strip(), kind):
-                st.success("已追加（以后用这个名字也能找到同一档案）")
+                set_input_notice(
+                    "success",
+                    "已给这个档案追加称呼（以后用这个名字也能找到同一档案）。")
             else:
-                st.info("这个称呼已经在该档案里了。")
+                set_input_notice("info", "这个称呼已经在该档案里了。")
             st.rerun()
 
     # ---- 保存本次分析 ----
@@ -1830,42 +1988,70 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
     messages = (st.session_state.get("analysis_messages")
                 or st.session_state.get("messages") or [])
     signature = fh.case_signature(messages) if messages else ""
+    revision = st.session_state.get("analysis_revision")
     duplicates = (store.find_runs_by_case(selected, signature)
                   if signature else [])
-    saved_revision = st.session_state.get("friend_saved_revision")
-    if duplicates:
-        st.warning(
-            f"这个档案里已经有 {len(duplicates)} 次对**同一批消息**的分析"
-            f"（最近一次保存于 {_fmt_wall_time(duplicates[-1].saved_at)}）。"
-            "再次保存会产生一条**新的**历史记录（历史不可修改），"
-            "可以用来对比不同时间点的分析结果。")
-    elif saved_revision == st.session_state.get("analysis_revision"):
-        st.caption("本次分析的结果已经保存过了。")
+    saved_here = selected in _friends_saved_for(revision, signature)
+    saved_elsewhere = {
+        fid: when for fid, when in _friends_saved_for(revision, signature).items()
+        if fid != selected
+    }
 
-    if duplicates or saved_revision != st.session_state.get("analysis_revision"):
-        st.checkbox(
-            "保留匿名化证据片段（最多 5+5 条，脱敏后截断，"
-            "方便以后回头核对结论依据）",
+    if saved_here:
+        st.caption("本次分析的结果已经保存到这个档案了。")
+    else:
+        if saved_elsewhere:
+            names = []
+            for fid in saved_elsewhere:
+                other = store.get_friend(fid)
+                names.append(other.display_name if other else f"档案 {fid[:8]}")
+            st.warning(
+                "同一份分析之前已经保存到：" + "、".join(names) + "。\n\n"
+                "如果是同一个人，建议改用那个档案（避免同一个人分散在多份档案里）；"
+                "如果确实是**另一位**好友，请勾选下面的确认框再保存。")
+            st.checkbox(
+                f"确认这份分析属于「{friend.display_name}」，仍然保存",
+                key="friend_save_confirm",
+            )
+        if duplicates:
+            st.warning(
+                f"这个档案里已经有 {len(duplicates)} 次对**同一批消息**的分析"
+                f"（最近一次保存于 {_fmt_wall_time(duplicates[-1].saved_at)}）。"
+                "再次保存会产生一条**新的**历史记录（历史不可修改），"
+                "可以用来对比不同时间点的分析结果。")
+
+    if not saved_here:
+        keep_evidence = st.checkbox(
+            "保留匿名化证据片段（最多 5+5 条，脱敏后截断；"
+            "保存前会先给你预览，可改可删）",
             key="friend_save_evidence",
             help="不勾选时档案里只有统计、消息编号与指标，"
                  "不含任何聊天文本。",
         )
-        if st.button("保存至好友档案", key="friend_save"):
+        if keep_evidence:
+            evidence = _render_evidence_editor(
+                st.session_state.get("results") or results)
+            if evidence:
+                st.caption(f"将保留 {len(evidence)} 条证据片段。")
+        else:
+            evidence = []
+
+        blocked = bool(saved_elsewhere) and not st.session_state.get(
+            "friend_save_confirm")
+        if st.button("保存至好友档案", key="friend_save",
+                     disabled=blocked,
+                     help="可能存在串档：请先勾选上面的确认框"
+                     if blocked else None):
             run_id = save_run_to_friend(
-                results, stats,
-                st.session_state.get("analysis_messages")
-                or st.session_state.get("messages") or [])
+                selected, results, stats, messages, evidence=evidence)
             if run_id:
-                st.session_state["friend_saved_revision"] = \
-                    st.session_state.get("analysis_revision")
-                st.success(
-                    f"已保存为一条历史分析快照（run_id `{run_id[:12]}`）。"
-                    "历史记录不可修改；再次保存同一批消息会产生新记录并提示重复。"
-                )
-                if st.session_state.get("friend_save_evidence"):
-                    st.caption(
-                        "已保留匿名化证据片段（已过本地脱敏并截断到 "
-                        f"{fh.EVIDENCE_MAX_CHARS} 字以内）。")
+                note = (f"已保存为一条历史分析快照（run_id {run_id[:12]}…）。"
+                        "历史记录不可修改；再次保存同一批消息会产生新记录并提示重复。")
+                if evidence:
+                    note += ("已保留你最终确认的证据片段（本地脱敏 + 截断到 "
+                             f"{fh.EVIDENCE_MAX_CHARS} 字以内）。")
+                set_input_notice("success", note)
+                st.rerun()
             else:
                 st.error("没有可保存的分析消息。")
 
@@ -1883,16 +2069,27 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
         st.warning(
             "删除会同时清空该好友的全部历史分析快照与证据片段。"
             "这只是本机档案，**不影响** Jev 分析缓存——要清缓存请用侧栏的"
-            "“清除本地分析缓存”。")
+            "“清除分析缓存”。")
+        st.warning(
+            "删除只是从 SQLite 里删行，**不等于安全擦除**：数据库文件里可能"
+            "仍有已删除内容的旧字节，`-wal` / `-shm` 文件、系统备份、以及你"
+            "之前手动导出的快照 JSON 都不会被这一并清掉。要彻底移除，请删除"
+            "整个档案数据库文件（portable：`data/friend_history.db*`；"
+            "开发模式：`.friend_history/`）并清空回收站。")
         st.checkbox("我确认要删除这个档案及其全部历史",
                     key="friend_confirm_delete")
         if st.button("删除档案", key="friend_delete"):
             if not st.session_state.get("friend_confirm_delete"):
                 st.error("请先勾选上面的确认框。")
             elif store.delete_friend(selected):
-                st.session_state["friend_selected"] = None
-                st.session_state["friend_confirm_delete"] = False
-                st.success("档案及其历史已删除。")
+                # 按钮回调后 Streamlit 一定会重新运行脚本，直接 st.success 会
+                # 被冲掉；改用跨 rerun 的提示（与输入处理一致的做法）
+                # 注意：不能在这里写 friend_confirm_delete（checkbox 的 key，
+                # widget 已实例化）——由 _clear_friend_selection 的重置标记处理
+                _clear_friend_selection()
+                set_input_notice(
+                    "success",
+                    "档案及其全部历史分析已从本机档案数据库删除。")
                 st.rerun()
 
 
@@ -1965,7 +2162,7 @@ def _render_history_list(store, friend, runs, *,
             if st.button("确认删除", key="friend_run_delete_yes"):
                 store.delete_run(pending_delete)
                 st.session_state["friend_run_delete"] = None
-                st.success("已删除该条历史。")
+                set_input_notice("success", "已删除该条历史分析记录。")
                 st.rerun()
         with c2:
             if st.button("取消", key="friend_run_delete_no"):

@@ -207,6 +207,7 @@ def test_save_to_new_friend_writes_one_run(history, counting_client):
 
 
 def test_saving_twice_flags_duplicate(history, counting_client):
+    """同一份分析重复保存：按钮不再提供；换一次分析版本则提示重复案例。"""
     at = _fresh()
     _parse_and_analyze(at)
     _open_longitudinal(at)
@@ -216,18 +217,29 @@ def test_saving_twice_flags_duplicate(history, counting_client):
     at.run()
     _button(at, "保存至好友档案").click()
     at.run()
-    _open_longitudinal(at)
-    _button(at, "保存至好友档案").click()
-    at.run()
 
     store = fh.FriendStore(history)
     friend = store.list_friends()[0]
+    assert len(store.list_runs(friend.friend_id)) == 1
+
+    # 同一份分析（同版本 + 同案例）再次进入 → 不再提供保存按钮
+    _open_longitudinal(at)
+    texts = _texts(at)
+    assert "已经保存到这个档案" in texts
+    assert "保存至好友档案" not in [b.label for b in at.button]
+
+    # 模拟“重新分析了一次同一批消息”（新 revision）→ 提示重复案例，
+    # 但仍允许保存（历史不可改，会产生新记录）
+    at.session_state["analysis_revision"] = 99
+    at.run()
+    texts = _texts(at)
+    assert "同一批消息" in texts
+    _button(at, "保存至好友档案").click()
+    at.run()
+
     runs = store.list_runs(friend.friend_id)
     assert len(runs) == 2
     assert len({r.case_signature for r in runs}) == 1   # 同一批消息
-    _open_longitudinal(at)
-    texts = _texts(at)
-    assert "已经保存过" in texts or "重复" in texts
 
 
 # ---------------------------------------------------------------------------
