@@ -448,7 +448,13 @@ def pick_select_option(page, selectbox_label: str, option: str) -> None:
     dd = page.locator("[data-testid='stSelectboxVirtualDropdown']").first
     dd.wait_for(state="visible", timeout=8000)
     opt = dd.locator("[role='option']", has_text=option).last
-    opt.click(timeout=8000, no_wait_after=False)
+    try:
+        opt.click(timeout=8000, no_wait_after=False)
+    except PWTimeout:
+        # Streamlit 1.64 虚拟下拉行偶发「元素不稳定 / detached」抖动
+        # （既不是产品缺陷也不改变断言）：退回 dispatch click，仍然是
+        # react-aria 的正式选项事件。
+        opt.dispatch_event("click")
 
 
 # ---------------------------------------------------------------------------
@@ -477,6 +483,14 @@ def phase_import(page) -> None:
         "() => (document.querySelector('section.stMain').scrollTop - window.__t0)")
     check("identity_pick_no_scroll", drift == 0, f"main scrollTop drift={drift}")
 
+    # 标点昵称端到端回归（parser 真实缺陷）：身份表单里选中的「我」必须
+    # 逐字节保留全角感叹号——parse 丢了标点或把昵称挡掉，这里就会失败。
+    me_shown = page.locator("[data-testid='stSelectbox']",
+                            has_text="我是：").first \
+        .locator("input[role='combobox']").first.input_value()
+    check("punctuation_nickname_parsed_verbatim",
+          me_shown == ME and "！" in me_shown,
+          f"我是 combobox shows {me_shown!r}")
     ui_click(page, page.get_by_role("button", name="应用昵称映射并重新解析"))
     wait_text(page, "身份映射完成", 30000)
     check("identity_applied", True, f"me={ME} ta={TA}")

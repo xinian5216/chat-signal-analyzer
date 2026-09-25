@@ -56,6 +56,14 @@
 - 参与者只来自 parser 已确认处于 sender header 位置的 ``raw_speaker``
   （见 ``detect_participants``），绝不重新扫描正文寻找“像昵称的字符串”；
 - 结构位置正确即可成为参与者，**不要求昵称重复出现**；
+- **结构位置确认昵称可含感叹号 / 问号**（``_looks_like_struct_sender``）：
+  微信昵称允许 ！？!?（真实缺陷：昵称「无聊！！！」曾被标点过滤挡住，
+  合法三行格式报「开头第 1 行无法识别为消息」）。只有「昵称行 + 下一
+  行完整合法时间戳」的结构位置放行，其余防护不变：URL、冒号、括号 /
+  尖括号 / 花括号、**句子级标点（逗号 / 句号 / 分号 / 省略号 / 顿号）**、
+  独占一行的时间、超长行、无中日韩拉丁字母的行仍然拒绝——正文里的
+  感叹句、网址、时间、代码、媒体占位符都不会因此变成新昵称；legacy
+  冒号格式与「时间 昵称」同行格式仍用严格校验（没有时间戳结构确认）；
 - 手工昵称优先；内置默认名（我/TA/他/她…）次之；
   只填一侧昵称时，其余具名发言人归入另一侧；
 - **绝不根据消息内容猜测** speaker；
@@ -92,6 +100,12 @@ _URL_LINE = re.compile(r"^\s*[A-Za-z][A-Za-z0-9+.\-]*://")
 # 昵称候选里不允许出现的字符：冒号 / 括号 / 中英文句法与句末标点。
 # 用途是把“像正文的文本”（URL、带标点的句子、媒体占位符）挡在 sender 之外。
 _NAME_BAD_CHARS = re.compile(r"[:：\[\]{}<>，。！？；、…,;!?\"“”‘’]")
+# 结构位置（三行块）昵称候选的附加阻断字符：与 _NAME_BAD_CHARS 相同，
+# 但**放行 ！？!?**——真实昵称常见（如「无聊！！！」），而结构本身
+# （下一行是完整合法时间戳）已提供强确认。
+# 逗号 / 句号 / 分号 / 省略号 / 顿号仍然阻断：那是正文句子的特征
+# （「今天真开心，我们走吧」不得被当成昵称）。
+_NAME_BAD_CHARS_STRUCT = re.compile(r'[:：\[\]{}<>，。；、…,;"“”‘’]')
 # 昵称至少包含一个中文或拉丁字母（纯数字 / 纯符号不是昵称）
 _NAME_HAS_WORD = re.compile(r"[\u4e00-\u9fffA-Za-z]")
 
@@ -370,6 +384,9 @@ def looks_like_sender_name(name: str) -> bool:
     只做保守判断（不硬编码任何昵称）：通过者**仍然**必须处于
     sender header 位置（下一有效行是整行时间，或“时间 昵称”同行），
     这里只负责把明显不是昵称的文本挡在参与者之外。
+
+    三行块结构位置（昵称行 + 下一行完整时间戳）使用宽松变体
+    :func:`_looks_like_struct_sender`：额外放行昵称里的 ！？!?。
     """
     n = (name or "").strip()
     if not n or len(n) > MAX_SENDER_NAME_LEN:
@@ -379,6 +396,41 @@ def looks_like_sender_name(name: str) -> bool:
     if not _NAME_HAS_WORD.search(n):
         return False
     if _NAME_BAD_CHARS.search(n):
+        return False
+    if DATETIME_FULL.match(n) or TIME_ONLY_LINE.match(n):
+        return False
+    return True
+
+
+def _looks_like_struct_sender(line: str) -> bool:
+    """**结构位置**上的 sender 候选：昵称行 + 下一有效行是整行完整时间戳。
+
+    与 :func:`looks_like_sender_name` 的唯一区别：放行 **！？!?**
+    （中文全角与英文半角感叹号 / 问号）。真实缺陷：用户昵称
+    「无聊！！！」被全角感叹号挡住，合法三行微信格式报
+    「开头第 1 行无法识别为消息」。
+
+    为什么不担心反向误判：
+
+    - 通过本校验**仍然**必须处于 sender header 位置——下一行是整行
+      fullmatch 的完整时间戳，且不是紧跟时间戳的第一行正文
+      （``_at_body_start`` 继续挡住「会议改到 16:30 吧」这类正文）；
+    - 句子级标点（逗号 / 句号 / 分号 / 省略号 / 顿号）、冒号、括号 /
+      尖括号 / 花括号（媒体占位符与代码）、URL、独占一行的时间、
+      超长行、无中日韩拉丁字母的行**仍然全部拒绝**——正文里的
+      感叹句（「太好了！」）、网址、时间、代码、媒体占位符都不会
+      因此变成新昵称；
+    - 结构本身无法消除的歧义（正文行恰好紧邻时间戳行）不猜测：
+      成为候选后仍由用户显式映射身份，未映射记 "unknown"。
+    """
+    n = (line or "").strip()
+    if not n or len(n) > MAX_SENDER_NAME_LEN:
+        return False
+    if is_url_line(n):
+        return False
+    if not _NAME_HAS_WORD.search(n):
+        return False
+    if _NAME_BAD_CHARS_STRUCT.search(n):
         return False
     if DATETIME_FULL.match(n) or TIME_ONLY_LINE.match(n):
         return False
@@ -488,7 +540,7 @@ def _has_wechat_block_evidence(nonblank: list[str]) -> bool:
         line = nonblank[k]
         if timestamp_of_line(nonblank[k + 1]) is None:
             continue
-        if not looks_like_sender_name(line):
+        if not _looks_like_struct_sender(line):
             continue
         counts[line] = counts.get(line, 0) + 1
     if not counts:
@@ -608,7 +660,7 @@ def parse_chat(
         #    这是微信模式下唯一允许开启新消息的结构。
         if wechat_mode and not body_start and pos + 1 < n:
             next_ts = timestamp_of_line(nonblank[pos + 1])
-            if next_ts is not None and looks_like_sender_name(line):
+            if next_ts is not None and _looks_like_struct_sender(line):
                 current = {"raw": line, "time": next_ts, "lines": []}
                 blocks.append(current)
                 wechat_started = True
