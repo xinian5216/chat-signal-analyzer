@@ -930,13 +930,31 @@ def read_behavior_events(data_dir: Path) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT dimension, behavior_type, status, source_kind,"
-            " stance, notes FROM behavior_events"
+            " stance, notes, snippet, fingerprints_json, event_identity"
+            " FROM behavior_events"
         ).fetchall()
     finally:
         conn.close()
     return [{"dimension": r[0], "behavior_type": r[1], "status": r[2],
-             "source_kind": r[3], "stance": r[4], "notes": r[5]}
+             "source_kind": r[3], "stance": r[4], "notes": r[5],
+             "snippet": r[6], "fingerprints": json.loads(r[7] or "[]"),
+             "event_identity": r[8]}
             for r in rows]
+
+
+def read_run_fingerprints(data_dir: Path) -> set[str]:
+    """档案里全部历史快照的消息指纹（验证历史候选指纹来自原 run）。"""
+    import sqlite3
+    db = data_dir / "friend_history.db"
+    if not db.exists():
+        return set()
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT fingerprint FROM history_messages").fetchall()
+    finally:
+        conn.close()
+    return {r[0] for r in rows}
 
 
 def phase_behavior_panel(page, data_dir: Path) -> None:
@@ -976,13 +994,39 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
           page.get_by_text("历史来源，无聊天正文", exact=False).count() > 0,
           f"history-sourced candidates flagged context-missing (last "
           f"batch of {pages})")
+    # 编号归属提示：历史候选的消息编号属于原 run，不是当前导入
+    check("behavior_history_index_ownership",
+          page.get_by_text("原分析快照", exact=False).count() > 0,
+          "history candidate shows run-relative numbering note")
+
+    # --- 在最后一批确认历史候选（Phase 2A.1：不得与当前聊天混）---
+    hist_cand = _open_expander(page, "确认这条事件")
+    note_field = hist_cand.get_by_role("textbox", name="你的说明（可选）")
+    note_field.fill("历史候选：我记得当时的上下文")
+    ui_click(page, hist_cand.get_by_role("button", name="确认这条事件"))
+    wait_text(page, "已确认事件", 30000)
+    rows = read_behavior_events(data_dir)
+    history_rows = [e for e in rows if e["source_kind"] == "history"]
+    check("behavior_history_confirm_persisted",
+          len(history_rows) == 1
+          and history_rows[0]["status"] == "confirmed",
+          f"history rows={len(history_rows)}")
+    run_fps = read_run_fingerprints(data_dir)
+    check("behavior_history_fingerprint_from_run",
+          history_rows
+          and set(history_rows[0]["fingerprints"]) <= run_fps,
+          "history event fingerprints come from the original run "
+          "(not current-chat indices)")
+
     for step in range(pages - 1, 0, -1):
         ui_click(page, page.get_by_role("button", name="◀ 上一批"))
         wait_text(page, f"第 {step} / ", 30000)
 
-    # 确认第一条候选：先展开、标注"支持性"、再提交（表单提交后才进 session）
+    # --- 确认第一条当前导入候选（带可识别备注，供跨好友隔离检查）---
     cand = _open_expander(page, "确认这条事件")
     ui_click(page, cand.locator("label", has_text="支持性").first)
+    cand.get_by_role("textbox", name="你的说明（可选）").fill(
+        "PROFILE2-NOTE-cross-friend")
     ui_click(page, cand.get_by_role("button", name="确认这条事件"))
     wait_text(page, "已确认事件", 30000)
     check("behavior_confirm_notice", True, "confirmed candidate notice shown")
@@ -993,13 +1037,19 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
     wait_text(page, "已排除该候选", 30000)
     check("behavior_exclude_notice", True, "rejected candidate notice shown")
 
-    # 落库校验：一确认一排除（同一事件不重复计算）
-    events = read_behavior_events(data_dir)
-    statuses = sorted(e["status"] for e in events)
-    diag("db behavior events: " + json.dumps(events, ensure_ascii=False)[:300])
+    # 落库校验：2 确认（1 历史 + 1 规则）+ 1 排除
+    rows = read_behavior_events(data_dir)
+    statuses = sorted(e["status"] for e in rows)
+    diag("db behavior events: " + json.dumps(
+        [{k: e[k] for k in ("dimension", "behavior_type", "status",
+                            "source_kind", "notes")} for e in rows],
+        ensure_ascii=False)[:400])
     check("behavior_events_persisted",
-          statuses == ["confirmed", "rejected"],
-          f"rows={len(events)} statuses={statuses}")
+          statuses == ["confirmed", "confirmed", "rejected"],
+          f"rows={len(rows)} statuses={statuses}")
+    check("behavior_note_persisted",
+          any(e["notes"] == "PROFILE2-NOTE-cross-friend" for e in rows),
+          "edited note written to db")
 
     # 长期行为事件报告（本地聚合，无评分输出）
     wait_text(page, "长期行为事件报告", 20000)
@@ -1013,43 +1063,72 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
           and page.get_by_text("喜欢概率：", exact=False).count() == 0,
           "no 尊重分 / 喜欢概率 output anywhere on the page")
 
-    # 手动添加事件（用户自己圈定范围）。起始/结束编号用默认值 1 / 2
-    # （正好是一个两消息窗口）——故意不 fill：number_input 的 fill 会触发
-    # 异步 rerun，曾落在 combobox 两连击之间导致下拉打不开。
+    # 手动添加事件（用户自己圈定范围；默认编号 1/2，不 fill——number_input
+    # 的 fill 会触发异步 rerun 落在 combobox 两连击之间）
     manual = _open_expander(page, "手动添加一个行为事件")
     _pick_select_in(page, manual, "行为方向", "关心与回应性")
-    # 产品回归：改「行为方向」会触发 rerun，无 key 的 st.expander 会收起
-    manual_stays_open = page.evaluate(
-        """() => { let open = null;
-            document.querySelectorAll('details').forEach(d => {
-                const s = d.querySelector('summary');
-                if (s && s.textContent.includes('手动添加')) open = d.open;
-            });
-            return open; }""")
     check("behavior_manual_panel_stays_open",
-          manual_stays_open is True,
+          page.evaluate(
+              """() => { let open = null;
+                  document.querySelectorAll('details').forEach(d => {
+                      const s = d.querySelector('summary');
+                      if (s && s.textContent.includes('手动添加'))
+                          open = d.open;
+                  });
+                  return open; }""") is True,
           "manual add panel stays open across selectbox rerun "
           "(regression guard for unkeyed st.expander collapse)")
     _pick_select_in(page, manual, "行为类型", "认真回应困难")
     ui_click(page, manual.locator("label", has_text="支持性").first)
-    notes = manual.locator("textarea").first
-    notes.fill("浏览器回归：手动圈定的一次关心互动")
+    keep = manual.locator("label", has_text="保留一段脱敏片段").first
+    ui_click(page, keep)
+    snippet = manual.get_by_role("textbox", name="脱敏片段（可编辑）")
+    # 虚构 PII：保存路径必须脱敏（store 层兜底 + UI 最终预览）
+    snippet.fill("我叫林小满，电话 13812345678，邮箱 lin@example.com")
     ui_click(page, manual.get_by_role("button", name="添加事件"))
     wait_text(page, "已手动添加事件", 30000)
     check("behavior_manual_add_notice", True, "manual event added")
-    events = read_behavior_events(data_dir)
-    manual_rows = [e for e in events if e["source_kind"] == "manual"]
+    rows = read_behavior_events(data_dir)
+    manual_rows = [e for e in rows if e["source_kind"] == "manual"]
     check("behavior_manual_add_persisted",
           len(manual_rows) == 1
           and manual_rows[0]["dimension"] == "care"
           and manual_rows[0]["behavior_type"] == "care_response",
           f"manual rows={len(manual_rows)}")
+    check("behavior_manual_snippet_masked",
+          manual_rows
+          and "<PHONE>" in manual_rows[0]["snippet"]
+          and "<EMAIL>" in manual_rows[0]["snippet"]
+          and "13812345678" not in manual_rows[0]["snippet"]
+          and "lin@example.com" not in manual_rows[0]["snippet"],
+          f"manual snippet stored masked: "
+          f"{manual_rows[0]['snippet'][:60] if manual_rows else 'NONE'}")
+
+    # --- 跨好友切换：profile3（同一份聊天）不得继承 profile2 的备注 ---
+    # 用另一个虚构称呼（安安）建档——同一份聊天 + 不同档案正是跨好友
+    # 隔离要覆盖的场景；同时保持 F 阶段按「予安」查找时唯一匹配。
+    ui_click(page, page.get_by_role("button", name="换一个档案"))
+    ui_fill(page, alias_input, "安安")
+    ui_click(page, page.get_by_role("button", name="用这个名字新建档案"))
+    wait_text(page, "长期行为观察", 30000)
+    cand3 = _open_expander(page, "确认这条事件")
+    note3 = cand3.get_by_role("textbox", name="你的说明（可选）")
+    leaked = note3.input_value()
+    check("behavior_cross_friend_state_isolated",
+          leaked == "" and "PROFILE2-NOTE" not in leaked,
+          f"profile3 note field value: {leaked!r}")
+    ui_click(page, cand3.get_by_role("button", name="确认这条事件"))
+    wait_text(page, "已确认事件", 30000)
+    rows = read_behavior_events(data_dir)
+    profile2_notes = [e["notes"] for e in rows
+                      if e["notes"] == "PROFILE2-NOTE-cross-friend"]
+    check("behavior_cross_friend_separate_events",
+          len(profile2_notes) == 1,
+          f"profile2 note intact; total rows={len(rows)}")
 
     # 已确认事件可在面板里编辑 / 删除（先编辑保存，验证审计落库）
-    ev_exp = page.locator("[data-testid='stExpander']",
-                          has_text="已确认的行为事件")
-    event_expander = None
     expanders = page.locator("[data-testid='stExpander']")
+    event_expander = None
     for i in range(expanders.count()):
         label = expanders.nth(i).locator("summary").first.text_content() or ""
         if "理解情绪" in label or "认真回应困难" in label:

@@ -982,6 +982,10 @@ class FriendStore:
 
         event_id = str(event.get("event_id") or new_run_id())
         now = time.time()
+        # store 层兜底脱敏：所有写入路径（手动 / 确认 / 编辑）一致处理，
+        # 不依赖调用方已经脱敏（与 normalize_evidence 同风格）
+        event = dict(event)
+        event["snippet"] = anonymize_evidence_text(event.get("snippet") or "")
         created_at = float(event.get("created_at") or now)
         updated_at = float(event.get("updated_at") or now)
         conn = self._connect()
@@ -1011,7 +1015,7 @@ class FriendStore:
                     str(event.get("support_evidence") or ""),
                     str(event.get("counter_evidence") or ""),
                     str(event.get("notes") or ""),
-                    str(event.get("snippet") or ""),
+                    event["snippet"],
                     str(event.get("user_feeling") or ""),
                     str(event.get("review_note") or ""),
                     created_at, updated_at,
@@ -1146,6 +1150,8 @@ class FriendStore:
                 if k in self._EVENT_EDITABLE}
         if not safe:
             return False
+        if "snippet" in safe:
+            safe["snippet"] = anonymize_evidence_text(safe.get("snippet") or "")
         conn = self._connect()
         try:
             exists = conn.execute(

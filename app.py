@@ -2388,6 +2388,21 @@ def _behavior_messages() -> list[dict]:
             or st.session_state.get("messages") or [])
 
 
+def _behavior_scope(friend_id: str, identity: str) -> str:
+    """候选 / 手动表单控件 key 的稳定作用域。
+
+    组成：好友 ID + 当前聊天案例签名 + 分析版本 + 完整事件身份。
+    四者任一变化都必须换一套全新 key——否则切换好友（或换一次聊天 /
+    重新分析）后，上一位好友的备注、主观感受、脱敏片段会残留在表单里，
+    确认时还会把别人的文字写进这一好友的事件（跨好友串味的真实缺陷）。
+    （与④阶段证据编辑器 _evidence_scope 同思路。）
+    """
+    revision = int(st.session_state.get("analysis_revision") or 0)
+    messages = _behavior_messages()
+    case = (fh.case_signature(messages)[:8] if messages else "nochat")
+    return f"{friend_id[:8]}_{case}_{revision}_{identity[:12]}"
+
+
 def _behavior_type_options(dimension: str) -> list[tuple[str, str]]:
     return list(bv.BEHAVIOR_TYPES.get(dimension, ()))
 
@@ -2452,8 +2467,10 @@ def _behavior_pending_candidates(store, friend_id: str,
     for run in store.list_runs(friend_id):
         candidates.extend(bv.history_candidates(store.get_run(run.run_id)))
     events = store.list_events(friend_id)
+    # 顺序：先生成全部 → 按事件身份剔除已确认 / 已排除 → 调用方分页。
+    # 历史缺陷：曾在生成阶段截断 40 条，处理完前 40 条后候选再也补不上。
+    pending = bv.pending_candidates(candidates, events)
     known = bv.known_candidate_events(events)
-    pending = [c for c in candidates if c.identity not in known]
     return pending, known
 
 
@@ -2470,52 +2487,77 @@ def _show_behavior_manual_add(store, friend) -> None:
                        "这里才能按消息范围手动添加事件。")
             return
         total = len(messages)
+        # 控件 key 按好友作用域：切换好友不继承上一位的输入
+        mscope = _behavior_scope(friend.friend_id, "manual")
         c1, c2 = st.columns(2)
         with c1:
             start = st.number_input("起始消息编号（从 1 开始）", min_value=1,
                                     max_value=total, value=1, step=1,
-                                    key="behavior_manual_start")
+                                    key=f"behavior_manual_start_{mscope}")
         with c2:
             end = st.number_input("结束消息编号（含）", min_value=1,
                                   max_value=total, value=min(2, total),
-                                  step=1, key="behavior_manual_end")
+                                  step=1, key=f"behavior_manual_end_{mscope}")
+        with st.expander("查看这个范围的消息（仅本次会话内存，不保存）"):
+            lo_preview, hi_preview = sorted((int(start) - 1, int(end) - 1))
+            for i in range(max(0, lo_preview),
+                           min(total, hi_preview + 1)):
+                speaker = {"me": "我", "them": "TA"}.get(
+                    messages[i].get("speaker"), messages[i].get("speaker"))
+                st.caption(
+                    f"#{i + 1} · {speaker} · "
+                    f"{messages[i].get('time') or '时间不明'} · "
+                    f"{mask_text(messages[i].get('text') or '')}")
         dimension = st.selectbox(
             "行为方向", list(bv.DIMENSIONS),
             format_func=lambda d: bv.DIMENSION_LABELS[d],
-            key="behavior_manual_dim")
+            key=f"behavior_manual_dim_{mscope}")
         type_key = st.selectbox(
             "行为类型", [t for t, _ in _behavior_type_options(dimension)],
             format_func=lambda t: _behavior_type_label(dimension, t),
-            key="behavior_manual_type")
+            key=f"behavior_manual_type_{mscope}")
         stance = st.radio("这条事件说明的是", ["supporting", "counter",
                                               "mixed", "unspecified"],
                           format_func=lambda s: bv.STANCE_LABELS[s],
-                          key="behavior_manual_stance")
-        notes = st.text_area("说明（可选）", key="behavior_manual_notes",
+                          key=f"behavior_manual_stance_{mscope}")
+        notes = st.text_area("说明（可选）", key=f"behavior_manual_notes_{mscope}",
                              height=68)
         keep = st.checkbox("保留一段脱敏片段（可预览、编辑、删除）",
-                           key="behavior_manual_keep")
+                           key=f"behavior_manual_keep_{mscope}")
         snippet = ""
         if keep:
             st.warning(
                 "正则脱敏**不能保证完全匿名**：姓名、地址、第三方经历、"
-                "公司 / 学校 / 地点可能仍在文本里。请检查后再保存。")
+                "公司 / 学校 / 地点可能仍在文本里。保存前会再脱敏一次并"
+                "截断，但仍请逐条检查——也可以直接改写或清空。")
             snippet = st.text_area("脱敏片段（可编辑）",
-                                   key="behavior_manual_snippet",
+                                   key=f"behavior_manual_snippet_{mscope}",
                                    height=68)
-        if st.button("添加事件", key="behavior_manual_submit"):
+            st.caption(
+                "最终会写入档案的内容（保存前再次脱敏并截断到 "
+                f"{fh.EVIDENCE_MAX_CHARS} 字）："
+                f"“{fh.anonymize_evidence_text(snippet) or '（空）'}”")
+        st.warning(
+            "你主动填写的**说明、备注与主观感受**同样可能包含个人信息"
+            "（姓名、经历、地点……）。这些字段不会自动脱敏，"
+            "请在保存前自行检查。")
+        if st.button("添加事件", key=f"behavior_manual_submit_{mscope}"):
             lo, hi = sorted((int(start) - 1, int(end) - 1))
-            event = bv.build_event_dict(
-                candidate=None, friend_id=friend.friend_id,
-                dimension=dimension, behavior_type=type_key,
-                stance=stance, notes=notes, snippet=snippet,
-                messages=messages, start=lo, end=hi)
-            store.save_event(event)
-            set_input_notice(
-                "success",
-                f"已手动添加事件（{bv.DIMENSION_LABELS[dimension]} · "
-                f"{_behavior_type_label(dimension, type_key)}）。")
-            st.rerun()
+            try:
+                event = bv.build_event_dict(
+                    candidate=None, friend_id=friend.friend_id,
+                    dimension=dimension, behavior_type=type_key,
+                    stance=stance, notes=notes, snippet=snippet,
+                    messages=messages, start=lo, end=hi)
+            except ValueError as exc:
+                st.error(f"方向与行为类型不匹配，未写入：{exc}")
+            else:
+                store.save_event(event)
+                set_input_notice(
+                    "success",
+                    f"已手动添加事件（{bv.DIMENSION_LABELS[dimension]} · "
+                    f"{_behavior_type_label(dimension, type_key)}）。")
+                st.rerun()
 
 
 def _show_behavior_candidates(store, friend, pending: list,
@@ -2556,9 +2598,15 @@ def _show_behavior_candidates(store, friend, pending: list,
 
 
 def _render_behavior_candidate(store, friend, candidate) -> None:
-    """单条候选：上下文预览 + 边界/方向/类型/立场编辑 + 确认 / 排除。"""
+    """单条候选：上下文预览 + 方向/类型/立场编辑 + 确认 / 排除。
+
+    边界编辑只对**当前导入**的候选开放：历史候选的消息编号属于其原始
+    分析快照的排序，解释成当前导入的编号会把事件窗口钉到完全无关的
+    消息上（历史第 20 条与当前第 20 条完全不同的真实风险）。历史候选
+    只能整条确认 / 排除，范围改动留待将来指纹验证关联后由人工进行。
+    """
     messages = _behavior_messages()
-    scope = candidate.identity[:12]
+    scope = _behavior_scope(friend.friend_id, candidate.identity)
     from_history = candidate.source_kind == "history"
     type_label = _behavior_type_label(candidate.dimension,
                                       candidate.behavior_type)
@@ -2576,10 +2624,14 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
         if candidate.alternative:
             st.caption(f"合理的替代解释：{candidate.alternative}")
 
-        if from_history or not messages:
-            st.caption("历史分析快照没有保存聊天正文，无法还原上下文；"
-                       "请结合你自己的记忆核对（不要凭旧总结编造原文）。")
-        elif candidate.msg_texts:
+        if from_history:
+            st.caption(
+                f"这条候选的消息编号 **#{candidate.start + 1}** 属于**原分析"
+                "快照**的消息排序，不是当前导入的编号——历史快照没有保存聊天"
+                "正文，因此不能调整边界、也不能用当前聊天的消息改写范围。"
+                "如将来要与当前聊天互认，必须先逐条核对原始消息指纹，"
+                "并由你显式确认。")
+        elif messages and candidate.msg_texts:
             with st.expander("查看这条候选覆盖的聊天（仅本次会话内存，"
                              "不勾选保留就不会写入档案）"):
                 for row in candidate.msg_texts:
@@ -2591,13 +2643,16 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
                         f"{mask_text(row.get('text') or '')}")
 
         with st.form(key=f"behavior_candidate_{scope}"):
-            st.caption("确认前可以修正：方向、行为类型、覆盖范围、"
-                       "以及它说明的是支持性还是相反信号。")
+            st.caption("确认前可以修正：方向、行为类型"
+                       + ("" if from_history else "、覆盖范围")
+                       + "，以及它说明的是支持性还是相反信号。")
             dimension = st.selectbox(
                 "行为方向", list(bv.DIMENSIONS),
                 index=list(bv.DIMENSIONS).index(candidate.dimension),
                 format_func=lambda d: bv.DIMENSION_LABELS[d],
                 key=f"behavior_dim_{scope}")
+            # 行为类型选项跟随**当前选中的方向**（改方向后类型列表立即
+            # 对应新方向；旧类型不属于新方向时提交会被拒绝并提示）
             type_keys = [t for t, _ in
                          _behavior_type_options(dimension)]
             default_type = candidate.behavior_type \
@@ -2616,16 +2671,18 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
                                   candidate.stance or "unspecified"),
                               format_func=lambda s: bv.STANCE_LABELS[s],
                               key=f"behavior_stance_{scope}")
-            if messages:
+            if messages and not from_history:
                 c1, c2 = st.columns(2)
                 with c1:
                     new_start = st.number_input(
-                        "起始消息编号", min_value=1, max_value=len(messages),
+                        "起始消息编号（当前导入）", min_value=1,
+                        max_value=len(messages),
                         value=candidate.start + 1, step=1,
                         key=f"behavior_start_{scope}")
                 with c2:
                     new_end = st.number_input(
-                        "结束消息编号", min_value=1, max_value=len(messages),
+                        "结束消息编号（当前导入）", min_value=1,
+                        max_value=len(messages),
                         value=min(candidate.end + 1, len(messages)),
                         step=1, key=f"behavior_end_{scope}")
             else:
@@ -2641,8 +2698,9 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
             snippet = ""
             if keep:
                 st.warning(
-                    "正则脱敏**不能保证完全匿名**：请逐条检查，"
-                    "确认后可改写或清空。")
+                    "正则脱敏**不能保证完全匿名**：保存前会再脱敏一次并"
+                    "截断，但仍请逐条检查——确认后可改写或清空。"
+                    "你写的说明与主观感受同样可能含个人信息。")
                 default_snippet = ""
                 if candidate.msg_texts:
                     default_snippet = " / ".join(
@@ -2651,6 +2709,10 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
                 snippet = st.text_area("脱敏片段（可编辑）",
                                        value=default_snippet, height=68,
                                        key=f"behavior_snippet_{scope}")
+                st.caption(
+                    "最终会写入档案的内容（保存前再次脱敏并截断到 "
+                    f"{fh.EVIDENCE_MAX_CHARS} 字）："
+                    f"“{fh.anonymize_evidence_text(snippet) or '（空）'}”")
             c1, c2 = st.columns(2)
             with c1:
                 confirmed = st.form_submit_button("确认这条事件",
@@ -2659,36 +2721,50 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
                 rejected = st.form_submit_button("排除这条")
 
         if confirmed:
-            event = bv.build_event_dict(
-                candidate=candidate, friend_id=friend.friend_id,
-                dimension=dimension, behavior_type=behavior_type,
-                stance=stance, notes=notes,
-                snippet=mask_text(snippet) if keep else "",
-                alternative=alternative,
-                messages=messages or None,
-                start=int(new_start) - 1 if new_start is not None else None,
-                end=int(new_end) - 1 if new_end is not None else None)
-            store.save_event(event)
-            set_input_notice(
-                "success",
-                f"已确认事件：{bv.DIMENSION_LABELS[dimension]} · "
-                f"{_behavior_type_label(dimension, behavior_type)}。")
-            st.rerun()
+            try:
+                event = bv.build_event_dict(
+                    candidate=candidate, friend_id=friend.friend_id,
+                    dimension=dimension, behavior_type=behavior_type,
+                    stance=stance, notes=notes,
+                    snippet=mask_text(snippet) if keep else "",
+                    alternative=alternative,
+                    messages=messages if (messages and not from_history)
+                    else None,
+                    start=int(new_start) - 1 if new_start is not None
+                    else None,
+                    end=int(new_end) - 1 if new_end is not None
+                    else None)
+            except ValueError as exc:
+                st.error(f"方向与行为类型不匹配，未写入：{exc}")
+            else:
+                store.save_event(event)
+                set_input_notice(
+                    "success",
+                    f"已确认事件：{bv.DIMENSION_LABELS[dimension]} · "
+                    f"{_behavior_type_label(dimension, behavior_type)}。")
+                st.rerun()
         if rejected:
-            event = bv.build_event_dict(
-                candidate=candidate, friend_id=friend.friend_id,
-                dimension=dimension, behavior_type=behavior_type,
-                stance="unspecified",
-                notes=notes or "（用户排除该候选）",
-                alternative=alternative,
-                messages=messages or None,
-                start=int(new_start) - 1 if new_start is not None else None,
-                end=int(new_end) - 1 if new_end is not None else None,
-                status="rejected")
-            store.save_event(event)
-            set_input_notice("info", "已排除该候选（排除记录会保留，"
-                                      "可追溯你的取舍）。")
-            st.rerun()
+            try:
+                event = bv.build_event_dict(
+                    candidate=candidate, friend_id=friend.friend_id,
+                    dimension=dimension, behavior_type=behavior_type,
+                    stance="unspecified",
+                    notes=notes or "（用户排除该候选）",
+                    alternative=alternative,
+                    messages=messages if (messages and not from_history)
+                    else None,
+                    start=int(new_start) - 1 if new_start is not None
+                    else None,
+                    end=int(new_end) - 1 if new_end is not None
+                    else None,
+                    status="rejected")
+            except ValueError as exc:
+                st.error(f"方向与行为类型不匹配，未写入：{exc}")
+            else:
+                store.save_event(event)
+                set_input_notice("info", "已排除该候选（排除记录会保留，"
+                                          "可追溯你的取舍）。")
+                st.rerun()
 
 
 def _show_behavior_events(store, friend) -> None:
@@ -2747,6 +2823,13 @@ def _show_behavior_events(store, friend) -> None:
                 snippet = st.text_area("脱敏片段（可编辑 / 清空）",
                                        value=event["snippet"], height=68,
                                        key=f"behavior_event_snippet_{event_id}")
+                st.caption(
+                    "最终会写入档案的内容（保存前再次脱敏并截断到 "
+                    f"{fh.EVIDENCE_MAX_CHARS} 字）："
+                    f"“{fh.anonymize_evidence_text(snippet) or '（空）'}”")
+                st.warning(
+                    "正则脱敏**不能保证完全匿名**；你写的**人工说明与主观感受**"
+                    "也不会自动脱敏——保存前请自行检查是否含个人信息。")
                 if st.form_submit_button("保存修改"):
                     store.update_event(event_id, {
                         "stance": stance, "notes": notes,

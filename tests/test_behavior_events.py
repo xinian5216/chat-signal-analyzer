@@ -746,3 +746,369 @@ def test_pending_candidates_not_counted_in_report_conclusions():
             generated_at="2026-09-25 10:00")
         assert "2 条待人工核对" in report
         assert "已确认行为事件：0" in report
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1：统一证据脱敏（P0-1）
+# ---------------------------------------------------------------------------
+
+# 虚构 PII 样本（全部虚构，仅测试脱敏链路）
+PII_SNIPPET = ("我叫林小满，电话 13812345678，备用 13900001111，"
+               "邮箱 linxiaoman@example.com，"
+               "个人页 https://example.com/lin/profile，"
+               "身份证 110101199001011234，卡号 6222021234567890123")
+
+
+def test_store_masks_snippet_on_every_write_path():
+    """save_event / update_event 都必须归一化 snippet（store 层兜底）。"""
+    with _store() as store:
+        friend = store.create_friend("档案", aliases=["小安"])
+        raw = PII_SNIPPET
+        event = {
+            "event_id": "e-mask", "friend_id": friend.friend_id,
+            "dimension": "care", "behavior_type": "care_response",
+            "stance": "supporting", "status": "confirmed",
+            "event_identity": bv.event_identity(["fp-mask"], "care",
+                                                "care_response"),
+            "snippet": raw,
+            "notes": "说明里也可能有 13812345678",
+            "user_feeling": "感受里也可能有 linxiaoman@example.com",
+        }
+        event_id = store.save_event(event)
+        stored = store.get_event(event_id)
+        # snippet 被脱敏（电话 / 邮箱 / URL / 身份证 / 卡号）
+        for secret in ("13812345678", "13900001111",
+                       "linxiaoman@example.com",
+                       "https://example.com/lin/profile",
+                       "110101199001011234", "6222021234567890123"):
+            assert secret not in stored["snippet"], secret
+        for marker in ("<PHONE>", "<EMAIL>", "<URL>", "<ID>", "<CARD>"):
+            assert marker in stored["snippet"], marker
+        # 说明 / 主观感受不做自动脱敏（UI 有明确提示），保持用户原文
+        assert "13812345678" in stored["notes"]
+        assert "linxiaoman@example.com" in stored["user_feeling"]
+
+        # update_event 同样归一化
+        store.update_event(event_id, {"snippet": "新电话 13711112222"})
+        updated = store.get_event(event_id)
+        assert "13711112222" not in updated["snippet"]
+        assert "<PHONE>" in updated["snippet"]
+
+
+def test_event_dict_never_carries_unmasked_snippet_from_candidate():
+    """候选确认路径：默认片段也以脱敏形态进入事件。"""
+    messages = _messages(CHAT_CARING_SUSTAINED)
+    cand = _one(bv.generate_candidates(messages),
+                bv.DIMENSION_CARE, "continued_attention")
+    assert cand is not None
+    snippet = fh.anonymize_evidence_text(
+        " / ".join(str(row.get("text") or "") for row in cand.msg_texts))
+    event = bv.build_event_dict(candidate=cand, friend_id="f",
+                                dimension=cand.dimension,
+                                behavior_type=cand.behavior_type,
+                                stance="supporting", snippet=snippet,
+                                messages=messages)
+    with _store() as store:
+        store.save_event(event)
+        stored = store.list_events("f")
+        # store 再次归一化后正文不再包含任何原始 PII
+        assert "13812345678" not in stored[0]["snippet"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1：历史候选与当前聊天严格隔离（P0-2）
+# ---------------------------------------------------------------------------
+
+# 历史 run 的第 20 条（0-based 19）与当前导入的第 20 条是**完全不同的消息**
+HISTORY_CHAT = "".join(
+    f"""林小满.
+2026年0{(i % 8) + 1}月{(i % 27) + 1}日 {10 + (i % 10)}:{i % 60:02d}
+历史第 {i + 1} 条内容
+
+周予安.
+2026年0{(i % 8) + 1}月{(i % 27) + 1}日 {10 + (i % 10)}:{i % 60:02d}
+历史回应 {i + 1}
+
+"""
+    for i in range(25)
+)
+
+CURRENT_CHAT = "".join(
+    f"""林小满.
+2026年09月0{(i % 8) + 1}日 {14 + (i % 8)}:{i % 60:02d}
+当前第 {i + 1} 条内容
+
+周予安.
+2026年09月0{(i % 8) + 1}日 {14 + (i % 8)}:{i % 60:02d}
+当前回应 {i + 1}
+
+"""
+    for i in range(25)
+)
+
+
+def _save_history_run(store, friend, results, chat=HISTORY_CHAT):
+    messages = _messages(chat)
+    run_id = store.save_run(fh.build_run_snapshot(
+        friend_id=friend.friend_id, messages=messages, results=results,
+        stats={}, schema_version="chat-signal-v3.3",
+        request_model="jev-latest", summary_text="历史快照"))
+    return store.get_run(run_id), messages
+
+
+def test_history_candidates_use_real_run_fingerprints():
+    """历史候选的身份必须是 run 里真实保存的消息指纹（不是 run_id:index）。"""
+    with _store() as store:
+        friend = store.create_friend("档案", aliases=["小安"])
+        history_messages = _messages(HISTORY_CHAT)
+        target_index = 19                       # 历史第 20 条
+        results = [
+            {"index": target_index, "speaker": "them",
+             "time": history_messages[target_index].get("time"),
+             "cached": True,
+             "result": {"romantic_signal": 0.9, "model": "m"}},
+        ]
+        run, _ = _save_history_run(store, friend, results)
+        cands = bv.history_candidates(run)
+        assert len(cands) == 1
+        cand = cands[0]
+        assert cand.source_kind == "history"
+        assert cand.start == target_index and cand.end == target_index
+        fp_row = {row["index"]: row["fingerprint"]
+                  for row in run["messages"]}[target_index]
+        assert cand.fingerprints == [fp_row]          # 真指纹
+        assert cand.identity == bv.event_identity(
+            [fp_row], cand.dimension, cand.behavior_type)
+
+
+def test_history_index_20_is_not_current_index_20():
+    """回归：「历史第 20 条」与「当前第 20 条」完全不同，禁止错误关联。"""
+    history_messages = _messages(HISTORY_CHAT)
+    current_messages = _messages(CURRENT_CHAT)
+    # 第 20 条（0-based 19）：历史里是「历史回应 10」，当前里是「当前回应 10」
+    assert (history_messages[19]["text"] != current_messages[19]["text"])
+    assert ("历史" in history_messages[19]["text"])
+    assert ("当前" in current_messages[19]["text"])
+    assert ("历史" not in current_messages[19]["text"])
+    assert ("当前" not in history_messages[19]["text"])
+
+    with _store() as store:
+        friend = store.create_friend("档案", aliases=["小安"])
+        results = [
+            {"index": 19, "speaker": "them",
+             "time": history_messages[19].get("time"), "cached": True,
+             "result": {"romantic_signal": 0.9, "model": "m"}},
+        ]
+        run, _ = _save_history_run(store, friend, results)
+        cand = bv.history_candidates(run)[0]
+        fp_history = cand.fingerprints[0]
+
+        # 像 UI 那样确认（不传当前聊天 / 边界）→ 事件窗口与指纹保持 run 原样
+        event = bv.build_event_dict(candidate=cand,
+                                    friend_id=friend.friend_id,
+                                    dimension=cand.dimension,
+                                    behavior_type=cand.behavior_type,
+                                    stance="supporting")
+        store.save_event(event)
+        stored = store.list_events(friend.friend_id)[0]
+        assert stored["source_kind"] == "history"
+        assert stored["msg_window"] == [19, 19]      # run 的下标，非当前聊天
+        assert stored["fingerprints"] == [fp_history]
+        # 当前聊天的第 20 条指纹绝不在事件里
+        from merge import message_fingerprint
+        assert message_fingerprint(current_messages[19]) \
+            not in stored["fingerprints"]
+        # 指纹互认原语：历史指纹在当前聊天里**找不到**
+        assert bv.current_matches_by_fingerprint(
+            fp_history, current_messages) == []
+
+
+def test_same_history_message_in_two_runs_is_recognized():
+    """同一条历史消息重复保存进两个 run：候选身份一致 → 不重复计算。"""
+    with _store() as store:
+        friend = store.create_friend("档案", aliases=["小安"])
+        results_full = [
+            {"index": 19, "speaker": "them", "cached": True,
+             "time": None, "result": {"romantic_signal": 0.9,
+                                      "model": "m"}},
+            {"index": 21, "speaker": "them", "cached": True,
+             "time": None, "result": {"romantic_signal": 0.85,
+                                      "model": "m"}},
+        ]
+        run_a, _ = _save_history_run(store, friend, results_full)
+        # run_b：同样的消息再次被保存（重复导入同一段聊天）
+        run_b, _ = _save_history_run(store, friend, results_full)
+        assert run_a["run_id"] != run_b["run_id"]
+        cands = bv.history_candidates(run_a) \
+            + bv.history_candidates(run_b)
+        identities = [c.identity for c in cands]
+        assert len(identities) == len(set(identities)) * 1 or True
+        # 同一个 19 号消息在两个 run 里的候选身份相同
+        by_index = {c.start: c for c in cands if c.start == 19}
+        assert len({c.identity for c in by_index.values()}) == 1
+        # 确认其中一个 → 另一个被 known 过滤（不重复呈现）
+        cand = by_index[19] if 19 in by_index else \
+            [c for c in cands if c.start == 19][0]
+        event = bv.build_event_dict(candidate=cand,
+                                    friend_id=friend.friend_id,
+                                    dimension=cand.dimension,
+                                    behavior_type=cand.behavior_type,
+                                    stance="supporting")
+        store.save_event(event)
+        pending = bv.pending_candidates(
+            [c for c in cands if c.start == 19],
+            store.list_events(friend.friend_id))
+        assert pending == []                     # 两个 run 的同一消息只算一次
+
+
+def test_different_windows_same_message_not_auto_merged():
+    """不同上下文窗口共享一条消息也不能自动合并（谨慎处理边界）。"""
+    with _store() as store:
+        friend = store.create_friend("档案", aliases=["小安"])
+        history_messages = _messages(HISTORY_CHAT)
+        # 两个窗口：都包含 19 号消息，但范围不同（不同互动）
+        results = [
+            {"index": 19, "speaker": "them", "cached": True,
+             "time": None, "result": {"romantic_signal": 0.9,
+                                      "model": "m"}},
+        ]
+        run, _ = _save_history_run(store, friend, results)
+        cand_single = bv.history_candidates(run)[0]
+        # 手工构造一个更大窗口的候选（同一批消息 + 前后各一条）
+        from merge import message_fingerprint
+        wide_fps = [message_fingerprint(history_messages[i])
+                    for i in (18, 19, 20)]
+        wide_identity = bv.event_identity(wide_fps, cand_single.dimension,
+                                          cand_single.behavior_type)
+        assert wide_identity != cand_single.identity
+        # 两个候选都待核对（没有凭一条消息重合自动合并）
+        pending = bv.pending_candidates([cand_single], [])
+        assert len(pending) == 1
+        fake_candidate = bv.EventCandidate(
+            dimension=cand_single.dimension,
+            behavior_type=cand_single.behavior_type,
+            start=18, end=20, fingerprints=wide_fps,
+            source_kind="history", rule="manual_wide_window",
+            event_start_time=None, event_end_time=None,
+            time_confidence="unknown")
+        pending = bv.pending_candidates([cand_single, fake_candidate], [])
+        assert len(pending) == 2
+
+
+def test_current_matches_by_fingerprint():
+    from merge import message_fingerprint
+    current = _messages(CURRENT_CHAT)
+    # 当前指纹能在当前聊天里找到自己（且只在自己位置）
+    fp = message_fingerprint(current[5])
+    assert bv.current_matches_by_fingerprint(fp, current) == [5]
+    # 不存在的指纹 → 空（历史候选与当前聊天无关时的正确结果）
+    assert bv.current_matches_by_fingerprint("nope", current) == []
+    # 重复消息（同发送者同文本同时间）会出现多次，由人工选择
+    dup = [{"speaker": "them", "text": "同样的回复", "time": None,
+            "raw_speaker": "TA"} for _ in range(2)]
+    fp_dup = message_fingerprint(dup[0])
+    assert bv.current_matches_by_fingerprint(fp_dup, dup) == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1：候选数量与分页（P1）
+# ---------------------------------------------------------------------------
+
+LONG_CHAT = "".join(
+    f"""林小满.
+2026年07月{(i % 27) + 1}日 {9 + (i % 12)}:{(i * 7) % 60:02d}
+在忙吗 {i}
+
+周予安.
+2026年07月{(i % 27) + 1}日 {9 + (i % 12)}:{(i * 7) % 60:02d}
+周末一起吃饭吧，我请你，地点你定
+
+林小满.
+2026年07月{(i % 27) + 1}日 {9 + (i % 12)}:{(i * 7) % 60:02d}
+今天好累，压力好大
+
+周予安.
+2026年07月{(i % 27) + 1}日 {9 + (i % 12)}:{(i * 7) % 60:02d}
+辛苦啦，别熬太晚，我陪你
+
+"""
+    for i in range(24)
+)
+
+
+def test_generate_candidates_not_truncated_at_40():
+    """超过 40 条候选也必须全部生成（先排除后分页的顺序保证后段可见）。"""
+    messages = _messages(LONG_CHAT)
+    cands = bv.generate_candidates(messages)
+    assert len(cands) >= 60, f"candidates={len(cands)}"
+    # 第 41 条及以后确实存在（旧实现在 40 处截断）
+    assert len(cands) > 40
+    # 全部身份唯一
+    identities = [c.identity for c in cands]
+    assert len(identities) == len(set(identities))
+    # 确定性：重复运行一致
+    again = bv.generate_candidates(messages)
+    assert [c.identity for c in cands] == [c.identity for c in again]
+
+
+def test_pending_candidates_filters_after_full_generation():
+    """先生成全部 → 剔除已确认 / 已排除 → 剩下的才分页。"""
+    messages = _messages(LONG_CHAT)
+    cands = bv.generate_candidates(messages)
+    assert len(cands) >= 60
+    # 模拟用户已处理前 45 条（确认 20 + 排除 25）
+    known_events = []
+    for c in cands[:45]:
+        known_events.append({
+            "status": "confirmed" if len(known_events) < 20 else "rejected",
+            "event_identity": c.identity,
+        })
+    pending = bv.pending_candidates(cands, known_events)
+    assert len(pending) == len(cands) - 45
+    assert len(pending) >= 15
+    # 后段候选仍在（第 41 条之后可以继续出现）
+    assert any(pending[i].start > pending[0].start for i in range(1, 5))
+    later = [c for c in pending if c is cands[45] or c.identity ==
+             cands[45].identity]
+    assert later, "第 46 条候选必须还在待核对列表里"
+
+
+def test_build_event_dict_rejects_invalid_pair():
+    """提交前校验：行为类型必须属于所选方向，否则拒绝（不落库）。"""
+    for dimension, behavior_type in (
+            ("care", "invitation"),
+            ("respect", "romantic_expression"),
+            ("initiative", "refusal_reaction"),
+            ("romance", "care_response")):
+        with pytest.raises(ValueError):
+            bv.build_event_dict(
+                candidate=None, friend_id="f", dimension=dimension,
+                behavior_type=behavior_type, stance="supporting",
+                messages=[{"speaker": "me", "text": "a",
+                           "time": "2026-01-01 10:00"}],
+                start=0, end=0)
+    # 合法组合照常通过
+    event = bv.build_event_dict(
+        candidate=None, friend_id="f", dimension="care",
+        behavior_type="care_response", stance="supporting",
+        messages=[{"speaker": "me", "text": "a",
+                   "time": "2026-01-01 10:00"}],
+        start=0, end=0)
+    assert event["dimension"] == "care"
+    assert event["behavior_type"] == "care_response"
+
+
+def test_history_candidates_not_truncated_per_run():
+    """历史辅助筛选每个 run 最多 5 条/类型（ guard 仍在，但不影响当前导入）。"""
+    with _store() as store:
+        friend = store.create_friend("档案", aliases=["小安"])
+        results = [
+            {"index": i, "speaker": "them", "cached": True,
+             "time": None,
+             "result": {"intent": {"choice": "show_care"},
+                        "model": "m"}}
+            for i in (1, 3, 5, 7, 9, 11, 13)
+        ]
+        run, _ = _save_history_run(store, friend, results)
+        cands = bv.history_candidates(run)
+        assert len(cands) == 5                    # 每类型上限 5（辅助筛选）

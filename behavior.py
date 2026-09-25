@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from merge import message_fingerprint
 from timeline import TIME_FULL, TIME_MISSING, TIME_ONLY, time_kind
 
 # ---------------------------------------------------------------------------
@@ -111,8 +112,14 @@ TIME_CONFIDENCE_LABELS = {
     "unknown": "时间不明",
 }
 
-# 候选一次最多生成多少条（UI 分页浏览，避免几百个控件）
-MAX_CANDIDATES = 40
+# 注意：候选**不在生成阶段截断**。历史上曾在这里设 40 条上限，导致用户
+# 逐批处理完前 40 条后，后面的候选再也无法出现在分页里（先排除后分页的
+# 顺序才是对的：先生成全部 → 按事件身份剔除已确认/已排除 → 调用方分页，
+# 每批只渲染少量控件）。
+
+# 防御性绝对上限：异常巨大的聊天（十万级消息）也不至于把内存拖爆。
+# 正常聊天下远达不到；达到时面板会提示有候选未列出。
+MAX_CANDIDATES_HARD_CAP = 2000
 
 # 关心片段合并：两条同说话方的关心的候选之间，只夹着多短的我方应答才并入
 # 同一次互动（"1 分钟内五条关心 = 一次互动"的推广）。
@@ -332,6 +339,38 @@ def new_event_id() -> str:
     return secrets.token_hex(12)
 
 
+def valid_pair(dimension: str, behavior_type: str) -> bool:
+    """方向 / 行为类型组合是否合法（行为类型必须属于该方向）。"""
+    return behavior_type in {key for key, _ in BEHAVIOR_TYPES.get(dimension, ())}
+
+
+def pending_candidates(candidates: list[EventCandidate],
+                       events: list[dict]) -> list[EventCandidate]:
+    """先生成**全部**候选 → 按事件身份剔除已确认 / 已排除 → 再分页。
+
+    顺序不可交换：在生成阶段截断会让"逐批处理完前 N 条"之后的候选永远
+    消失（Phase 2A.1 修复的真实缺陷）。控件数量由调用方分页控制。
+    """
+    known = known_candidate_events(events)
+    return [c for c in candidates if c.identity not in known]
+
+
+def current_matches_by_fingerprint(fingerprint: str,
+                                   messages: list[dict]) -> list[int]:
+    """在当前导入里找与给定历史指纹**逐字节一致**的消息下标。
+
+    这是为将来「历史候选 <-> 当前聊天」关联准备的原语：只有指纹一致才
+    认为可能是同一条消息；是否关联仍必须由用户显式确认，任何自动合并
+    都不允许。返回空列表 = 当前聊天里没有这条消息。同一指纹在导入里
+    出现多次时全部返回（由人工选择，不猜）。
+    """
+    want = str(fingerprint or "")
+    if not want:
+        return []
+    return [i for i, m in enumerate(messages)
+            if message_fingerprint(m) == want]
+
+
 # ---------------------------------------------------------------------------
 # 人工核对 → 事件（构造存储用 dict；脱敏在调用方经 friend_history 完成）
 # ---------------------------------------------------------------------------
@@ -351,6 +390,10 @@ def build_event_dict(*, candidate: EventCandidate | None, friend_id: str,
                      messages: list[dict] | None = None,
                      start: int | None = None, end: int | None = None,
                      status: str = "confirmed") -> dict:
+
+    if not valid_pair(dimension, behavior_type):
+        raise ValueError(
+            f"行为类型「{behavior_type}」不属于方向「{dimension}」")
     """把人工核对结果打包成可写入档案的事件 dict。
 
     - ``candidate`` 为 None → 人工手动创建的事件；
@@ -469,8 +512,6 @@ def _window_times(messages: list[dict], start: int, end: int) -> tuple:
 
 
 def _fingerprints(messages: list[dict], start: int, end: int) -> list[str]:
-    from merge import message_fingerprint
-
     return [message_fingerprint(messages[i]) for i in range(start, end + 1)]
 
 
@@ -996,8 +1037,8 @@ _RULES = (
 
 def generate_candidates(messages: list[dict],
                         results: list[dict] | None = None,
-                        *, limit: int = MAX_CANDIDATES) -> list[EventCandidate]:
-    """从当前导入的聊天生成待人工核对的行为候选（纯本地，0 Jev）。
+                        *, limit: int | None = None) -> list[EventCandidate]:
+    """从当前导入的聊天生成**全部**待人工核对的行为候选（纯本地，0 Jev）。
 
     规则只做**定位**：连续同说话方 turn、明确提问、后续安排、明确的
     拒绝 / 关心 / 邀约 / 浪漫措辞。每个候选都带替代解释与人工标注指引；
@@ -1005,6 +1046,7 @@ def generate_candidates(messages: list[dict],
 
     去重：同一窗口同一方向同一行为类型只保留一个候选（指纹集合相同）。
     排序：按窗口起点、方向、行为类型——完全确定，重复运行结果一致。
+    ``limit`` 默认 None（不截断）；分页由调用方负责，一次只渲染少量控件。
     """
     out: list[EventCandidate] = []
     for name, rule in _RULES:
@@ -1018,6 +1060,8 @@ def generate_candidates(messages: list[dict],
         seen.add(candidate.identity)
         unique.append(candidate)
     unique.sort(key=lambda c: (c.start, c.end, c.dimension, c.behavior_type))
+    if limit is None:
+        return unique[:MAX_CANDIDATES_HARD_CAP]
     return unique[: max(0, limit)]
 
 
@@ -1052,9 +1096,12 @@ def history_candidates(run: dict, *, limit: int = 5) -> list[EventCandidate]:
         kind = time_kind(time_value)
         confidence = ("full" if kind == TIME_FULL
                       else "partial" if kind == TIME_ONLY else "unknown")
-        # 历史候选没有正文，身份只用 (run_id, index) 保持稳定；跨批次去重
-        # 只对当前导入的候选有效（它们带完整消息指纹集合）。
-        fps = [f"{run.get('run_id')}:{index}"]
+        # 历史候选没有正文，但**消息指纹是随快照真实保存过的**：候选身份
+        # 直接用这条指纹——同一条历史消息被重复保存进多个 run 时身份一致，
+        # 重叠可识别、不会重复计算。只有快照损坏（该 index 没有指纹行）
+        # 才退回 run_id:index 兜底。
+        row_fp = (message_rows.get(index) or {}).get("fingerprint")
+        fps = [row_fp] if row_fp else [f"{run.get('run_id')}:{index}"]
         out.append(EventCandidate(
             dimension=dimension, behavior_type=behavior_type,
             start=index, end=index, fingerprints=fps,
