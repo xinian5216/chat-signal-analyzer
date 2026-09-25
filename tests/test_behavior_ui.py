@@ -118,6 +118,45 @@ def _button(at, label):
                          f"have {[b.label for b in at.button]}")
 
 
+def _scope_from_widgets(at, key_prefix: str, last: bool = False) -> str:
+    """从指定前缀的控件 key 提取表单作用域（DOM 顺序第一个 / 最后一个）。"""
+    scopes = []
+    for group in (at.text_area, at.checkbox, at.radio, at.selectbox,
+                  at.number_input):
+        for e in group:
+            key = str(getattr(e, "key", ""))
+            if key.startswith(key_prefix):
+                scopes.append(key[len(key_prefix):])
+    assert scopes, f"no widget with key prefix {key_prefix!r}"
+    return scopes[-1] if last else scopes[0]
+
+
+def _preview_then_click(at, name: str, widget_prefix: str,
+                        target_prefix: str, last: bool = False):
+    """两阶段保存：先点与目标表单**同作用域**的「查看最终预览」，
+    再点目标保存按钮。
+
+    作用域从控件 key 精确提取（不靠按钮顺序：候选 → 手动添加 → 事件
+    编辑都会渲染「查看最终预览」，顺序会随页面内容变化）。
+    ``last=True`` 取页面最后一个候选（历史候选排在候选列表末尾）。
+    """
+    scope = _scope_from_widgets(at, widget_prefix, last=last)
+    preview = next((b for b in at.button
+                    if b.key == f"behavior_preview_btn_{scope}"), None)
+    assert preview is not None, (
+        f"「查看最终预览」按钮未出现（scope={scope}，两阶段门控回归）")
+    preview.click()
+    at.run()
+    assert not at.exception
+    target = next((b for b in at.button
+                   if b.key == f"{target_prefix}{scope}"), None)
+    assert target is not None and target.label == name, (
+        f"按钮 {name!r} 在预览后未出现（scope={scope}）")
+    target.click()
+    at.run()
+    assert not at.exception
+
+
 def _texts(at):
     chunks = []
     for attr in ("markdown", "success", "info", "warning", "error", "caption",
@@ -200,9 +239,8 @@ def test_confirm_candidate_creates_event_and_report(history,
     stance_radios[0].set_value("supporting")
     note = _widgets(at, "text_area", "behavior_note_")[0]
     note.set_value("TA 认真回应了我说的困难")
-    _button(at, "确认这条事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
 
     store, events = _events(history)
     assert len(events) == 1
@@ -230,9 +268,8 @@ def test_exclude_candidate_keeps_rejected_trace(history, counting_client):
     _open_behavior(at)
     before = len(counting_client)
 
-    _button(at, "排除这条").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "排除这条", "behavior_note_",
+                        "behavior_exclude_")
 
     store, events = _events(history)
     assert len(events) == 1
@@ -294,9 +331,8 @@ def test_manual_add_event(history, counting_client):
     for t in at.text_area:
         if str(t.key).startswith("behavior_manual_notes_"):
             t.set_value("我自己复盘时注意到的一次互动")
-    _button(at, "添加事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "添加事件", "behavior_manual_notes_",
+                        "behavior_manual_submit_")
 
     store, events = _events(history)
     assert len(events) == 1
@@ -314,9 +350,8 @@ def test_edit_and_delete_event(history, counting_client):
     at = _fresh()
     _parse_and_analyze(at)
     _open_behavior(at)
-    _button(at, "确认这条事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
 
     # 修改人工说明 + 主观感受
     for t in at.text_area:
@@ -327,9 +362,8 @@ def test_edit_and_delete_event(history, counting_client):
         if t.key.startswith("behavior_event_feeling_"):
             t.set_value("这段关系让我觉得安心")
             break
-    _button(at, "保存修改").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "保存修改", "behavior_event_notes_",
+                        "behavior_event_save_")
     store, events = _events(history)
     assert events[0]["notes"] == "修改后的说明"
     assert events[0]["user_feeling"] == "这段关系让我觉得安心"
@@ -356,9 +390,8 @@ def test_behavior_panel_has_no_score_output(history, counting_client):
     at = _fresh()
     _parse_and_analyze(at)
     _open_behavior(at)
-    _button(at, "确认这条事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
     texts = _texts(at)
     # 说明性文字允许提到这些词（明确声明不生成），但不允许出现"评分输出"
     assert "尊重分：" not in texts
@@ -401,9 +434,8 @@ def test_manual_snippet_masked_before_write(history, counting_client):
     snippet = [t for t in at.text_area
                if str(t.key).startswith("behavior_manual_snippet_")][0]
     snippet.set_value(PII_TEXT)
-    _button(at, "添加事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "添加事件", "behavior_manual_notes_",
+                        "behavior_manual_submit_")
 
     store, events = _events(history)
     assert len(events) == 1
@@ -426,9 +458,8 @@ def test_cross_friend_candidate_state_isolated(history, counting_client):
     # A：写一条明显的备注后确认
     note = _widgets(at, "text_area", "behavior_note_")[0]
     note.set_value("A的备注-不得串到B")
-    _button(at, "确认这条事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
     store = fh.FriendStore(history)
     friends = store.list_friends()
     assert len(friends) == 1
@@ -453,9 +484,8 @@ def test_cross_friend_candidate_state_isolated(history, counting_client):
 
     # B 确认同一条候选（同身份）→ 两条事件，互不影响
     note_b.set_value("B的备注")
-    _button(at, "确认这条事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
     store = fh.FriendStore(history)
     friends = {f.friend_id: f for f in store.list_friends()}
     assert len(friends) == 2
@@ -531,9 +561,8 @@ def test_candidate_pagination_past_forty(history, counting_client):
         parse_chat(LONG_CHAT, "小明.", "小安."))).messages
     expected = bv.generate_candidates(messages)
     assert len(expected) >= 60
-    _button(at, "确认这条事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
     store, events = _events(history)
     assert len(events) == 1
     assert events[0]["event_identity"] == expected[40].identity
@@ -602,10 +631,8 @@ def test_history_candidate_confirm_keeps_run_window(history,
     assert "原分析快照" in _texts(at)          # 编号归属提示在场
 
     # 确认第一条（当前批里最后一个 = 历史候选在最后）
-    confirm = [b for b in at.button if b.label == "确认这条事件"]
-    confirm[-1].click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_", last=True)
 
     store, events = _events(history)
     history_events = [e for e in events if e["source_kind"] == "history"]
@@ -630,9 +657,8 @@ def test_candidate_dimension_change_updates_type_and_rejects_bad_pair(
     # 把第一条候选的方向改成「好感与关系性质」再提交
     dim = _widgets(at, "selectbox", "behavior_dim_")[0]
     dim.set_value("romance")
-    _button(at, "确认这条事件").click()
-    at.run()
-    assert not at.exception
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
 
     # 无论 Streamlit 是否重置了类型值：数据库里绝不允许出现
     # （方向, 行为类型）非法组合
@@ -644,3 +670,114 @@ def test_candidate_dimension_change_updates_type_and_rejects_bad_pair(
     expected_labels = {bv.BEHAVIOR_TYPE_LABELS[f"romance.{key}"]
                       for key, _ in bv.BEHAVIOR_TYPES["romance"]}
     assert set(type_select.options) == expected_labels
+
+
+def test_candidate_editor_immediate_linkage(history, counting_client):
+    """候选编辑器即时联动（三个交互缺陷的 AppTest 回归）：
+
+    1. 勾选「保留一段脱敏片段」→ 编辑框**立即**出现（不提交表单）；
+    2. 改行为方向 → 行为类型选项**立即**换成新方向；
+    3. 「查看最终预览」是显式第二步：预览给出**最终将写入档案**的
+       脱敏 + 截断内容（该 Streamlit 版本 textarea 击键不 rerun、失焦
+       才提交，因此预览必须是显式一步而不能只靠 caption 自动更新）；
+    4. 确认保存 → 落库内容 = 预览内容（脱敏后）。
+    """
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)
+
+    # 1) 复选框即时生效
+    keep = _widgets(at, "checkbox", "behavior_keep_")[0]
+    assert keep.value is False
+    keep.check()
+    at.run()
+    assert not at.exception
+    snippet_tas = _widgets(at, "text_area", "behavior_snippet_")
+    assert len(snippet_tas) >= 1, (
+        "勾选后脱敏片段编辑框必须立即出现（st.form 内不会——已移出表单）")
+    # 两阶段门控：预览未打开前不渲染「最终预览」块与保存按钮
+    assert "最终预览——下面就是保存后将写入档案的内容" not in _texts(at)
+    assert "确认这条事件" not in [b.label for b in at.button]
+
+    # 2) 输入虚构 PII
+    snippet_tas[0].set_value("电话 13812345678 邮箱 lin@example.com")
+    at.run()
+    assert not at.exception
+
+    # 3) 显式「查看最终预览」→ 最终内容 + 脱敏预览
+    scope = _scope_from_widgets(at, "behavior_snippet_")
+    preview = next((b for b in at.button
+                    if b.key == f"behavior_preview_btn_{scope}"), None)
+    assert preview is not None, "查看最终预览按钮未出现"
+    preview.click()
+    at.run()
+    assert not at.exception
+    texts = _texts(at)
+    assert "最终预览——下面就是保存后将写入档案的内容" in texts
+    assert "<PHONE>" in texts and "<EMAIL>" in texts
+    assert "13812345678" not in texts.replace("<PHONE>", "")
+
+    # 4) 改方向 → 类型选项立即对应新方向（不提交）
+    dim = _widgets(at, "selectbox", "behavior_dim_")[0]
+    dim.set_value("respect")
+    at.run()
+    assert not at.exception
+    type_select = _widgets(at, "selectbox", "behavior_type_")[0]
+    expected = {bv.BEHAVIOR_TYPE_LABELS[f"respect.{key}"]
+                for key, _ in bv.BEHAVIOR_TYPES["respect"]}
+    assert set(type_select.options) == expected, (
+        f"类型选项未跟随新方向：{type_select.options}")
+
+    # 5) 确认保存 → 落库脱敏（类型已重置为尊重方向的第一个，组合合法）
+    target = next((b for b in at.button
+                   if b.key == f"behavior_confirm_{scope}"), None)
+    assert target is not None, "预览后保存按钮未出现"
+    target.click()
+    at.run()
+    assert not at.exception
+    store, events = _events(history)
+    assert len(events) == 1
+    event = events[0]
+    assert bv.valid_pair(event["dimension"], event["behavior_type"])
+    assert event["dimension"] == "respect"
+    assert "13812345678" not in event["snippet"]
+    assert "<PHONE>" in event["snippet"]
+    assert "lin@example.com" not in event["snippet"]
+
+
+def test_behavior_panel_no_false_truncation_warning(history,
+                                                    counting_client):
+    """正常规模不得出现「部分候选未显示」警告。"""
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)
+    assert "部分候选未显示" not in _texts(at)
+
+
+def test_candidate_stale_preview_blocks_save(history, counting_client):
+    """预览过期守卫：预览之后再改片段 → 保存按钮消失、不得写入。"""
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)
+    keep = _widgets(at, "checkbox", "behavior_keep_")[0]
+    keep.check()
+    at.run()
+    assert not at.exception
+    snippet = _widgets(at, "text_area", "behavior_snippet_")[0]
+    snippet.set_value("第一版 13812345678")
+    _button(at, "查看最终预览").click()
+    at.run()
+    assert not at.exception
+    assert "最终预览" in _texts(at)
+    assert "<PHONE>" in _texts(at)
+
+    # 预览之后又修改片段（AppTest set_value + run 直接提交）
+    snippet2 = _widgets(at, "text_area", "behavior_snippet_")[0]
+    snippet2.set_value("第二版 13900001111")
+    at.run()
+    assert not at.exception
+    # 过期守卫：保存按钮隐藏 + 提示重新预览
+    assert "确认这条事件" not in [b.label for b in at.button]
+    assert "重新点击" in _texts(at)
+    store, events = _events(history)
+    assert events == []

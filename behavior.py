@@ -1035,10 +1035,14 @@ _RULES = (
 )
 
 
-def generate_candidates(messages: list[dict],
-                        results: list[dict] | None = None,
-                        *, limit: int | None = None) -> list[EventCandidate]:
+def generate_candidates_with_meta(
+        messages: list[dict], results: list[dict] | None = None,
+        *, limit: int | None = None) -> tuple[list[EventCandidate], dict]:
     """从当前导入的聊天生成**全部**待人工核对的行为候选（纯本地，0 Jev）。
+
+    返回 ``(候选列表, 元信息)``；元信息含 ``generated``（去重后总数）、
+    ``returned``（实际返回数）、``cap``、``truncated``——供主界面在候选
+    被安全上限截断时明确提示，禁止静默截断。
 
     规则只做**定位**：连续同说话方 turn、明确提问、后续安排、明确的
     拒绝 / 关心 / 邀约 / 浪漫措辞。每个候选都带替代解释与人工标注指引；
@@ -1060,9 +1064,45 @@ def generate_candidates(messages: list[dict],
         seen.add(candidate.identity)
         unique.append(candidate)
     unique.sort(key=lambda c: (c.start, c.end, c.dimension, c.behavior_type))
-    if limit is None:
-        return unique[:MAX_CANDIDATES_HARD_CAP]
-    return unique[: max(0, limit)]
+    cap = MAX_CANDIDATES_HARD_CAP if limit is None else max(0, limit)
+    returned = unique[:cap]
+    meta = {
+        "generated": len(unique),      # 去重后的候选总数（低成本精确值）
+        "returned": len(returned),      # 实际进入列表的数量
+        "cap": cap,
+        "truncated": len(unique) > cap,
+    }
+    return returned, meta
+
+
+def generate_candidates(messages: list[dict],
+                        results: list[dict] | None = None,
+                        *, limit: int | None = None
+                        ) -> list[EventCandidate]:
+    """只要候选列表（兼容旧调用方）；需要截断元信息用
+    :func:`generate_candidates_with_meta`。"""
+    candidates, _meta = generate_candidates_with_meta(
+        messages, results, limit=limit)
+    return candidates
+
+
+def truncation_notice(meta: dict | None) -> str | None:
+    """候选被安全上限截断时的主界面提示（None = 没有截断，不显示）。
+
+    禁止静默截断后仍声称已展示全部候选；正常数据规模不显示任何警告。
+    """
+    if not meta or not meta.get("truncated"):
+        return None
+    generated = int(meta.get("generated") or 0)
+    cap = int(meta.get("cap") or 0)
+    hidden = max(0, generated - cap)
+    return (
+        f"部分候选未显示：当前聊天里确定性规则共生成 **{generated}** 条候选，"
+        f"受界面安全上限 {cap} 条限制，只列出前 {cap} 条，"
+        f"其余 **{hidden}** 条未列出。确认或排除当前候选不会让它们出现——"
+        "这是保护界面响应的上限，不代表互动只有这些。"
+        "如需查看其余候选，请分批处理（确认 / 排除后重新进入）"
+        "或缩小当前导入的聊天范围。")
 
 
 # ---------------------------------------------------------------------------

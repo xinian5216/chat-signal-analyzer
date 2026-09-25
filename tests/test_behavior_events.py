@@ -1112,3 +1112,25 @@ def test_history_candidates_not_truncated_per_run():
         run, _ = _save_history_run(store, friend, results)
         cands = bv.history_candidates(run)
         assert len(cands) == 5                    # 每类型上限 5（辅助筛选）
+
+
+def test_generate_candidates_meta_and_truncation_notice():
+    """候选生成元信息 + 截断提示（不得静默截断）。"""
+    messages = _messages(LONG_CHAT)
+    cands, meta = bv.generate_candidates_with_meta(messages)
+    assert meta["generated"] == len(cands) >= 60
+    assert meta["truncated"] is False
+    assert bv.truncation_notice(meta) is None        # 正常规模不警告
+
+    small, meta_small = bv.generate_candidates_with_meta(messages,
+                                                          limit=5)
+    assert len(small) == 5
+    assert meta_small["truncated"] is True
+    notice = bv.truncation_notice(meta_small)
+    assert notice and "部分候选未显示" in notice
+    assert str(meta_small["generated"]) in notice      # 实际数量可算且给出
+    assert str(meta_small["cap"]) in notice
+    assert bv.truncation_notice(None) is None
+    assert bv.truncation_notice({}) is None
+    # 兼容包装仍然只返回列表
+    assert bv.generate_candidates(messages) == cands
