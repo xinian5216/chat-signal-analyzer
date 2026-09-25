@@ -17,8 +17,11 @@ from __future__ import annotations
 import random
 from datetime import datetime, timedelta
 
-# 两位虚构参与者（禁止使用任何真实昵称）
-ME = "林小满"
+# 两位虚构参与者（禁止使用任何真实昵称）。
+# ME 故意带全角感叹号：真实缺陷「昵称『无聊！！！』被 _NAME_BAD_CHARS 挡住」
+# 的端到端回归——整套浏览器验收每次都经过「带标点昵称的导入 → 身份表单 →
+# 分析」路径（昵称必须逐字节保留，标点不得被删除）。
+ME = "林小满！"
 TA = "周予安"
 
 # 第二份测试用的别名（第二位好友档案 = 同一位 TA 的另一个称呼，全虚构）

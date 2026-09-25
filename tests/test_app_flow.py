@@ -142,7 +142,14 @@ def counting_client(monkeypatch, tmp_path):
             super().__init__(tmp_path / "cache.db")
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-not-a-real-secret")
-    monkeypatch.setattr(analyzer, "create_client", lambda api_key: CountingClient())
+    # 好友档案库同样隔离到 tmp_path：AppTest 与测试同进程，导航到
+    # ④「长期观察」视图时 get_friend_store() 会实例化 FriendStore——
+    # 不重定向就会创建 / 迁移开发模式的真实 .friend_history 库。
+    import paths
+    monkeypatch.setattr(paths, "friend_history_db_path",
+                        lambda: tmp_path / "friend_history.db")
+    monkeypatch.setattr(analyzer, "create_client",
+                        lambda api_key: CountingClient())
     monkeypatch.setattr(storage, "Cache", TmpCache)
     return calls
 

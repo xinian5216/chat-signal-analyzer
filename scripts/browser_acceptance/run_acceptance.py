@@ -47,6 +47,7 @@ sys.path.insert(0, str(HERE))
 from fictional_data import ME, TA, TA_ALIAS_2, build_chat  # noqa: E402
 import seed_cache  # noqa: E402
 
+from playwright.sync_api import Error as PWError  # noqa: E402
 from playwright.sync_api import TimeoutError as PWTimeout  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
@@ -447,7 +448,13 @@ def pick_select_option(page, selectbox_label: str, option: str) -> None:
     dd = page.locator("[data-testid='stSelectboxVirtualDropdown']").first
     dd.wait_for(state="visible", timeout=8000)
     opt = dd.locator("[role='option']", has_text=option).last
-    opt.click(timeout=8000, no_wait_after=False)
+    try:
+        opt.click(timeout=8000, no_wait_after=False)
+    except PWTimeout:
+        # Streamlit 1.64 虚拟下拉行偶发「元素不稳定 / detached」抖动
+        # （既不是产品缺陷也不改变断言）：退回 dispatch click，仍然是
+        # react-aria 的正式选项事件。
+        opt.dispatch_event("click")
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +483,14 @@ def phase_import(page) -> None:
         "() => (document.querySelector('section.stMain').scrollTop - window.__t0)")
     check("identity_pick_no_scroll", drift == 0, f"main scrollTop drift={drift}")
 
+    # 标点昵称端到端回归（parser 真实缺陷）：身份表单里选中的「我」必须
+    # 逐字节保留全角感叹号——parse 丢了标点或把昵称挡掉，这里就会失败。
+    me_shown = page.locator("[data-testid='stSelectbox']",
+                            has_text="我是：").first \
+        .locator("input[role='combobox']").first.input_value()
+    check("punctuation_nickname_parsed_verbatim",
+          me_shown == ME and "！" in me_shown,
+          f"我是 combobox shows {me_shown!r}")
     ui_click(page, page.get_by_role("button", name="应用昵称映射并重新解析"))
     wait_text(page, "身份映射完成", 30000)
     check("identity_applied", True, f"me={ME} ta={TA}")
@@ -866,6 +881,368 @@ def phase_history_panel(page) -> None:
           "old TA history view invalidated after identity switch")
 
 
+def _pick_select_in(page, scope, selectbox_label: str, option: str) -> None:
+    """在指定容器内的 selectbox 里选一项（候选表单与手动表单各有自己的
+    「行为方向」下拉，必须限定容器，不能取页面上第一个）。
+
+    展开下拉最多重试 3 次：react-aria ComboBox 的「聚焦 → 展开」两连击
+    可能被一次异步 rerun 打断（元素被重建后第二次点击只是重新聚焦），
+    此时补第三击；每次重试前等渲染 settle。选中优先真实 click，
+    虚拟行不稳定（长面板深处）时退回 dispatch click——仍然是
+    react-aria 的正式选项事件，不伪造页面状态。
+    """
+    # selectbox（表单外）改变值会触发 rerun：先等稳态再定位，避免拿到
+    #  rerun 过程中被替换掉的元素（Element is not attached to the DOM）。
+    rerender_settled(page, 6000)
+    dd = page.locator("[data-testid='stSelectboxVirtualDropdown']").first
+    opened = False
+    for attempt in range(3):
+        inp = scope.locator("[data-testid='stSelectbox']",
+                            has_text=selectbox_label).first \
+            .locator("input[role='combobox']").first
+        try:
+            inp.scroll_into_view_if_needed(timeout=4000)
+        except PWError:
+            rerender_settled(page, 4000)
+            continue
+        inp.click(timeout=8000)
+        try:
+            dd.wait_for(state="visible", timeout=2500)
+            opened = True
+            break
+        except PWTimeout:
+            rerender_settled(page, 3000)
+    if not opened:
+        raise AssertionError(f"selectbox {selectbox_label!r} dropdown "
+                             "did not open after 3 attempts")
+    opt = dd.locator("[role='option']", has_text=option).last
+    try:
+        opt.click(timeout=4000, no_wait_after=False)
+    except PWTimeout:
+        opt.dispatch_event("click")
+    # 选中后同样可能触发 rerun：等稳态再交还控制权
+    rerender_settled(page, 6000)
+
+
+def _open_expander(page, fragment: str, index: int = 0):
+    """展开页面上第 index 个包含指定文本的 stExpander（内容在 DOM 里但被
+    折叠隐藏，必须先展开才能与其内部控件交互；不 force click）。"""
+    expanders = page.locator("[data-testid='stExpander']",
+                             has_text=fragment)
+    target = expanders.nth(index)
+    ui_click(page, target.locator("summary").first)
+    return target
+
+
+def _preview_then_click(page, scope_locator, button_name: str) -> None:
+    """两阶段保存：先点同作用域的「查看最终预览」，等「最终预览」块出现，
+    再点保存 / 排除按钮（预览未打开时保存按钮根本不渲染）。"""
+    ui_click(page, scope_locator.get_by_role("button", name="查看最终预览"))
+    scope_locator.get_by_text("最终预览", exact=False).first.wait_for(
+        state="visible", timeout=20000)
+    ui_click(page, scope_locator.get_by_role("button", name=button_name))
+
+
+def read_behavior_events(data_dir: Path) -> list[dict]:
+    """直接读行为事件表（验证「确认 / 排除 / 手动添加 -> 落库」）。"""
+    import sqlite3
+    db = data_dir / "friend_history.db"
+    if not db.exists():
+        return []
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT dimension, behavior_type, status, source_kind,"
+            " stance, notes, snippet, fingerprints_json, event_identity"
+            " FROM behavior_events"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{"dimension": r[0], "behavior_type": r[1], "status": r[2],
+             "source_kind": r[3], "stance": r[4], "notes": r[5],
+             "snippet": r[6], "fingerprints": json.loads(r[7] or "[]"),
+             "event_identity": r[8]}
+            for r in rows]
+
+
+def read_run_fingerprints(data_dir: Path) -> set[str]:
+    """档案里全部历史快照的消息指纹（验证历史候选指纹来自原 run）。"""
+    import sqlite3
+    db = data_dir / "friend_history.db"
+    if not db.exists():
+        return set()
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT fingerprint FROM history_messages").fetchall()
+    finally:
+        conn.close()
+    return {r[0] for r in rows}
+
+
+def phase_behavior_panel(page, data_dir: Path) -> None:
+    section("G. longitudinal behavior events: candidates -> manual review -> report")
+    # （E 阶段结束后 profile1 已删、当前无选中档案；用 profile2 的别名找回）
+    alias_input = page.get_by_role("textbox",
+                                   name="用微信昵称 / 备注 / 别名查找已有档案"
+                                        "（只在本机查找）")
+    ui_fill(page, alias_input, TA_ALIAS_2)
+    ui_click(page, page.get_by_role("button", name="查找档案"))
+    wait_text(page, "找到", 20000)
+    ui_click(page, page.get_by_role("button", name="确认使用这个档案"))
+    wait_text(page, "长期行为观察", 30000)
+    check("behavior_panel_visible", True, "panel rendered under 长期观察")
+
+    wait_text(page, "待人工核对的候选", 20000)
+    check("behavior_no_false_truncation_warning",
+          page.get_by_text("部分候选未显示", exact=False).count() == 0,
+          "normal scale shows no truncation warning")
+    content = page.content()
+    m = re.search(r"第 1 / (\d+) 批（每批最多 5 条）", content)
+    pages = int(m.group(1)) if m else 0
+    check("behavior_candidates_paginated", pages >= 2,
+          f"batch pages={pages} (400-msg chat + history run)")
+
+    # 翻到下一批再翻回来（分页只读本地候选，0 API）
+    ui_click(page, page.get_by_role("button", name="下一批 ▶"))
+    wait_text(page, "第 2 / ", 20000)
+    check("behavior_next_batch", True, "paged to batch 2")
+    ui_click(page, page.get_by_role("button", name="◀ 上一批"))
+    wait_text(page, "第 1 / ", 20000)
+    check("behavior_prev_batch", True, "back to batch 1")
+
+    # 历史来源候选必须标注"无聊天正文"（不得凭旧总结编造上下文）。
+    # 历史候选追加在候选列表末尾：先逐批翻到最后一页再检查。
+    for step in range(2, pages + 1):
+        ui_click(page, page.get_by_role("button", name="下一批 ▶"))
+        wait_text(page, f"第 {step} / ", 30000)
+    check("behavior_history_candidate_no_text",
+          page.get_by_text("历史来源，无聊天正文", exact=False).count() > 0,
+          f"history-sourced candidates flagged context-missing (last "
+          f"batch of {pages})")
+    # 编号归属提示：历史候选的消息编号属于原 run，不是当前导入
+    check("behavior_history_index_ownership",
+          page.get_by_text("原分析快照", exact=False).count() > 0,
+          "history candidate shows run-relative numbering note")
+
+    # --- 在最后一批确认历史候选（Phase 2A.1：不得与当前聊天混）---
+    hist_cand = _open_expander(page, "第一步：核对并修正")
+    note_field = hist_cand.get_by_role("textbox", name="你的说明（可选）")
+    note_field.fill("历史候选：我记得当时的上下文")
+    _preview_then_click(page, hist_cand, "确认这条事件")
+    wait_text(page, "已确认事件", 30000)
+    rows = read_behavior_events(data_dir)
+    history_rows = [e for e in rows if e["source_kind"] == "history"]
+    check("behavior_history_confirm_persisted",
+          len(history_rows) == 1
+          and history_rows[0]["status"] == "confirmed",
+          f"history rows={len(history_rows)}")
+    run_fps = read_run_fingerprints(data_dir)
+    check("behavior_history_fingerprint_from_run",
+          history_rows
+          and set(history_rows[0]["fingerprints"]) <= run_fps,
+          "history event fingerprints come from the original run "
+          "(not current-chat indices)")
+
+    for step in range(pages - 1, 0, -1):
+        ui_click(page, page.get_by_role("button", name="◀ 上一批"))
+        wait_text(page, f"第 {step} / ", 30000)
+
+    # --- 确认第一条当前导入候选（带可识别备注，供跨好友隔离检查）---
+    cand = _open_expander(page, "第一步：核对并修正")
+    ui_click(page, cand.locator("label", has_text="支持性").first)
+    # 交互 1：勾选「保留一段脱敏片段」→ 编辑框立即出现（不提交表单）
+    vis_before = page.evaluate(
+        """() => Array.from(document.querySelectorAll('textarea'))
+            .filter(t => t.offsetWidth > 0).length""")
+    ui_click(page, cand.locator("label", has_text="保留一段脱敏片段").first)
+    page.wait_for_timeout(1500)
+    vis_after = page.evaluate(
+        """() => Array.from(document.querySelectorAll('textarea'))
+            .filter(t => t.offsetWidth > 0).length""")
+    check("behavior_keep_shows_textarea_immediately",
+          vis_after == vis_before + 1,
+          f"visible textareas {vis_before} -> {vis_after} without submit")
+    # 交互 3（两阶段门控）：预览未打开前保存按钮不渲染
+    check("behavior_two_stage_gate",
+          cand.get_by_role("button", name="确认这条事件").count() == 0
+          and cand.get_by_role("button", name="排除这条").count() == 0,
+          "save buttons hidden until final preview is opened")
+    # 交互 3：输入虚构 PII → 查看最终预览给出脱敏结果（不提交表单）
+    snippet = cand.get_by_role("textbox", name="脱敏片段（可编辑）")
+    # 两阶段第二步：输入虚构 PII 后点「查看最终预览」（点击前的失焦恰好
+    # 提交 textarea 值——该 Streamlit 版本击键不 rerun、失焦才提交），
+    # 预览块给出最终将写入档案的脱敏 + 截断内容
+    snippet.press_sequentially("电话 13812345678 邮箱 lin@example.com",
+                               timeout=30000)
+    ui_click(page, cand.get_by_role("button", name="查看最终预览"))
+    deadline = time.time() + 15
+    preview_ok = False
+    while time.time() < deadline:
+        if (cand.get_by_text("<PHONE>", exact=False).count() > 0
+                and cand.get_by_text("<EMAIL>", exact=False).count() > 0
+                and cand.get_by_text("最终预览", exact=False).count() > 0):
+            preview_ok = True
+            break
+        time.sleep(0.5)
+    check("behavior_final_preview_shows_masked_content", preview_ok,
+          "final preview shows masked+truncated content before save")
+    cand.get_by_role("textbox", name="你的说明（可选）").fill(
+        "PROFILE2-NOTE-cross-friend")
+    # 第二步最终预览汇总在场
+    check("behavior_final_summary_visible",
+          cand.get_by_text("最终预览", exact=False).count() > 0,
+          "two-stage final summary rendered before save")
+    ui_click(page, cand.get_by_role("button", name="确认这条事件"))
+    wait_text(page, "已确认事件", 30000)
+    check("behavior_confirm_notice", True, "confirmed candidate notice shown")
+
+    # 排除下一条候选（排除记录保留）；排除前验证方向→类型即时联动
+    cand2 = _open_expander(page, "第一步：核对并修正")
+    _pick_select_in(page, cand2, "行为方向", "尊重与边界")
+    page.wait_for_timeout(1500)
+    type_input = cand2.locator("input[role='combobox']").nth(1)
+    type_input.click(timeout=8000)
+    type_input.click(timeout=8000)
+    dd = page.locator("[data-testid='stSelectboxVirtualDropdown']").first
+    dd.wait_for(state="visible", timeout=8000)
+    opts = [dd.locator("[role='option']").nth(i).text_content()
+            for i in range(dd.locator("[role='option']").count())]
+    respect_labels = {"不同意见时的回应", "明确拒绝后的反应",
+                      "施压或贬低", "冲突修复"}
+    check("behavior_dimension_updates_types_immediately",
+          set(opts) == respect_labels,
+          f"type options follow new dimension without submit: {opts}")
+    page.keyboard.press("Escape")
+    _preview_then_click(page, cand2, "排除这条")
+    wait_text(page, "已排除该候选", 30000)
+    check("behavior_exclude_notice", True, "rejected candidate notice shown")
+
+    # 落库校验：2 确认（1 历史 + 1 规则）+ 1 排除
+    rows = read_behavior_events(data_dir)
+    statuses = sorted(e["status"] for e in rows)
+    diag("db behavior events: " + json.dumps(
+        [{k: e[k] for k in ("dimension", "behavior_type", "status",
+                            "source_kind", "notes")} for e in rows],
+        ensure_ascii=False)[:400])
+    check("behavior_events_persisted",
+          statuses == ["confirmed", "confirmed", "rejected"],
+          f"rows={len(rows)} statuses={statuses}")
+    check("behavior_note_persisted",
+          any(e["notes"] == "PROFILE2-NOTE-cross-friend" for e in rows),
+          "edited note written to db")
+    rule_rows = [e for e in rows if e["source_kind"] == "rule"]
+    check("behavior_candidate_snippet_masked",
+          any("<PHONE>" in e["snippet"] and "13812345678" not in e["snippet"]
+              for e in rule_rows),
+          "candidate confirm path stores masked snippet")
+
+    # 长期行为事件报告（本地聚合，无评分输出）
+    wait_text(page, "长期行为事件报告", 20000)
+    check("behavior_report_rendered", True, "report section after confirming")
+    check("behavior_report_download_button",
+          page.get_by_role("button",
+                           name="下载长期行为事件报告（Markdown）").count() > 0,
+          "markdown download available")
+    check("behavior_report_no_score_text",
+          page.get_by_text("尊重分：", exact=False).count() == 0
+          and page.get_by_text("喜欢概率：", exact=False).count() == 0,
+          "no 尊重分 / 喜欢概率 output anywhere on the page")
+
+    # 手动添加事件（用户自己圈定范围；默认编号 1/2，不 fill——number_input
+    # 的 fill 会触发异步 rerun 落在 combobox 两连击之间）
+    manual = _open_expander(page, "手动添加一个行为事件")
+    _pick_select_in(page, manual, "行为方向", "关心与回应性")
+    check("behavior_manual_panel_stays_open",
+          page.evaluate(
+              """() => { let open = null;
+                  document.querySelectorAll('details').forEach(d => {
+                      const s = d.querySelector('summary');
+                      if (s && s.textContent.includes('手动添加'))
+                          open = d.open;
+                  });
+                  return open; }""") is True,
+          "manual add panel stays open across selectbox rerun "
+          "(regression guard for unkeyed st.expander collapse)")
+    _pick_select_in(page, manual, "行为类型", "认真回应困难")
+    ui_click(page, manual.locator("label", has_text="支持性").first)
+    keep = manual.locator("label", has_text="保留一段脱敏片段").first
+    ui_click(page, keep)
+    snippet = manual.get_by_role("textbox", name="脱敏片段（可编辑）")
+    # 虚构 PII：保存路径必须脱敏（store 层兜底 + UI 最终预览）
+    snippet.fill("我叫林小满，电话 13812345678，邮箱 lin@example.com")
+    _preview_then_click(page, manual, "添加事件")
+    wait_text(page, "已手动添加事件", 30000)
+    check("behavior_manual_add_notice", True, "manual event added")
+    rows = read_behavior_events(data_dir)
+    manual_rows = [e for e in rows if e["source_kind"] == "manual"]
+    check("behavior_manual_add_persisted",
+          len(manual_rows) == 1
+          and manual_rows[0]["dimension"] == "care"
+          and manual_rows[0]["behavior_type"] == "care_response",
+          f"manual rows={len(manual_rows)}")
+    check("behavior_manual_snippet_masked",
+          manual_rows
+          and "<PHONE>" in manual_rows[0]["snippet"]
+          and "<EMAIL>" in manual_rows[0]["snippet"]
+          and "13812345678" not in manual_rows[0]["snippet"]
+          and "lin@example.com" not in manual_rows[0]["snippet"],
+          f"manual snippet stored masked: "
+          f"{manual_rows[0]['snippet'][:60] if manual_rows else 'NONE'}")
+
+    # --- 跨好友切换：profile3（同一份聊天）不得继承 profile2 的备注 ---
+    # 用另一个虚构称呼（安安）建档——同一份聊天 + 不同档案正是跨好友
+    # 隔离要覆盖的场景；同时保持 F 阶段按「予安」查找时唯一匹配。
+    ui_click(page, page.get_by_role("button", name="换一个档案"))
+    ui_fill(page, alias_input, "安安")
+    ui_click(page, page.get_by_role("button", name="用这个名字新建档案"))
+    wait_text(page, "长期行为观察", 30000)
+    cand3 = _open_expander(page, "第一步：核对并修正")
+    note3 = cand3.get_by_role("textbox", name="你的说明（可选）")
+    leaked = note3.input_value()
+    check("behavior_cross_friend_state_isolated",
+          leaked == "" and "PROFILE2-NOTE" not in leaked,
+          f"profile3 note field value: {leaked!r}")
+    _preview_then_click(page, cand3, "确认这条事件")
+    wait_text(page, "已确认事件", 30000)
+    rows = read_behavior_events(data_dir)
+    profile2_notes = [e["notes"] for e in rows
+                      if e["notes"] == "PROFILE2-NOTE-cross-friend"]
+    check("behavior_cross_friend_separate_events",
+          len(profile2_notes) == 1,
+          f"profile2 note intact; total rows={len(rows)}")
+
+    # 已确认事件可在面板里编辑 / 删除（先编辑保存，验证审计落库）
+    expanders = page.locator("[data-testid='stExpander']")
+    event_expander = None
+    for i in range(expanders.count()):
+        label = expanders.nth(i).locator("summary").first.text_content() or ""
+        if "理解情绪" in label or "认真回应困难" in label:
+            event_expander = expanders.nth(i)
+            break
+    if event_expander is not None:
+        ui_click(page, event_expander.locator("summary").first)
+        notes = event_expander.locator("textarea")
+        if notes.count() >= 1:
+            notes.first.fill("浏览器回归：改过的人工说明")
+        _preview_then_click(page, event_expander, "保存修改")
+        wait_text(page, "已更新该事件", 20000)
+        check("behavior_event_edit_persisted",
+              any("改过的人工说明" in (e["notes"] or "")
+                  for e in read_behavior_events(data_dir)),
+              "edited note written to db")
+        ui_click(page, event_expander.get_by_role("button",
+                                                  name="删除这个事件"))
+        wait_text(page, "确认删除这个行为事件吗", 20000)
+        ui_click(page, page.get_by_role("button", name="确认删除").last)
+        wait_text(page, "已删除该行为事件", 20000)
+        after = read_behavior_events(data_dir)
+        check("behavior_event_deleted",
+              all("改过的人工说明" not in (e["notes"] or "")
+                  for e in after),
+              f"rows after delete={len(after)}")
+
+
 # ---------------------------------------------------------------------------
 # 探针模式（首次在新环境跑时确认 DOM 结构）
 # ---------------------------------------------------------------------------
@@ -904,7 +1281,7 @@ def main() -> int:
                     help="start, import, then dump key DOM and exit")
     ap.add_argument("--keep-data", action="store_true")
     ap.add_argument("--phases", default="import,preview,analysis,messages,"
-                                        "friend,history")
+                                        "friend,behavior,history")
     args = ap.parse_args()
 
     data_dir = Path(tempfile.gettempdir()) / "sl_acceptance_data"
@@ -955,6 +1332,8 @@ def main() -> int:
                 phase_messages_pagination(page)
             if "friend" in phases:
                 phase_friend_panel(page, data_dir)
+            if "behavior" in phases:
+                phase_behavior_panel(page, data_dir)
             if "history" in phases:
                 phase_history_panel(page)
             browser.close()
