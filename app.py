@@ -33,7 +33,7 @@ from analyzer import (
 )
 from parser import ParseError, detect_participants, parse_chat
 from merge import merge_messages
-from privacy import mask_messages
+from privacy import mask_messages, mask_text
 from media import (
     MediaAsset,
     bind_media,
@@ -106,6 +106,8 @@ from scroll_anchor import (
 # 好友档案 / 纵向历史（本地，0 Jev API）
 import friend_history as fh
 import longitudinal as lg
+# 行为事件层（Phase 2A：候选 → 人工核对 → 分方向报告；本地，0 Jev API）
+import behavior as bv
 from analyzer import SCHEMA_VERSION as ANALYSIS_SCHEMA_VERSION
 
 DISCLAIMER = (
@@ -2367,6 +2369,470 @@ def _fmt_wall_time(value) -> str:
     return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
 
 
+BEHAVIOR_PANEL_NOTE = (
+    "行为事件是独立于九项评分的一层**观察记录**：每条事件都指向你核对过的具体互动，"
+    "并标注支持 / 相反 / 混合信号与至少一种替代解释。候选只由确定性规则"
+    "（连续对话、明确提问、后续安排、明确的拒绝 / 关心 / 邀约措辞）与历史分析的"
+    "既有指标辅助筛选，最终由你确认、修正或排除——本区域不生成任何“尊重分”或"
+    "“喜欢概率”，正常争论不会被判为不尊重，普通关心不会被判为浪漫兴趣，"
+    "回复快慢也不会被当作关心程度。"
+)
+
+# 候选一页呈现多少条（避免同时创建几百个控件）
+BEHAVIOR_PAGE_SIZE = 5
+
+
+def _behavior_messages() -> list[dict]:
+    """本次分析使用的消息列表（分析时的完整顺序；已被脱敏）。"""
+    return (st.session_state.get("analysis_messages")
+            or st.session_state.get("messages") or [])
+
+
+def _behavior_type_options(dimension: str) -> list[tuple[str, str]]:
+    return list(bv.BEHAVIOR_TYPES.get(dimension, ()))
+
+
+def _behavior_type_label(dimension: str, behavior_type: str) -> str:
+    return bv.BEHAVIOR_TYPE_LABELS.get(f"{dimension}.{behavior_type}",
+                                       behavior_type)
+
+
+def _behavior_flags_text(candidate_or_event) -> str:
+    flags = getattr(candidate_or_event, "flags", None) or {}
+    bits = []
+    if flags.get("time_uncertain"):
+        bits.append("时间不能完整归位")
+    if flags.get("media_unknown"):
+        bits.append("窗口含媒体（内容未知，未推测）")
+    if flags.get("context_missing"):
+        bits.append("历史来源，无聊天正文")
+    return "；".join(bits)
+
+
+def _behavior_time_text(candidate_or_event) -> str:
+    start = getattr(candidate_or_event, "event_start_time", None)
+    end = getattr(candidate_or_event, "event_end_time", None)
+    if start and end:
+        return start if start == end else f"{start} ~ {end}"
+    if start:
+        return start
+    return "（时间不明）"
+
+
+def show_behavior_panel(results: list[dict], stats: dict) -> None:
+    """「长期行为观察」（Phase 2A）：候选互动 → 人工核对 → 分方向报告。
+
+    全部本地、0 Jev API：候选来自当前导入的确定性规则与历史快照的既有
+    指标；确认 / 排除 / 编辑写入本机档案（schema v2 的行为事件表）。
+    """
+    store = get_friend_store()
+    friend_id = st.session_state.get("friend_selected")
+    friend = store.get_friend(friend_id)
+    if friend is None:
+        return
+
+    st.divider()
+    st.markdown("#### 长期行为观察（行为事件层，全部本地）")
+    st.caption(BEHAVIOR_PANEL_NOTE)
+
+    pending, known = _behavior_pending_candidates(store, friend_id, results)
+    _show_behavior_manual_add(store, friend)
+    _show_behavior_candidates(store, friend, pending, known)
+    _show_behavior_events(store, friend)
+    _show_behavior_report(store, friend, pending)
+
+
+def _behavior_pending_candidates(store, friend_id: str,
+                                 results: list[dict]) -> tuple[list, dict]:
+    """生成本次待核对的候选，并剔除已确认 / 已排除的（按事件身份）。"""
+    candidates: list[bv.EventCandidate] = []
+    messages = _behavior_messages()
+    if messages:
+        candidates.extend(bv.generate_candidates(messages, results))
+    for run in store.list_runs(friend_id):
+        candidates.extend(bv.history_candidates(store.get_run(run.run_id)))
+    events = store.list_events(friend_id)
+    known = bv.known_candidate_events(events)
+    pending = [c for c in candidates if c.identity not in known]
+    return pending, known
+
+
+def _show_behavior_manual_add(store, friend) -> None:
+    """手动添加事件：用户自己圈定互动范围（边界不被固定间隔冒充）。"""
+    messages = _behavior_messages()
+    # 显式 key：无 key 的 st.expander 在任意 rerun（例如改「行为方向」
+    # 触发 selectbox 重渲染）后会丢展开状态——与②阶段 history_panel 同类
+    # 的真实浏览器 bug，修复方式同源：状态放进 session_state。
+    with st.expander("手动添加一个行为事件（自己圈定互动范围）",
+                     expanded=False, key="behavior_manual_panel"):
+        if not messages:
+            st.caption("当前没有已分析的聊天消息。先导入并分析后，"
+                       "这里才能按消息范围手动添加事件。")
+            return
+        total = len(messages)
+        c1, c2 = st.columns(2)
+        with c1:
+            start = st.number_input("起始消息编号（从 1 开始）", min_value=1,
+                                    max_value=total, value=1, step=1,
+                                    key="behavior_manual_start")
+        with c2:
+            end = st.number_input("结束消息编号（含）", min_value=1,
+                                  max_value=total, value=min(2, total),
+                                  step=1, key="behavior_manual_end")
+        dimension = st.selectbox(
+            "行为方向", list(bv.DIMENSIONS),
+            format_func=lambda d: bv.DIMENSION_LABELS[d],
+            key="behavior_manual_dim")
+        type_key = st.selectbox(
+            "行为类型", [t for t, _ in _behavior_type_options(dimension)],
+            format_func=lambda t: _behavior_type_label(dimension, t),
+            key="behavior_manual_type")
+        stance = st.radio("这条事件说明的是", ["supporting", "counter",
+                                              "mixed", "unspecified"],
+                          format_func=lambda s: bv.STANCE_LABELS[s],
+                          key="behavior_manual_stance")
+        notes = st.text_area("说明（可选）", key="behavior_manual_notes",
+                             height=68)
+        keep = st.checkbox("保留一段脱敏片段（可预览、编辑、删除）",
+                           key="behavior_manual_keep")
+        snippet = ""
+        if keep:
+            st.warning(
+                "正则脱敏**不能保证完全匿名**：姓名、地址、第三方经历、"
+                "公司 / 学校 / 地点可能仍在文本里。请检查后再保存。")
+            snippet = st.text_area("脱敏片段（可编辑）",
+                                   key="behavior_manual_snippet",
+                                   height=68)
+        if st.button("添加事件", key="behavior_manual_submit"):
+            lo, hi = sorted((int(start) - 1, int(end) - 1))
+            event = bv.build_event_dict(
+                candidate=None, friend_id=friend.friend_id,
+                dimension=dimension, behavior_type=type_key,
+                stance=stance, notes=notes, snippet=snippet,
+                messages=messages, start=lo, end=hi)
+            store.save_event(event)
+            set_input_notice(
+                "success",
+                f"已手动添加事件（{bv.DIMENSION_LABELS[dimension]} · "
+                f"{_behavior_type_label(dimension, type_key)}）。")
+            st.rerun()
+
+
+def _show_behavior_candidates(store, friend, pending: list,
+                              known: dict) -> None:
+    """候选浏览：分页 + 上下文预览 + 确认 / 排除（表单内编辑不触发 rerun）。"""
+    handled = len(known)
+    st.markdown("##### 待人工核对的候选")
+    st.caption(
+        f"候选 {len(pending)} 条待核对"
+        + (f"（另有 {handled} 条已被你确认或排除，不重复呈现）。"
+           if handled else "。")
+        + "一次只看一小批，逐条浏览前后文再决定。")
+    if not pending:
+        return
+
+    page = int(st.session_state.get("behavior_page") or 1)
+    pages = max(1, (len(pending) + BEHAVIOR_PAGE_SIZE - 1)
+                // BEHAVIOR_PAGE_SIZE)
+    page = min(max(1, page), pages)
+
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1:
+        if st.button("◀ 上一批", key="behavior_prev") and page > 1:
+            st.session_state["behavior_page"] = page - 1
+            st.rerun()
+    with c2:
+        st.caption(f"第 {page} / {pages} 批"
+                   f"（每批最多 {BEHAVIOR_PAGE_SIZE} 条）")
+    with c3:
+        if st.button("下一批 ▶", key="behavior_next") and page < pages:
+            st.session_state["behavior_page"] = page + 1
+            st.rerun()
+
+    window = pending[(page - 1) * BEHAVIOR_PAGE_SIZE:
+                     page * BEHAVIOR_PAGE_SIZE]
+    for candidate in window:
+        _render_behavior_candidate(store, friend, candidate)
+
+
+def _render_behavior_candidate(store, friend, candidate) -> None:
+    """单条候选：上下文预览 + 边界/方向/类型/立场编辑 + 确认 / 排除。"""
+    messages = _behavior_messages()
+    scope = candidate.identity[:12]
+    from_history = candidate.source_kind == "history"
+    type_label = _behavior_type_label(candidate.dimension,
+                                      candidate.behavior_type)
+    with st.expander(
+            f"{bv.DIMENSION_LABELS[candidate.dimension]} · {type_label}"
+            f" · {_behavior_time_text(candidate)}", expanded=False):
+        st.caption(
+            f"确定性依据：{candidate.evidence_note or candidate.rule}"
+            f" · 来源：{bv.SOURCE_LABELS[candidate.source_kind]}"
+            + (f"（run {candidate.source_run_id[:8]}…）"
+               if candidate.source_run_id else ""))
+        flags = _behavior_flags_text(candidate)
+        if flags:
+            st.caption(f"限制：{flags}")
+        if candidate.alternative:
+            st.caption(f"合理的替代解释：{candidate.alternative}")
+
+        if from_history or not messages:
+            st.caption("历史分析快照没有保存聊天正文，无法还原上下文；"
+                       "请结合你自己的记忆核对（不要凭旧总结编造原文）。")
+        elif candidate.msg_texts:
+            with st.expander("查看这条候选覆盖的聊天（仅本次会话内存，"
+                             "不勾选保留就不会写入档案）"):
+                for row in candidate.msg_texts:
+                    speaker = {"me": "我", "them": "TA"}.get(
+                        row["speaker"], row["speaker"])
+                    st.caption(
+                        f"#{row['index'] + 1} · {speaker} · "
+                        f"{row.get('time') or '时间不明'} · "
+                        f"{mask_text(row.get('text') or '')}")
+
+        with st.form(key=f"behavior_candidate_{scope}"):
+            st.caption("确认前可以修正：方向、行为类型、覆盖范围、"
+                       "以及它说明的是支持性还是相反信号。")
+            dimension = st.selectbox(
+                "行为方向", list(bv.DIMENSIONS),
+                index=list(bv.DIMENSIONS).index(candidate.dimension),
+                format_func=lambda d: bv.DIMENSION_LABELS[d],
+                key=f"behavior_dim_{scope}")
+            type_keys = [t for t, _ in
+                         _behavior_type_options(dimension)]
+            default_type = candidate.behavior_type \
+                if candidate.behavior_type in type_keys else 0
+            type_index = type_keys.index(default_type) \
+                if default_type else 0
+            behavior_type = st.selectbox(
+                "行为类型", type_keys, index=type_index,
+                format_func=lambda t: _behavior_type_label(dimension, t),
+                key=f"behavior_type_{scope}")
+            stance = st.radio("这条事件说明的是",
+                              ["supporting", "counter", "mixed",
+                               "unspecified"],
+                              index=["supporting", "counter", "mixed",
+                                     "unspecified"].index(
+                                  candidate.stance or "unspecified"),
+                              format_func=lambda s: bv.STANCE_LABELS[s],
+                              key=f"behavior_stance_{scope}")
+            if messages:
+                c1, c2 = st.columns(2)
+                with c1:
+                    new_start = st.number_input(
+                        "起始消息编号", min_value=1, max_value=len(messages),
+                        value=candidate.start + 1, step=1,
+                        key=f"behavior_start_{scope}")
+                with c2:
+                    new_end = st.number_input(
+                        "结束消息编号", min_value=1, max_value=len(messages),
+                        value=min(candidate.end + 1, len(messages)),
+                        step=1, key=f"behavior_end_{scope}")
+            else:
+                new_start = new_end = None
+            alternative = st.text_area(
+                "替代解释（保留或改写）",
+                value=candidate.alternative, height=68,
+                key=f"behavior_alt_{scope}")
+            notes = st.text_area("你的说明（可选）", height=68,
+                                 key=f"behavior_note_{scope}")
+            keep = st.checkbox("保留一段脱敏片段（可预览、编辑、删除）",
+                               key=f"behavior_keep_{scope}")
+            snippet = ""
+            if keep:
+                st.warning(
+                    "正则脱敏**不能保证完全匿名**：请逐条检查，"
+                    "确认后可改写或清空。")
+                default_snippet = ""
+                if candidate.msg_texts:
+                    default_snippet = " / ".join(
+                        str(row.get("text") or "") for row in
+                        candidate.msg_texts)[:120]
+                snippet = st.text_area("脱敏片段（可编辑）",
+                                       value=default_snippet, height=68,
+                                       key=f"behavior_snippet_{scope}")
+            c1, c2 = st.columns(2)
+            with c1:
+                confirmed = st.form_submit_button("确认这条事件",
+                                                  type="primary")
+            with c2:
+                rejected = st.form_submit_button("排除这条")
+
+        if confirmed:
+            event = bv.build_event_dict(
+                candidate=candidate, friend_id=friend.friend_id,
+                dimension=dimension, behavior_type=behavior_type,
+                stance=stance, notes=notes,
+                snippet=mask_text(snippet) if keep else "",
+                alternative=alternative,
+                messages=messages or None,
+                start=int(new_start) - 1 if new_start is not None else None,
+                end=int(new_end) - 1 if new_end is not None else None)
+            store.save_event(event)
+            set_input_notice(
+                "success",
+                f"已确认事件：{bv.DIMENSION_LABELS[dimension]} · "
+                f"{_behavior_type_label(dimension, behavior_type)}。")
+            st.rerun()
+        if rejected:
+            event = bv.build_event_dict(
+                candidate=candidate, friend_id=friend.friend_id,
+                dimension=dimension, behavior_type=behavior_type,
+                stance="unspecified",
+                notes=notes or "（用户排除该候选）",
+                alternative=alternative,
+                messages=messages or None,
+                start=int(new_start) - 1 if new_start is not None else None,
+                end=int(new_end) - 1 if new_end is not None else None,
+                status="rejected")
+            store.save_event(event)
+            set_input_notice("info", "已排除该候选（排除记录会保留，"
+                                      "可追溯你的取舍）。")
+            st.rerun()
+
+
+def _show_behavior_events(store, friend) -> None:
+    """已确认事件：分方向查看、编辑、删除；排除记录单独折叠。"""
+    confirmed = store.list_events(friend.friend_id, status="confirmed")
+    rejected = store.list_events(friend.friend_id, status="rejected")
+    st.markdown("##### 已确认的行为事件")
+    if not confirmed:
+        st.caption("还没有已确认的事件。上面的候选核对确认后会出现在这里。")
+
+    pending_delete = st.session_state.get("behavior_event_delete")
+    for event in confirmed:
+        dimension = event["dimension"]
+        type_label = _behavior_type_label(dimension, event["behavior_type"])
+        with st.expander(
+                f"{bv.DIMENSION_LABELS.get(dimension, dimension)} · "
+                f"{type_label} · {_behavior_time_text(event)} · "
+                f"{bv.STANCE_LABELS.get(event['stance'], event['stance'])}",
+                expanded=False):
+            st.caption(
+                f"来源：{_behavior_source_text(event)} · "
+                f"时间可信度："
+                f"{bv.TIME_CONFIDENCE_LABELS.get(event['time_confidence'])}")
+            flags = _behavior_flags_text(event)
+            if flags:
+                st.caption(f"限制：{flags}")
+            if event["notes"]:
+                st.markdown(f"人工说明：{event['notes']}")
+            if event["alternative"]:
+                st.caption(f"替代解释：{event['alternative']}")
+            if event["snippet"]:
+                st.caption(f"保留的脱敏片段：“{event['snippet']}”")
+            audit = store.audit_of(event["event_id"])
+            if audit:
+                st.caption("审核记录：" + " → ".join(
+                    f"{a['action']}" for a in audit))
+
+            event_id = event["event_id"]
+            with st.form(key=f"behavior_edit_{event_id}"):
+                stance = st.radio("这条事件说明的是",
+                                  ["supporting", "counter", "mixed",
+                                   "unspecified"],
+                                  index=["supporting", "counter", "mixed",
+                                         "unspecified"].index(
+                                      event["stance"] or "unspecified"),
+                                  format_func=lambda s: bv.STANCE_LABELS[s],
+                                  key=f"behavior_event_stance_{event_id}")
+                notes = st.text_area("人工说明", value=event["notes"],
+                                     height=68,
+                                     key=f"behavior_event_notes_{event_id}")
+                feeling = st.text_area(
+                    "我对这段关系的主观感受（独立保存，"
+                    "不作为对方意图的客观证据）",
+                    value=event["user_feeling"], height=68,
+                    key=f"behavior_event_feeling_{event_id}")
+                snippet = st.text_area("脱敏片段（可编辑 / 清空）",
+                                       value=event["snippet"], height=68,
+                                       key=f"behavior_event_snippet_{event_id}")
+                if st.form_submit_button("保存修改"):
+                    store.update_event(event_id, {
+                        "stance": stance, "notes": notes,
+                        "user_feeling": feeling, "snippet": snippet})
+                    set_input_notice("success", "已更新该事件。")
+                    st.rerun()
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("删除这个事件", key=f"behavior_del_{event_id}"):
+                    st.session_state["behavior_event_delete"] = event_id
+                    st.rerun()
+            with c2:
+                if event.get("reviewed_at"):
+                    st.caption("核对时间：" + _fmt_wall_time(
+                        event["reviewed_at"]))
+
+    if rejected:
+        with st.expander(f"已排除的候选（{len(rejected)} 条）"):
+            st.caption("排除记录会一直保留，方便你以后复查当时的取舍。")
+            for event in rejected:
+                st.caption(
+                    f"- {bv.DIMENSION_LABELS.get(event['dimension'], '')} · "
+                    f"{_behavior_time_text(event)} · "
+                    f"{event['notes'] or '（无说明）'}")
+
+    if pending_delete:
+        st.warning("确认删除这个行为事件吗？（删除后不可恢复）")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("确认删除", key="behavior_delete_yes"):
+                store.delete_event(pending_delete)
+                st.session_state["behavior_event_delete"] = None
+                set_input_notice("success", "已删除该行为事件。")
+                st.rerun()
+        with c2:
+            if st.button("取消", key="behavior_delete_no"):
+                st.session_state["behavior_event_delete"] = None
+                st.rerun()
+
+
+def _behavior_source_text(event: dict) -> str:
+    if event.get("source_kind") == "manual":
+        return bv.SOURCE_LABELS["manual"]
+    if event.get("source_kind") == "history":
+        run = (event.get("source_run_id") or "")[:8] or "未知"
+        return f"{bv.SOURCE_LABELS['history']}（run {run}…）"
+    return bv.SOURCE_LABELS["rule"]
+
+def _show_behavior_report(store, friend, pending: list) -> None:
+    """长期行为报告：四方向分别呈现已确认事件、证据、限制；0 Jev API。"""
+    events = [bv.BehaviorEvent.from_dict(e)
+              for e in store.list_events(friend.friend_id)]
+    counts = store.event_counts(friend.friend_id)
+    if not events:
+        st.caption("确认至少一个事件后，这里会生成长期行为事件报告。")
+        return
+    pending_counts: dict[str, int] = {}
+    for candidate in pending:
+        pending_counts[candidate.dimension] = (
+            pending_counts.get(candidate.dimension, 0) + 1)
+    markdown = bv.build_behavior_report(friend, events,
+                                        pending_counts=pending_counts)
+    st.markdown("##### 长期行为事件报告（本地聚合）")
+    st.caption("按四个观察方向分别整理你确认过的事件与证据；"
+               "不生成任何数值评分，相反证据与支持证据并列展示。")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "下载长期行为事件报告（Markdown）",
+            data=markdown, file_name="behavior-events-report.md",
+            mime="text/markdown", key="behavior_report_download")
+    with c2:
+        st.download_button(
+            "导出全部行为事件 JSON（本地备份）",
+            data=json.dumps(
+                {"friend_id": friend.friend_id,
+                 "confirmed": counts.get("confirmed", 0),
+                 "rejected": counts.get("rejected", 0),
+                 "events": [e.to_dict() for e in events]},
+                ensure_ascii=False, indent=2),
+            file_name="behavior-events.json",
+            mime="application/json",
+            key="behavior_events_download")
+    with st.expander("查看报告内容", expanded=False):
+        st.markdown(markdown)
+
 def show_longitudinal_tab(results: list[dict], stats: dict) -> None:
     """「长期观察」：本地档案 + 跨期比较（0 Jev API，不改评分公式）。
 
@@ -2385,6 +2851,9 @@ def show_longitudinal_tab(results: list[dict], stats: dict) -> None:
     friend = store.get_friend(friend_id)
     if friend is None:
         return
+    # Phase 2A：行为事件层（候选 → 人工核对 → 分方向报告）。
+    # 没有历史分析也可以使用（手动添加事件始终可用）。
+    show_behavior_panel(results, stats)
     runs = store.list_runs(friend_id)
     if not runs:
         return

@@ -1,5 +1,10 @@
 """本地好友档案与历史分析记忆（Longitudinal Phase 1：P1–P4）。
 
+Phase 2A 起同时承载**行为事件层**（``behavior_events`` /
+``behavior_event_audit``，schema v2）：档案库带版本号增量迁移
+（``schema_meta``），v1 老库打开时自动补建新表，迁移整体事务化、
+失败即回滚，已有的不可变分析快照不受影响。
+
 设计目标：让用户可以把**已经分析完成**的结果按“好友”归档，下次导入同一
 位好友的聊天时看到历史总结、识别重复记录、比较不同时间段的互动——同时
 不引入任何新的模型调用、不改动现有九问与评分。
@@ -47,6 +52,11 @@ CONNECT_TIMEOUT = 5.0
 BUSY_TIMEOUT_MS = 5000
 
 ALIAS_KINDS = ("wechat_name", "remark", "alias")
+
+# 档案数据库 schema 版本（Phase 2A 引入行为事件表 → v2）。
+# 迁移必须是**增量且可失败回滚**的：用户的数据库完全可能是 Phase 1 时代的
+# v1（没有 schema_meta、没有行为事件表）。不能假设它永远是新创建的。
+SCHEMA_VERSION_FRIEND_HISTORY = 2
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +305,160 @@ class FriendStore:
 
     # ---- 连接 ----
 
+    # v1 基础表（Phase 1 时代的内容；老库里已存在 → IF NOT EXISTS 幂等）
+    _V1_DDL: tuple[str, ...] = (
+        """
+        CREATE TABLE IF NOT EXISTS friends (
+            friend_id   TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            notes       TEXT NOT NULL DEFAULT '',
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS friend_aliases (
+            friend_id  TEXT NOT NULL,
+            alias      TEXT NOT NULL,
+            display    TEXT NOT NULL,
+            kind       TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_friend_aliases_alias
+            ON friend_aliases(alias)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS history_runs (
+            run_id TEXT PRIMARY KEY,
+            friend_id TEXT NOT NULL,
+            saved_at REAL NOT NULL,
+            analysis_started_at REAL,
+            analysis_completed_at REAL,
+            chat_first_time TEXT,
+            chat_last_time TEXT,
+            full_time_ratio REAL,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            analyzed_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            skipped_media_count INTEGER NOT NULL DEFAULT 0,
+            case_signature TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            request_model TEXT NOT NULL,
+            response_model TEXT,
+            stats_json TEXT NOT NULL,
+            summary_text TEXT NOT NULL,
+            warnings_json TEXT NOT NULL DEFAULT '[]'
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_history_runs_friend
+            ON history_runs(friend_id, saved_at)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_history_runs_case
+            ON history_runs(friend_id, case_signature)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS history_messages (
+            run_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            msg_index INTEGER NOT NULL,
+            chat_time TEXT,
+            speaker TEXT,
+            is_target INTEGER NOT NULL DEFAULT 0
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_history_messages_fp
+            ON history_messages(fingerprint)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS history_evidence (
+            run_id TEXT NOT NULL,
+            msg_index INTEGER NOT NULL,
+            stance TEXT NOT NULL,
+            note TEXT NOT NULL,
+            snippet TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS history_results (
+            run_id TEXT PRIMARY KEY,
+            results_json TEXT NOT NULL
+        )
+        """,
+    )
+
+    # v2 行为事件表（Phase 2A）。作为类属性暴露，便于测试注入失败语句验证
+    # 事务回滚与失败恢复。
+    _V2_DDL: tuple[str, ...] = (
+        """
+        CREATE TABLE IF NOT EXISTS schema_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS behavior_events (
+            event_id TEXT PRIMARY KEY,
+            friend_id TEXT NOT NULL,
+            dimension TEXT NOT NULL,
+            behavior_type TEXT NOT NULL,
+            stance TEXT NOT NULL DEFAULT 'unspecified',
+            status TEXT NOT NULL DEFAULT 'candidate',
+            source_kind TEXT NOT NULL DEFAULT 'rule',
+            source_run_id TEXT,
+            event_start_time TEXT,
+            event_end_time TEXT,
+            time_confidence TEXT NOT NULL DEFAULT 'unknown',
+            msg_window_json TEXT NOT NULL DEFAULT '[]',
+            fingerprints_json TEXT NOT NULL DEFAULT '[]',
+            flags_json TEXT NOT NULL DEFAULT '{}',
+            alternative TEXT NOT NULL DEFAULT '',
+            support_evidence TEXT NOT NULL DEFAULT '',
+            counter_evidence TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            snippet TEXT NOT NULL DEFAULT '',
+            user_feeling TEXT NOT NULL DEFAULT '',
+            review_note TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            reviewed_at REAL,
+            event_identity TEXT NOT NULL DEFAULT ''
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS behavior_event_audit (
+            audit_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_behavior_events_friend
+            ON behavior_events(friend_id, status)
+        """,
+        # 同一事件重复导入不得重复计算：确认 / 排除状态下
+        # (friend_id, event_identity) 唯一（部分索引）。
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_behavior_events_identity
+            ON behavior_events(friend_id, event_identity)
+            WHERE status IN ('confirmed', 'rejected')
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_behavior_event_audit_event
+            ON behavior_event_audit(event_id)
+        """,
+    )
+
+    # 目标 schema 版本（测试可降低它来模拟“旧版本创建的库”）
+    _TARGET_VERSION: int = SCHEMA_VERSION_FRIEND_HISTORY
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=CONNECT_TIMEOUT)
         conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
@@ -304,76 +468,65 @@ class FriendStore:
         conn = self._connect()
         try:
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS friends (
-                    friend_id   TEXT PRIMARY KEY,
-                    display_name TEXT NOT NULL,
-                    notes       TEXT NOT NULL DEFAULT '',
-                    created_at  REAL NOT NULL,
-                    updated_at  REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS friend_aliases (
-                    friend_id  TEXT NOT NULL,
-                    alias      TEXT NOT NULL,
-                    display    TEXT NOT NULL,
-                    kind       TEXT NOT NULL,
-                    created_at REAL NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_friend_aliases_alias
-                    ON friend_aliases(alias);
-                CREATE TABLE IF NOT EXISTS history_runs (
-                    run_id TEXT PRIMARY KEY,
-                    friend_id TEXT NOT NULL,
-                    saved_at REAL NOT NULL,
-                    analysis_started_at REAL,
-                    analysis_completed_at REAL,
-                    chat_first_time TEXT,
-                    chat_last_time TEXT,
-                    full_time_ratio REAL,
-                    message_count INTEGER NOT NULL DEFAULT 0,
-                    analyzed_count INTEGER NOT NULL DEFAULT 0,
-                    failed_count INTEGER NOT NULL DEFAULT 0,
-                    skipped_media_count INTEGER NOT NULL DEFAULT 0,
-                    case_signature TEXT NOT NULL,
-                    schema_version TEXT NOT NULL,
-                    request_model TEXT NOT NULL,
-                    response_model TEXT,
-                    stats_json TEXT NOT NULL,
-                    summary_text TEXT NOT NULL,
-                    warnings_json TEXT NOT NULL DEFAULT '[]'
-                );
-                CREATE INDEX IF NOT EXISTS idx_history_runs_friend
-                    ON history_runs(friend_id, saved_at);
-                CREATE INDEX IF NOT EXISTS idx_history_runs_case
-                    ON history_runs(friend_id, case_signature);
-                CREATE TABLE IF NOT EXISTS history_messages (
-                    run_id TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL,
-                    msg_index INTEGER NOT NULL,
-                    chat_time TEXT,
-                    speaker TEXT,
-                    is_target INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE INDEX IF NOT EXISTS idx_history_messages_fp
-                    ON history_messages(fingerprint);
-                CREATE TABLE IF NOT EXISTS history_evidence (
-                    run_id TEXT NOT NULL,
-                    msg_index INTEGER NOT NULL,
-                    stance TEXT NOT NULL,
-                    note TEXT NOT NULL,
-                    snippet TEXT NOT NULL DEFAULT '',
-                    created_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS history_results (
-                    run_id TEXT PRIMARY KEY,
-                    results_json TEXT NOT NULL
-                );
-                """
-            )
-            conn.commit()
+            # 显式事务：DDL 也必须可回滚——迁移失败时不能留下半套表。
+            # （sqlite3 默认只在 DML 前隐式 BEGIN，DDL 会在 autocommit 下
+            #   逐条提交，因此这里手工管理隔离级别。）
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._upgrade_schema(conn)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         finally:
             conn.close()
+
+    def _upgrade_schema(self, conn: sqlite3.Connection) -> None:
+        """按版本号增量迁移（幂等；失败由调用方整体回滚）。"""
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name = 'schema_meta'").fetchone()
+        version = 0
+        if row is not None:
+            value = conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+            ).fetchone()
+            if value and str(value[0]).isdigit():
+                version = int(value[0])
+        if version < 1:
+            for stmt in self._V1_DDL:
+                conn.execute(stmt)
+            if row is None:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS schema_meta ("
+                    " key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta VALUES"
+                " ('schema_version', '1')")
+            version = 1
+        if version < 2 and self._TARGET_VERSION >= 2:
+            for stmt in self._V2_DDL:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta VALUES"
+                " ('schema_version', '2')")
+            version = 2
+
+    def schema_version(self) -> int:
+        """档案数据库当前 schema 版本（v1 老库读出来是 1 或 0）。"""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return 0
+        finally:
+            conn.close()
+        if row and str(row[0]).isdigit():
+            return int(row[0])
+        return 0
 
     # ---- 好友 ----
 
@@ -542,7 +695,8 @@ class FriendStore:
         return friend
 
     def delete_friend(self, friend_id: str) -> bool:
-        """删除好友及其全部历史（级联：runs / messages / evidence / aliases）。"""
+        """删除好友及其全部历史（级联：runs / messages / evidence / aliases /
+        behavior events / audit）。"""
         friend = self.get_friend(friend_id)
         if friend is None:
             return False
@@ -560,7 +714,17 @@ class FriendStore:
                          (friend_id,))
             conn.execute("DELETE FROM friend_aliases WHERE friend_id = ?",
                          (friend_id,))
+            # 行为事件（Phase 2A）随档案一起删除，审计记录一并清除
             conn.execute("DELETE FROM friends WHERE friend_id = ?", (friend_id,))
+            event_ids = [r[0] for r in conn.execute(
+                "SELECT event_id FROM behavior_events WHERE friend_id = ?",
+                (friend_id,)).fetchall()]
+            for event_id in event_ids:
+                conn.execute(
+                    "DELETE FROM behavior_event_audit WHERE event_id = ?",
+                    (event_id,))
+            conn.execute("DELETE FROM behavior_events WHERE friend_id = ?",
+                         (friend_id,))
             conn.commit()
         finally:
             conn.close()
@@ -797,3 +961,263 @@ class FriendStore:
         finally:
             conn.close()
         return {r[0] for r in rows}
+
+    # ---- 行为事件（Phase 2A，schema v2）----
+
+    def save_event(self, event: dict) -> str | None:
+        """写入一个行为事件（候选被人工确认 / 手动创建 / 人工排除）。
+
+        去重是**结构性**的：同一好友下，确认或排除状态的
+        (friend_id, event_identity) 唯一。重复导入同一事件时直接返回既有
+        event_id（幂等），不重复计算。候选（未确认）不落库——它们每次从
+        当前聊天重新生成，避免档案里堆积垃圾。
+        """
+        identity = str(event.get("event_identity") or "")
+        friend_id = str(event.get("friend_id") or "")
+        status = str(event.get("status") or "candidate")
+        if identity and friend_id and status in ("confirmed", "rejected"):
+            existing = self.events_by_identity(friend_id, identity)
+            if existing:
+                return existing[0]["event_id"]
+
+        event_id = str(event.get("event_id") or new_run_id())
+        now = time.time()
+        created_at = float(event.get("created_at") or now)
+        updated_at = float(event.get("updated_at") or now)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO behavior_events VALUES ("
+                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    event_id, friend_id,
+                    str(event.get("dimension") or ""),
+                    str(event.get("behavior_type") or ""),
+                    str(event.get("stance") or "unspecified"),
+                    status,
+                    str(event.get("source_kind") or "rule"),
+                    event.get("source_run_id"),
+                    event.get("event_start_time"),
+                    event.get("event_end_time"),
+                    str(event.get("time_confidence") or "unknown"),
+                    json.dumps(list(event.get("msg_window") or []),
+                               ensure_ascii=False),
+                    json.dumps(list(event.get("fingerprints") or []),
+                               ensure_ascii=False),
+                    json.dumps(dict(event.get("flags") or {}),
+                               ensure_ascii=False, sort_keys=True),
+                    str(event.get("alternative") or ""),
+                    str(event.get("support_evidence") or ""),
+                    str(event.get("counter_evidence") or ""),
+                    str(event.get("notes") or ""),
+                    str(event.get("snippet") or ""),
+                    str(event.get("user_feeling") or ""),
+                    str(event.get("review_note") or ""),
+                    created_at, updated_at,
+                    event.get("reviewed_at") if event.get("reviewed_at")
+                    is not None else now,
+                    identity,
+                ),
+            )
+            self._insert_audit(
+                conn, event_id, "created",
+                f"来源 {event.get('source_kind') or 'rule'}，"
+                f"方向 {event.get('dimension')}，"
+                f"行为 {event.get('behavior_type')}，状态 {status}")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return event_id
+
+    @staticmethod
+    def _insert_audit(conn: sqlite3.Connection, event_id: str, action: str,
+                      detail: str = "") -> None:
+        conn.execute(
+            "INSERT INTO behavior_event_audit VALUES (?, ?, ?, ?, ?)",
+            (new_run_id(), event_id, action, detail, time.time()),
+        )
+
+    _EVENT_COLUMNS = (
+        "SELECT event_id, friend_id, dimension, behavior_type, stance,"
+        " status, source_kind, source_run_id, event_start_time,"
+        " event_end_time, time_confidence, msg_window_json,"
+        " fingerprints_json, flags_json, alternative, support_evidence,"
+        " counter_evidence, notes, snippet, user_feeling, review_note,"
+        " created_at, updated_at, reviewed_at, event_identity"
+        " FROM behavior_events"
+    )
+
+    def _row_to_event(self, row) -> dict:
+        return {
+            "event_id": row[0], "friend_id": row[1], "dimension": row[2],
+            "behavior_type": row[3], "stance": row[4], "status": row[5],
+            "source_kind": row[6], "source_run_id": row[7],
+            "event_start_time": row[8], "event_end_time": row[9],
+            "time_confidence": row[10],
+            "msg_window": json.loads(row[11] or "[]"),
+            "fingerprints": json.loads(row[12] or "[]"),
+            "flags": json.loads(row[13] or "{}"),
+            "alternative": row[14], "support_evidence": row[15],
+            "counter_evidence": row[16], "notes": row[17],
+            "snippet": row[18], "user_feeling": row[19],
+            "review_note": row[20], "created_at": row[21],
+            "updated_at": row[22], "reviewed_at": row[23],
+            "event_identity": row[24],
+        }
+
+    def get_event(self, event_id: str) -> dict | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                self._EVENT_COLUMNS + " WHERE event_id = ?",
+                (event_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        event = self._row_to_event(row)
+        event["audit"] = self.audit_of(event_id)
+        return event
+
+    def list_events(self, friend_id: str, *, status: str | None = None,
+                    dimension: str | None = None) -> list[dict]:
+        """该好友的行为事件，按聊天发生时间归位（最早在前；无时间的排最后）。"""
+        sql = self._EVENT_COLUMNS + " WHERE friend_id = ?"
+        params: list = [friend_id]
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        if dimension:
+            sql += " AND dimension = ?"
+            params.append(dimension)
+        conn = self._connect()
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
+        events = [self._row_to_event(r) for r in rows]
+        events.sort(key=lambda e: (
+            e["event_start_time"] or "9999-99-99 99:99",
+            e["event_end_time"] or "9999-99-99 99:99",
+            e["created_at"],
+        ))
+        return events
+
+    def events_by_identity(self, friend_id: str, identity: str) -> list[dict]:
+        if not identity:
+            return []
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                self._EVENT_COLUMNS
+                + " WHERE friend_id = ? AND event_identity = ?"
+                " ORDER BY created_at",
+                (friend_id, identity)).fetchall()
+        finally:
+            conn.close()
+        return [self._row_to_event(r) for r in rows]
+
+    def event_counts(self, friend_id: str) -> dict[str, int]:
+        """按状态统计（用于"未审核候选数"与报告统计）。"""
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) FROM behavior_events"
+                " WHERE friend_id = ? GROUP BY status",
+                (friend_id,)).fetchall()
+        finally:
+            conn.close()
+        return {row[0]: int(row[1]) for row in rows}
+
+    _EVENT_EDITABLE = (
+        "stance", "dimension", "behavior_type", "notes", "snippet",
+        "alternative", "support_evidence", "counter_evidence",
+        "user_feeling", "review_note", "time_confidence",
+        "event_start_time", "event_end_time",
+    )
+
+    def update_event(self, event_id: str, changes: dict) -> bool:
+        """更新可编辑字段（白名单；任何修改写审计）。"""
+        safe = {k: v for k, v in (changes or {}).items()
+                if k in self._EVENT_EDITABLE}
+        if not safe:
+            return False
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM behavior_events WHERE event_id = ?",
+                (event_id,)).fetchone()
+            if exists is None:
+                return False
+            conn.execute("BEGIN IMMEDIATE")
+            assignments = ", ".join(f"{k} = ?" for k in safe)
+            conn.execute(
+                f"UPDATE behavior_events SET {assignments}, updated_at = ?"
+                " WHERE event_id = ?",
+                (*safe.values(), time.time(), event_id))
+            self._insert_audit(conn, event_id, "edited",
+                               "修改字段：" + "、".join(sorted(safe)))
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+        return True
+
+    def set_event_status(self, event_id: str, status: str,
+                         note: str = "") -> bool:
+        """人工确认 / 排除（写审计； reviewed_at 记录核对时间）。"""
+        if status not in ("confirmed", "rejected", "candidate"):
+            return False
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM behavior_events WHERE event_id = ?",
+                (event_id,)).fetchone()
+            if exists is None:
+                return False
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE behavior_events SET status = ?, reviewed_at = ?,"
+                " updated_at = ? WHERE event_id = ?",
+                (status, time.time(), time.time(), event_id))
+            self._insert_audit(conn, event_id, status, note)
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+        return True
+
+    def delete_event(self, event_id: str) -> bool:
+        """删除一个事件及其审计记录（用户的人工修正）。"""
+        conn = self._connect()
+        try:
+            exists = conn.execute(
+                "SELECT 1 FROM behavior_events WHERE event_id = ?",
+                (event_id,)).fetchone()
+            if exists is None:
+                return False
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM behavior_event_audit WHERE event_id = ?",
+                (event_id,))
+            conn.execute("DELETE FROM behavior_events WHERE event_id = ?",
+                         (event_id,))
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+        return True
+
+    def audit_of(self, event_id: str) -> list[dict]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT audit_id, action, detail, created_at"
+                " FROM behavior_event_audit WHERE event_id = ?"
+                " ORDER BY created_at, audit_id",
+                (event_id,)).fetchall()
+        finally:
+            conn.close()
+        return [{"audit_id": r[0], "action": r[1], "detail": r[2],
+                 "created_at": r[3]} for r in rows]
