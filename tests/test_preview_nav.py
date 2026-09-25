@@ -198,15 +198,15 @@ def test_goto_preview_page_ignores_unchanged_page(monkeypatch):
     monkeypatch.setattr(st, "session_state", {"preview_page": 3},
                         raising=False)
 
-    app._goto_preview_page(3)                 # 页码没变
+    app._goto_preview_page(3, "bottom")                 # 页码没变
     assert reruns == []
     assert sa._PROCESS_PENDING == {}          # 没有登记任何滚动请求
     assert sa.current_nonce(app.PREVIEW_SCROLL_AREA) == 0
 
-    app._goto_preview_page(7)                 # 真的翻页
+    app._goto_preview_page(7, "bottom")                 # 真的翻页
     assert reruns == [1]
     assert sa._PROCESS_PENDING[app.PREVIEW_SCROLL_AREA] == {
-        "page": 7, "nonce": 1}
+        "page": 7, "nonce": 1, "position": "bottom"}
     assert st.session_state["preview_page"] == 7
 
 
@@ -219,9 +219,9 @@ def test_goto_preview_page_clamps_below_first_page(monkeypatch):
     monkeypatch.setattr(st, "session_state", {"preview_page": 1},
                         raising=False)
 
-    app._goto_preview_page(0)                 # 试图越过首页
+    app._goto_preview_page(0, "bottom")                 # 试图越过首页
     assert reruns == []                       # 已在第 1 页 → 不动
-    app._goto_preview_page(-3)                 # 负页码夹紧到 1 → 仍不动
+    app._goto_preview_page(-3, "bottom")                 # 负页码夹紧到 1 → 仍不动
     assert reruns == []
 
 

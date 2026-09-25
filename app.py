@@ -234,13 +234,14 @@ def init_state() -> None:
         ("friend_alias_input", ""),      # 档案查找：昵称/备注/别名（本地）
         ("friend_matches", None),        # 最近一次查找的候选列表（④阶段）
         ("history_matches", None),       # 最近一次查找的候选列表（②阶段）
+        ("history_ta_alias", None),      # 查看历史时确认的 TA 身份（防串档）
         ("friend_selected", None),       # 用户选定的 friend_id
         ("friend_binding", None),        # 档案↔当前 TA 身份的绑定（防串档）
         ("friend_save_evidence", False), # 是否保留匿名化证据片段（默认否）
         ("friend_save_marks", {}),       # {(revision, case): {friend_id: saved_at}}
         ("friend_save_confirm", False),  # 跨档案可能串档时的显式确认
         ("friend_confirm_delete", False),  # 删除档案前的显式确认
-        ("friend_checkboxes_reset", False),  # 下次渲染前重置上述勾选（widget 安全）
+        ("friend_widget_reset_keys", []),  # 下次渲染前要重置的 widget key（widget 安全）
         ("friend_run_delete", None),      # 待删除的单条历史 run_id
         ("history_friend_id", None),     # 确认阶段正在浏览的历史档案
     ):
@@ -580,6 +581,37 @@ def reset_media_state() -> None:
     st.session_state["media_manual"] = {}
 
 
+def _queue_widget_reset(*keys: str) -> None:
+    """登记“下次渲染前要重置的 widget key”（widget 安全）。
+
+    Streamlit 禁止在控件实例化之后再写它的 session_state；因此清空勾选 /
+    单选框不能直接赋值，只能先排队，等下一次渲染、widget 创建之前再
+    ``pop``（那时删除它的 state 是允许的）。
+    """
+    pending = st.session_state.get("friend_widget_reset_keys")
+    if not isinstance(pending, list):
+        pending = []
+        st.session_state["friend_widget_reset_keys"] = pending
+    for key in keys:
+        if key not in pending:
+            pending.append(key)
+
+
+def _apply_pending_widget_reset() -> None:
+    """在任何 widget 创建之前执行排队的重置（幂等）。"""
+    pending = st.session_state.get("friend_widget_reset_keys")
+    if not pending:
+        return
+    for key in list(pending):
+        st.session_state.pop(key, None)
+    st.session_state["friend_widget_reset_keys"] = []
+
+
+def _reset_friend_checkboxes() -> None:
+    """在创建任何 widget 之前重置档案相关的勾选状态（幂等）。"""
+    _apply_pending_widget_reset()
+
+
 def _clear_friend_selection(notice: str | None = None) -> None:
     """清除当前选定的好友档案（换聊天 / TA 身份变化时调用）。
 
@@ -587,29 +619,17 @@ def _clear_friend_selection(notice: str | None = None) -> None:
     把另一位好友的聊天存进上一个档案。仅在调用方给出提示语时才写入
     ``input_notice``（换聊天这种正常路径不打扰用户）。
 
-    注意：**不能**在这里直接写 ``friend_confirm_delete`` /
-    ``friend_save_confirm``——它们是 checkbox widget 的 key，在 widget
+    注意：**不能**在这里直接写 checkbox widget 的 key——在 widget
     实例化之后再写会抛 ``StreamlitWidgetAlreadyInstantiatedError``
-    （真实浏览器里就是这么把删除流程打断的）。改为打一个重置标记，
-    由 ``_reset_friend_checkboxes`` 在下次渲染、widget 创建之前处理。
+    （真实浏览器里就是这么把删除流程打断的）。改为排队重置标记。
     """
     st.session_state["friend_selected"] = None
     st.session_state["friend_binding"] = None
     st.session_state["friend_matches"] = None
-    st.session_state["friend_checkboxes_reset"] = True
+    _queue_widget_reset("friend_confirm_delete", "friend_save_confirm",
+                        "friend_save_evidence", "friend_add_alias_open")
     if notice:
         set_input_notice("warning", notice)
-
-
-def _reset_friend_checkboxes() -> None:
-    """在创建任何 widget 之前重置档案相关的勾选状态（幂等）。"""
-    if not st.session_state.get("friend_checkboxes_reset"):
-        return
-    st.session_state["friend_checkboxes_reset"] = False
-    # pop 而非赋值：widget 尚未实例化，删除其 state 是允许的
-    for key in ("friend_confirm_delete", "friend_save_confirm",
-                "friend_save_evidence", "friend_add_alias_open"):
-        st.session_state.pop(key, None)
 
 
 def _select_friend_profile(friend_id: str) -> None:
@@ -625,7 +645,7 @@ def _select_friend_profile(friend_id: str) -> None:
         "me_alias": fh.normalize_alias(st.session_state.get("applied_me") or ""),
         "bound_at": time.time(),
     }
-    st.session_state["friend_checkboxes_reset"] = True
+    _queue_widget_reset("friend_save_confirm", "friend_save_evidence")
 
 
 def _sync_friend_binding() -> None:
@@ -635,18 +655,37 @@ def _sync_friend_binding() -> None:
     从而导致身份重建——所有路径都覆盖到，不依赖某一条代码路径记得清理。
     同一个人的追加（TA 身份不变）不会触动绑定。
     """
-    if not st.session_state.get("friend_binding"):
-        return
     ta_alias = fh.normalize_alias(st.session_state.get("applied_ta") or "")
+    binding = st.session_state.get("friend_binding")
     if not ta_alias:
-        _clear_friend_selection(
-            "身份需要重新确认：之前选定的好友档案关联已失效，"
-            "请重新选择要把本次分析保存到哪个档案。")
+        # 身份需要重新确认：保存关联（若有）与历史查看都必须失效——
+        # 不确认身份就不知道这是谁，不能继续挂着上一位好友的历史。
+        if binding:
+            _clear_friend_selection(
+                "身份需要重新确认：之前选定的好友档案关联已失效，"
+                "请重新选择要把本次分析保存到哪个档案。")
+        _clear_history_view()
         return
-    if ta_alias != (st.session_state["friend_binding"].get("ta_alias") or ""):
+    if binding and ta_alias != (binding.get("ta_alias") or ""):
         _clear_friend_selection(
             "检测到 TA 身份已改变：旧档案关联失效，请重新选择要保存到"
             "哪个档案（避免把这位好友的聊天存进别人的档案）。")
+        _clear_history_view()
+
+
+def _sync_history_view() -> None:
+    """②阶段：正在看的历史档案必须属于**当前确认的 TA 身份**。
+
+    只看不存也要防串：查看历史时记下当时的 TA 称呼，之后身份一变
+    （重新选择身份 / 换聊天 / 追加引入新参与者）就立即收起历史，
+    绝不把上一位好友的总结留给另一位好友的聊天。
+    """
+    viewed_ta = st.session_state.get("history_ta_alias")
+    if not viewed_ta or not st.session_state.get("history_friend_id"):
+        return
+    current_ta = fh.normalize_alias(st.session_state.get("applied_ta") or "")
+    if not current_ta or current_ta != viewed_ta:
+        _clear_history_view()
 
 
 def _friend_save_mark_key(revision, signature) -> tuple:
@@ -690,6 +729,8 @@ def _reset_chat_state() -> None:
     # 换聊天 = 可能换了一个人：好友档案关联必须失效，绝不把新聊天
     # 存入上一个好友的档案（串档防护）
     _clear_friend_selection()
+    # ②阶段“正在看的历史档案”同样失效：不能把上一位好友的历史留给新聊天
+    _clear_history_view()
     # 时间线 / 顺序状态：换聊天必须全部作废
     st.session_state["timeline_info"] = None
     st.session_state["order_signature"] = None
@@ -1200,6 +1241,8 @@ def steps_markdown(current: int) -> str:
 def show_confirm_stage(messages: list[dict]) -> None:
     # 档案↔身份绑定校验：换聊天 / TA 身份变化后旧关联必须失效（串档防护）
     _sync_friend_binding()
+    # 正在看的历史档案也必须属于当前确认的 TA 身份（防串档）
+    _sync_history_view()
     counts = {"me": 0, "them": 0, "unknown": 0}
     for m in messages:
         counts[m["speaker"]] = counts.get(m["speaker"], 0) + 1
@@ -1253,14 +1296,22 @@ def show_confirm_stage(messages: list[dict]) -> None:
         if not (applied_me or applied_ta):
             st.info("已识别聊天参与者，请确认谁是“我”，谁是“TA”。")
             options = ["（未指定）"] + participants
-            c1, c2 = st.columns(2)
-            sel_me = c1.selectbox("我是：", options, key="sel_me")
-            sel_ta = c2.selectbox("TA 是：", options, key="sel_ta")
-            if st.button(
-                "应用昵称映射并重新解析",
-                disabled=(sel_me == "（未指定）" and sel_ta == "（未指定）"),
-            ):
-                if sel_me != "（未指定）" and sel_me == sel_ta:
+            # 放进 st.form：选择昵称本身不再触发整页 rerun（真实浏览器里
+            # 每选一次昵称都会重排这张长页面，预览表被顶得乱跳）；只有点
+            # “应用昵称映射”才提交并重渲染。校验逻辑保持不变。
+            with st.form(key="identity_map_form"):
+                c1, c2 = st.columns(2)
+                sel_me = c1.selectbox("我是：", options, key="sel_me")
+                sel_ta = c2.selectbox("TA 是：", options, key="sel_ta")
+                # 注意：**不能**用表单内控件的值来禁用提交按钮——表单里的
+                # 值在提交前不会送到 Python，disabled 会永远是 True，
+                # 用户就再也点不动了（真实浏览器里发现的死锁）。
+                # 该校验移到提交之后：交互不变，只是提示时机不同。
+                submitted = st.form_submit_button("应用昵称映射并重新解析")
+            if submitted:
+                if sel_me == "（未指定）" and sel_ta == "（未指定）":
+                    st.error("请至少选择一方的昵称。")
+                elif sel_me != "（未指定）" and sel_me == sel_ta:
                     st.error("“我”和“TA”不能选择同一个昵称。")
                 else:
                     me_name = None if sel_me == "（未指定）" else sel_me
@@ -1368,13 +1419,21 @@ def show_confirm_stage(messages: list[dict]) -> None:
             _render_preview_nav(page, pages, window, "top")
 
         # 滚动锚点（表格上方）：只在明确的翻页请求后渲染并滚动，nonce 保证
-        # 连续翻页每次都触发；同时把表格内部滚动容器归零。
+        # 连续翻页每次都触发；position 区分顶部 / 底部翻页来源
         scroll_req = consume_scroll(PREVIEW_SCROLL_AREA)
         if scroll_req is not None:
-            _render_scroll_anchor("preview-page-anchor", scroll_req["nonce"])
+            _render_scroll_anchor("preview-page-anchor",
+                                  scroll_req["nonce"],
+                                  scroll_req.get("position") or "auto")
 
-        # 两种模式都按时间升序阅读；编号与媒体绑定使用真实全局 index
+        # 两种模式都按时间升序阅读；编号与媒体绑定使用真实全局 index。
+        # key 纳入（预览模式 + 页码 + 消息集版本）：换页 = 新组件实例，
+        # 数据表内部滚动状态自然重置，不会继承上一页停在中间的位置。
         window_messages = [m for _, m in window]
+        table_key = (
+            f"preview_table_{mode}_"
+            f"{int(st.session_state.get('preview_page') or 1)}_"
+            f"{(st.session_state.get('order_signature') or '')[:12]}")
         st.dataframe(
             preview_rows(
                 window_messages,
@@ -1382,7 +1441,7 @@ def show_confirm_stage(messages: list[dict]) -> None:
                 bindings=st.session_state.get("media_bindings") or {},
                 start=window[0][0] if window else 0,
             ),
-            use_container_width=True, hide_index=True,
+            use_container_width=True, hide_index=True, key=table_key,
         )
         if mode == "all" and pages > 1:
             # 底部导航：读完当前 40 条后无需先向上滚再翻页
@@ -1595,7 +1654,7 @@ PREVIEW_PAGE_SIZE = 40
 MSG_SCROLL_AREA = "all_messages"
 
 
-def _goto_preview_page(next_page: int) -> None:
+def _goto_preview_page(next_page: int, position: str = "auto") -> None:
     """切换到指定预览页码；**只有页码真正变化**才登记滚动并 rerun。
 
     边界按钮本身已禁用，这里仍是安全网：页码没变就什么都不做——既不做
@@ -1606,7 +1665,7 @@ def _goto_preview_page(next_page: int) -> None:
     if target == current:
         return
     st.session_state["preview_page"] = target
-    request_scroll(PREVIEW_SCROLL_AREA, target)
+    request_scroll(PREVIEW_SCROLL_AREA, target, position)
     st.rerun()
 
 
@@ -1617,14 +1676,16 @@ def _render_preview_nav(page: int, pages: int, window: list,
     - 左右对称：``◀ 上一页`` | 居中页码 | ``下一页 ▶``；
     - 日期范围单独一行 caption，不与页码挤在同一行；
     - 首页禁用“上一页”、末页禁用“下一页”；
-    - 翻页只改 ``preview_page`` + 登记一次滚动请求（``request_scroll``），
-      绝不在回调里做别的副作用；nonce 由 request_scroll 递增，保证连续
-      翻页每页的锚点 HTML 都不同（Streamlit 不会因相同 HTML 跳过挂载）。
+    - 翻页只改 ``preview_page`` + 登记一次滚动请求，绝不在回调里做别的
+      副作用；nonce 由 request_scroll 递增，保证连续翻页每页的锚点 HTML
+      都不同（Streamlit 不会因相同 HTML 跳过挂载）；
+    - ``position``（top / bottom）告诉锚点这次翻页的来源：顶部翻页只替换
+      表格内容、不做页面滚动；底部翻页才做一次定位。
     """
     col_prev, col_page, col_next = st.columns([1, 2, 1])
     if col_prev.button("◀ 上一页", key=f"preview_prev_{position}",
                        disabled=(page <= 1), use_container_width=True):
-        _goto_preview_page(page - 1)
+        _goto_preview_page(page - 1, position)
     # 居中页码：居中只是排版；HTML 被清理时退化为普通文本，不影响任何行为
     col_page.markdown(
         f"<div style='text-align:center'>第 {page} / {pages} 页</div>",
@@ -1632,7 +1693,7 @@ def _render_preview_nav(page: int, pages: int, window: list,
     )
     if col_next.button("下一页 ▶", key=f"preview_next_{position}",
                        disabled=(page >= pages), use_container_width=True):
-        _goto_preview_page(page + 1)
+        _goto_preview_page(page + 1, position)
     # 日期范围单独展示（不是滚动锚点，也不参与翻页逻辑）
     st.caption(f"本页 {page_time_range(window)}")
 
@@ -1640,9 +1701,9 @@ def _render_preview_nav(page: int, pages: int, window: list,
 def _render_messages_nav(page: int, pages: int, position: str) -> None:
     """消息列表上方/下方的翻页导航（position 仅用于生成唯一 widget key）。
 
-    按钮回调只改页码 + 登记一次滚动请求（``request_scroll``），绝不在
-    回调里做别的副作用；nonce 由 request_scroll 递增，保证连续翻页每页
-    的滚动锚点 HTML 都不同（Streamlit 不会因为“相同 HTML”而跳过挂载）。
+    按钮回调只改页码 + 登记一次滚动请求（含来源 position），绝不在回调里
+    做别的副作用；nonce 由 request_scroll 递增，保证连续翻页每页的滚动
+    锚点 HTML 都不同（Streamlit 不会因相同 HTML 跳过挂载）。
     """
     if pages <= 1:
         return
@@ -1650,13 +1711,13 @@ def _render_messages_nav(page: int, pages: int, position: str) -> None:
     if c1.button("◀ 上一页", key=f"msg_prev_{position}",
                  disabled=(page == 0), use_container_width=True):
         st.session_state["msg_page"] = page - 1
-        request_scroll(MSG_SCROLL_AREA, page - 1)
+        request_scroll(MSG_SCROLL_AREA, page - 1, position)
         st.rerun()
     c2.markdown(f"第 {page + 1} / {pages} 页")
     if c3.button("下一页 ▶", key=f"msg_next_{position}",
                  disabled=(page >= pages - 1), use_container_width=True):
         st.session_state["msg_page"] = page + 1
-        request_scroll(MSG_SCROLL_AREA, page + 1)
+        request_scroll(MSG_SCROLL_AREA, page + 1, position)
         st.rerun()
 
 
@@ -1706,10 +1767,12 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
     _render_messages_nav(page, pages, "top")
 
     # 本页首条消息的锚点：只在明确的翻页请求后滚动到这里，而不是页面
-    # 最顶部或旧页底部；nonce 保证每次翻页都重新挂载并触发。
+    # 最顶部或旧页底部；nonce 保证每次翻页都重新挂载并触发，position 区分
+    # 顶部 / 底部翻页来源。
     scroll_req = consume_scroll(MSG_SCROLL_AREA)
     if scroll_req is not None:
-        _render_scroll_anchor("msg-page-anchor", scroll_req["nonce"])
+        _render_scroll_anchor("msg-page-anchor", scroll_req["nonce"],
+                              scroll_req.get("position") or "auto")
 
     start = page * MESSAGES_PER_PAGE
     for entry in visible[start:start + MESSAGES_PER_PAGE]:
@@ -1810,10 +1873,18 @@ def save_run_to_friend(friend_id: str, results: list[dict], stats: dict,
 
     绝不在此处调用 Jev；``messages`` 用分析时使用的完整消息列表
     （``analysis_messages``），保证指纹与时间范围可复现。
-    ``evidence`` 是用户在预览里最终保留（可编辑、可删除）的片段。
+    ``evidence`` 是用户在预览里最终保留（可编辑、可删除）的片段——
+    写入前会在 ``normalize_evidence`` 里**再次**做去重与限量校验，
+    不依赖 UI 已经去过重。
     ``friend_id`` 由调用方显式传入（不读 session_state），便于测试与复用。
     """
     if not messages or not friend_id:
+        return None
+    # 写入前最后一道校验：按消息身份去重 + 限量（幂等，重复调用安全）
+    safe_evidence = fh.normalize_evidence(evidence)
+    duplicate_indices = len(safe_evidence) != len(
+        {item["index"] for item in safe_evidence})
+    if duplicate_indices:                      # 理论上不该发生：防御性短路
         return None
     snapshot = fh.build_run_snapshot(
         friend_id=friend_id,
@@ -1826,7 +1897,7 @@ def save_run_to_friend(friend_id: str, results: list[dict], stats: dict,
         schema_version=ANALYSIS_SCHEMA_VERSION,
         request_model=DEFAULT_MODEL,
         summary_text=build_summary_text(results, stats),
-        evidence=evidence or [],
+        evidence=safe_evidence,
     )
     store = get_friend_store()
     run_id = store.save_run(snapshot)
@@ -1835,32 +1906,80 @@ def save_run_to_friend(friend_id: str, results: list[dict], stats: dict,
     return run_id
 
 
-def _evidence_candidates(results: list[dict]) -> list[dict]:
-    """保存前的候选证据：从既有指标取 top 支持性/相反证据 + 匿名化原文片段。
+def _evidence_candidates(results: list[dict], *, limit: int = 5) -> list[dict]:
+    """保存前的候选证据：支持性 + 相反，**按稳定消息身份去重**。
 
-    片段一定经过 ``fh.anonymize_evidence_text``（本地脱敏 + 截断），
-    但正则脱敏**不保证完全匿名**——所以下面必须让用户预览后才能写入。
+    同一条消息可能同时入选支持性与相反证据（例如：关系信息量高但带明确
+    疏离信号）——这种情况保留**两类来源及其解释**并标记为混合信号，
+    而不是丢掉相反证据（那会让用户只看到想看到的一面）。
+    只有消息身份（index）唯一才算不同条目；两条不同消息即使内容或时间
+    相同也绝不会被合并。
     """
-    auto = lg.supporting_evidence(results, limit=5)
-    auto += lg.counter_evidence(results, limit=5)
+    sources = ((lg.supporting_evidence(results, limit=limit), "supporting"),
+               (lg.counter_evidence(results, limit=limit), "counter"))
     by_index = {e["index"]: e for e in results}
+    merged: dict[int, dict] = {}
+    order: list[int] = []
+    for items, stance in sources:
+        for item in items:
+            index = int(item["index"])
+            entry = merged.get(index)
+            if entry is None:
+                entry = merged[index] = {"index": index, "stances": [],
+                                         "notes": []}
+                order.append(index)
+            if stance not in entry["stances"]:
+                entry["stances"].append(stance)
+                note = (item.get("note") or "").strip()
+                if note:
+                    entry["notes"].append(note)
+
     out: list[dict] = []
-    for item in auto:
-        entry = by_index.get(item["index"])
-        if entry is None:
-            continue
-        normalized = fh.normalize_evidence(
-            [{**item, "snippet": entry.get("text") or ""}])
+    for index in order:
+        entry = merged[index]
+        stances = entry["stances"]
+        stance = stances[0] if len(stances) == 1 else "mixed"
+        normalized = fh.normalize_evidence([{
+            "index": index,
+            "stance": stance,
+            "note": "；".join(entry["notes"]),
+            "snippet": (by_index.get(index) or {}).get("text") or "",
+        }])
         if normalized:
             out.append(normalized[0])
     return out
 
 
-def _render_evidence_editor(results: list[dict]) -> list[dict]:
-    """证据预览编辑器：显示**最终会写入本机档案**的内容，容许改/删。
+def _evidence_scope(revision, friend_id, index: int) -> str:
+    """控件 key 的作用域：分析版本 + 好友 ID + 消息身份。
 
-    返回用户最终保留的片段（文本以 text_area 里的值为准，勾选删除的剔除）。
-    默认完全不保存任何正文——只有用户勾选“保留匿名化证据片段”才会到这里。
+    换一位好友、或换一次分析，都用全新的 key——不会显示上一个好友 /
+    上一次分析留下的手工编辑文本。
+    """
+    return f"{int(revision or 0)}_{friend_id or 'none'}_{int(index)}"
+
+
+def _evidence_keys(revision, friend_id, index: int) -> dict:
+    scope = _evidence_scope(revision, friend_id, index)
+    return {"del": f"friend_evidence_del_{scope}",
+            "txt": f"friend_evidence_txt_{scope}"}
+
+
+def _evidence_stance_label(stance: str) -> str:
+    if stance == "supporting":
+        return "支持性证据"
+    if stance == "counter":
+        return "相反 / 其它信号"
+    return "⚠ 混合信号，需核对（同时入选支持性与相反证据）"
+
+
+def _render_evidence_editor(results: list[dict], revision,
+                            friend_id: str) -> list[dict]:
+    """在 ``st.form`` 里渲染证据预览编辑器，返回候选列表。
+
+    放进 form 的原因（真实浏览器验证过）：表单内控件**不会**因普通输入 /
+    勾选触发整页 rerun，只有提交时才提交——编辑时页面不跳动，也不会因
+    反复重建长面板而影响正在编辑的内容。
     """
     candidates = _evidence_candidates(results)
     if not candidates:
@@ -1871,25 +1990,45 @@ def _render_evidence_editor(results: list[dict]) -> list[dict]:
         "正则脱敏**不能保证完全匿名**：姓名、地址、第三方经历、公司 / 学校 /"
         "地点等信息可能仍留在文本里。请逐条检查——可以直接改写，"
         "或勾选“删除这条”把它整个去掉。")
-    kept: list[dict] = []
     for item in candidates:
         index = item["index"]
-        stance = "支持性" if item["stance"] == "supporting" else "相反/其它"
-        st.caption(f"消息 #{index + 1} · {stance} · {item['note']}")
+        keys = _evidence_keys(revision, friend_id, index)
+        st.caption(
+            f"消息 #{index + 1} · {_evidence_stance_label(item['stance'])}"
+            f" · {item['note']}")
         c1, c2 = st.columns([1, 6])
         with c1:
-            drop = st.checkbox("删除这条", key=f"friend_evidence_del_{index}")
+            st.checkbox("删除这条", key=keys["del"])
         with c2:
-            text = st.text_area(
+            st.text_area(
                 "证据片段（可编辑）",
                 value=item.get("snippet") or "",
-                key=f"friend_evidence_txt_{index}",
+                key=keys["txt"],
                 height=90,
                 label_visibility="collapsed",
             )
-        if not drop and text.strip():
-            kept.append({**item, "snippet": text})
-    return kept
+    return candidates
+
+
+def _collect_confirmed_evidence(candidates: list[dict], revision,
+                                friend_id: str) -> list[dict]:
+    """读取用户最终确认的证据（表单提交后 session_state 里才是最新值）。
+
+    表单未提交时控件 key 还不存在 → 回落到候选片段；勾选删除的剔除；
+    文本以 text_area 里的值为准（用户改写优先生效）。
+    """
+    out: list[dict] = []
+    for item in candidates:
+        keys = _evidence_keys(revision, friend_id, item["index"])
+        if st.session_state.get(keys["del"]):
+            continue
+        text = st.session_state.get(keys["txt"])
+        if text is None:
+            text = item.get("snippet") or ""
+        if not str(text).strip():
+            continue
+        out.append({**item, "snippet": str(text)})
+    return out
 
 
 def show_friend_panel(results: list[dict], stats: dict) -> None:
@@ -2009,10 +2148,6 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
                 "同一份分析之前已经保存到：" + "、".join(names) + "。\n\n"
                 "如果是同一个人，建议改用那个档案（避免同一个人分散在多份档案里）；"
                 "如果确实是**另一位**好友，请勾选下面的确认框再保存。")
-            st.checkbox(
-                f"确认这份分析属于「{friend.display_name}」，仍然保存",
-                key="friend_save_confirm",
-            )
         if duplicates:
             st.warning(
                 f"这个档案里已经有 {len(duplicates)} 次对**同一批消息**的分析"
@@ -2020,40 +2155,66 @@ def show_friend_panel(results: list[dict], stats: dict) -> None:
                 "再次保存会产生一条**新的**历史记录（历史不可修改），"
                 "可以用来对比不同时间点的分析结果。")
 
-    if not saved_here:
-        keep_evidence = st.checkbox(
-            "保留匿名化证据片段（最多 5+5 条，脱敏后截断；"
-            "保存前会先给你预览，可改可删）",
-            key="friend_save_evidence",
-            help="不勾选时档案里只有统计、消息编号与指标，"
-                 "不含任何聊天文本。",
-        )
-        if keep_evidence:
-            evidence = _render_evidence_editor(
-                st.session_state.get("results") or results)
-            if evidence:
-                st.caption(f"将保留 {len(evidence)} 条证据片段。")
-        else:
-            evidence = []
+        # 证据编辑器 + 保存按钮放进同一个 st.form：表单内控件不会因普通
+        # 输入 / 勾选触发整页 rerun（真实浏览器验证过），只有点提交时才
+        # 提交。这样编辑证据、勾选删除、勾选“保留证据”都不会让页面跳动，
+        # 也不会反复重建这段长面板。
+        with st.form(key=f"friend_save_form_{revision}_{selected}"):
+            # 预览**始终显示**：表单内的勾选不会触发 rerun，如果把预览藏在
+            # 复选框后面，用户勾了也看不到内容，必须点提交才出现——体验很差。
+            # 这里改成“先看再决定”：预览一直在，勾选框只决定要不要写入。
+            keep_evidence = st.checkbox(
+                "保留匿名化证据片段（已去重，最多 5+5 条，脱敏后截断；"
+                "下面就是最终会写入本机档案的内容，可改可删）",
+                key="friend_save_evidence",
+                help="不勾选时档案里只有统计、消息编号与指标，"
+                     "不含任何聊天文本。",
+            )
+            candidates = _render_evidence_editor(
+                st.session_state.get("results") or results, revision,
+                selected)
+            if candidates:
+                st.caption(f"共 {len(candidates)} 条候选证据"
+                           "（已按消息去重；同一条消息同时入选两类时"
+                           "会标为混合信号，两类解释都保留）。"
+                           "勾选上面的复选框才会写入档案。")
+            if saved_elsewhere:
+                st.checkbox(
+                    f"确认这份分析属于「{friend.display_name}」，仍然保存",
+                    key="friend_save_confirm",
+                )
+            # 注意：**不能**用表单内控件的值来禁用提交按钮——表单里的值在
+            # 提交前不会送到 Python，disabled 会永远是 True，用户就再也点
+            # 不动了（与「应用昵称映射」按钮同类的真实浏览器死锁）。串档
+            # 校验移到提交之后：未确认时给出明确错误，勾选后再次提交即放行。
+            submitted = st.form_submit_button(
+                "保存至好友档案", type="primary",
+                help="这份分析之前已保存到其他档案，提交时需勾选确认框"
+                     if saved_elsewhere else None)
 
-        blocked = bool(saved_elsewhere) and not st.session_state.get(
-            "friend_save_confirm")
-        if st.button("保存至好友档案", key="friend_save",
-                     disabled=blocked,
-                     help="可能存在串档：请先勾选上面的确认框"
-                     if blocked else None):
-            run_id = save_run_to_friend(
-                selected, results, stats, messages, evidence=evidence)
-            if run_id:
-                note = (f"已保存为一条历史分析快照（run_id {run_id[:12]}…）。"
-                        "历史记录不可修改；再次保存同一批消息会产生新记录并提示重复。")
-                if evidence:
-                    note += ("已保留你最终确认的证据片段（本地脱敏 + 截断到 "
-                             f"{fh.EVIDENCE_MAX_CHARS} 字以内）。")
-                set_input_notice("success", note)
-                st.rerun()
+        if submitted:
+            if saved_elsewhere and not st.session_state.get(
+                    "friend_save_confirm"):
+                st.error(
+                    "这份分析之前已经保存到其他档案。如果它确实属于"
+                    f"「{friend.display_name}」，请勾选上面的确认框后"
+                    "再次点击「保存至好友档案」。")
             else:
-                st.error("没有可保存的分析消息。")
+                evidence = (_collect_confirmed_evidence(candidates, revision,
+                                                        selected)
+                            if keep_evidence else [])
+                run_id = save_run_to_friend(
+                    selected, results, stats, messages, evidence=evidence)
+                if run_id:
+                    note = (f"已保存为一条历史分析快照（run_id {run_id[:12]}…）。"
+                            "历史记录不可修改；再次保存同一批消息会产生新记录并提示重复。")
+                    if evidence:
+                        note += ("已保留你最终确认的证据片段（本地脱敏 + 截断到 "
+                                 f"{fh.EVIDENCE_MAX_CHARS} 字以内）。")
+                    set_input_notice("success", note)
+                    st.rerun()
+                else:
+                    st.error("没有可保存的分析消息，或证据校验未通过。")
 
     # ---- 历史列表 ----
     runs = store.list_runs(selected)
@@ -2249,87 +2410,138 @@ def show_longitudinal_tab(results: list[dict], stats: dict) -> None:
         st.markdown(markdown)
 
 
+def _clear_history_view(notice: str | None = None) -> None:
+    """取消②阶段的“查看历史”：只清查看状态，绝不碰数据库或保存关联。
+
+    ``history_alias_input`` / ``history_match_radio`` 都是 widget key，
+    **不能**在这里直接写（会抛 StreamlitWidgetAlreadyInstantiatedError），
+    统一排队到下次渲染、widget 创建之前重置。
+    """
+    st.session_state["history_friend_id"] = None
+    st.session_state["history_matches"] = None
+    _queue_widget_reset("history_match_radio", "history_alias_input")
+    if notice:
+        set_input_notice("info", notice)
+
+
 def show_history_panel(messages: list[dict]) -> None:
-    """② 确认阶段的「历史档案（可选）」：导入相同好友时看到旧总结与重叠。"""
-    st.divider()
-    st.markdown("#### 历史档案（可选）")
-    st.caption(
-        "如果你以前把这位好友的分析保存到本机档案，这里可以看到旧总结、"
-        "聊天时间覆盖范围，以及**当前导入与历史的重叠区间**。"
-        "加载档案不会重新调用 Jev，也不会改动分析列表。")
+    """② 确认阶段的「历史档案（可选）」：导入相同好友时看到旧总结与重叠。
 
-    store = get_friend_store()
-    st.text_input("好友昵称 / 备注 / 别名（只在本机查找）",
-                  key="history_alias_input")
-    alias = (st.session_state.get("history_alias_input") or "").strip()
-    if st.button("查找历史档案", key="history_lookup") and alias:
-        matches = store.find_by_alias(alias)
-        # 与④结果阶段的候选列表分开存：两个阶段互不串味
-        st.session_state["history_matches"] = matches
-        st.session_state["history_friend_id"] = (
-            matches[0].friend_id if len(matches) == 1 else None)
+    默认**收起**（不放展开内容在预览表上方）：只在用户主动打开时才占用
+    页面高度，避免确认身份后页面突然变高把预览表顶下去。
 
-    matches = st.session_state.get("history_matches")
-    if matches:
-        if len(matches) > 1:
-            st.warning(f"找到 {len(matches)} 个同名/同称呼的档案，"
-                       "SignalLens 不会自动合并，请选择要查看哪一个。")
-            labels = [_friend_alias_label(m) for m in matches]
-            choice = st.radio("查看哪个档案", labels, key="history_match_radio")
-            if st.button("查看这个档案的历史", key="history_match_confirm"):
-                st.session_state["history_friend_id"] = matches[
-                    labels.index(choice)].friend_id
+    查找结果与“当前正在看哪个档案”是两件事：
+    - 每次查找都会重设当前查看对象（0 个或多个候选 → 不自动看任何一个）；
+    - 看到档案后可以点「取消查看历史」随时退回未选择状态；
+    - 取消只是不看，**不删除**任何数据，也不影响④阶段的保存关联。
+    """
+    _apply_pending_widget_reset()
+    with st.expander("历史档案（可选：查看这位好友以前的分析）",
+                     expanded=False, key="history_panel"):
+        st.caption(
+            "如果你以前把这位好友的分析保存到本机档案，这里可以看到旧总结、"
+            "聊天时间覆盖范围，以及**当前导入与历史的重叠区间**。"
+            "加载档案不会重新调用 Jev，也不会改动分析列表。")
+
+        store = get_friend_store()
+        c1, c2 = st.columns([4, 1])
+        with c1:
+            st.text_input("好友昵称 / 备注 / 别名（只在本机查找）",
+                          key="history_alias_input")
+        with c2:
+            st.caption(" ")
+            if st.button("取消查看历史", key="history_clear"):
+                _clear_history_view("已取消查看历史档案。")
                 st.rerun()
-        else:
-            st.success(f"找到档案：{matches[0].display_name}"
-                       f"（{matches[0].run_count} 条历史）")
 
-    friend_id = st.session_state.get("history_friend_id")
-    if not friend_id:
-        return
-    friend = store.get_friend(friend_id)
-    if friend is None:
-        return
+        alias = (st.session_state.get("history_alias_input") or "").strip()
+        if st.button("查找历史档案", key="history_lookup") and alias:
+            matches = store.find_by_alias(alias)
+            # 与④结果阶段的候选列表分开存：两个阶段互不串味
+            st.session_state["history_matches"] = matches
+            # 关键：每次查找都重设当前查看对象。0 个或多个候选都不自动
+            # 看任何一个，避免替换聊天 / 换人后还挂着上一位好友的历史。
+            st.session_state["history_friend_id"] = (
+                matches[0].friend_id if len(matches) == 1 else None)
+            st.session_state["history_ta_alias"] = fh.normalize_alias(
+                st.session_state.get("applied_ta") or "")
+            _queue_widget_reset("history_match_radio")
 
-    runs = store.list_runs(friend_id)
-    if not runs:
-        st.caption(f"档案「{friend.display_name}」还没有历史分析。")
-        return
+        matches = st.session_state.get("history_matches")
+        if matches:
+            if len(matches) > 1:
+                st.warning(f"找到 {len(matches)} 个同名/同称呼的档案，"
+                           "SignalLens 不会自动合并，请选择要查看哪一个。")
+                labels = [_friend_alias_label(m) for m in matches]
+                choice = st.radio("查看哪个档案", labels,
+                                  key="history_match_radio")
+                if st.button("查看这个档案的历史", key="history_match_confirm"):
+                    st.session_state["history_friend_id"] = matches[
+                        labels.index(choice)].friend_id
+                    st.session_state["history_ta_alias"] = fh.normalize_alias(
+                        st.session_state.get("applied_ta") or "")
+                    st.rerun()
+            else:
+                st.success(f"找到档案：{matches[0].display_name}"
+                           f"（{matches[0].run_count} 条历史）")
+        elif matches is not None and alias:
+            st.info("没有匹配的档案。换个昵称 / 备注 / 别名再试。")
 
-    full_runs = [store.get_run(r.run_id) for r in runs]
-    report = lg.overlap_with_history(messages, full_runs)
-    if report.fingerprint_total:
-        bits = [f"本次导入 {report.fingerprint_total} 条："
-                f"与历史重复 {report.duplicate_count} 条，"
-                f"新增 {report.new_count} 条"]
-        if report.identical_cases:
-            bits.append("⚠ 与历史中 "
-                        f"{len(report.identical_cases)} 次是同一批消息（重复导入）")
-        if report.time_overlap:
-            bits.append(f"时间重叠：{report.overlap_first} ~ "
-                        f"{report.overlap_last}")
-        st.info(" · ".join(bits))
+        friend_id = st.session_state.get("history_friend_id")
+        if not friend_id:
+            return
+        friend = store.get_friend(friend_id)
+        if friend is None:                 # 档案已被删除
+            _clear_history_view()
+            st.caption("该档案已不存在。")
+            return
 
-        stale = sorted({i for run in full_runs
-                        for i in lg.stale_targets(run, messages)})
-        if stale:
-            st.warning(
-                f"当前导入包含 {len(stale)} 条早于历史目标的新消息：这些目标的"
-                "完整上下文与当时不同。逐条缓存按当时**实际发给 Jev 的上下文**"
-                "判定是否复用（上下文不同就不会命中），因此不会盲目套用旧结论；"
-                "如要纵向结论可靠，建议对这些消息重新分析。")
+        st.divider()
+        st.markdown(f"正在查看档案：**{friend.display_name}**"
+                    f"（本地 ID `{friend.friend_id}`）")
+        if st.button("取消查看历史", key="history_clear_selected"):
+            _clear_history_view("已取消查看历史档案。")
+            st.rerun()
 
-    elig = {e.run_id: e for e in lg.eligibility(runs)}
-    for i, run in enumerate(runs, start=1):
-        with st.expander(f"{i}. 聊天 {_span_text(run)} · "
-                         f"{run.analyzed_count} 条已分析"):
-            st.markdown(run.summary_text or "（无摘要）")
-            notes = lg.missing_data_notes(run)
-            if notes:
-                st.caption("缺失 / 限制：" + "；".join(notes))
-            e = elig.get(run.run_id)
-            if e and e.reasons:
-                st.caption("纵向比较限制：" + "；".join(e.reasons))
+        runs = store.list_runs(friend_id)
+        if not runs:
+            st.caption(f"档案「{friend.display_name}」还没有历史分析。")
+            return
+
+        full_runs = [store.get_run(r.run_id) for r in runs]
+        report = lg.overlap_with_history(messages, full_runs)
+        if report.fingerprint_total:
+            bits = [f"本次导入 {report.fingerprint_total} 条："
+                    f"与历史重复 {report.duplicate_count} 条，"
+                    f"新增 {report.new_count} 条"]
+            if report.identical_cases:
+                bits.append("⚠ 与历史中 "
+                            f"{len(report.identical_cases)} 次是同一批消息（重复导入）")
+            if report.time_overlap:
+                bits.append(f"时间重叠：{report.overlap_first} ~ "
+                            f"{report.overlap_last}")
+            st.info(" · ".join(bits))
+
+            stale = sorted({i for run in full_runs
+                            for i in lg.stale_targets(run, messages)})
+            if stale:
+                st.warning(
+                    f"当前导入包含 {len(stale)} 条早于历史目标的新消息：这些目标的"
+                    "完整上下文与当时不同。逐条缓存按当时**实际发给 Jev 的上下文**"
+                    "判定是否复用（上下文不同就不会命中），因此不会盲目套用旧结论；"
+                    "如要纵向结论可靠，建议对这些消息重新分析。")
+
+        elig = {e.run_id: e for e in lg.eligibility(runs)}
+        for i, run in enumerate(runs, start=1):
+            with st.expander(f"{i}. 聊天 {_span_text(run)} · "
+                             f"{run.analyzed_count} 条已分析"):
+                st.markdown(run.summary_text or "（无摘要）")
+                notes = lg.missing_data_notes(run)
+                if notes:
+                    st.caption("缺失 / 限制：" + "；".join(notes))
+                e = elig.get(run.run_id)
+                if e and e.reasons:
+                    st.caption("纵向比较限制：" + "；".join(e.reasons))
 
 
 def show_results(results: list[dict], stats: dict) -> None:

@@ -244,23 +244,33 @@ def build_run_snapshot(
 
 
 def normalize_evidence(evidence: list[dict] | None) -> list[dict]:
-    """证据片段：只保留白名单字段 + 匿名化文本 + 数量/长度上限。
+    """证据片段：只保留白名单字段 + 匿名化文本 + 去重 + 数量上限。
 
-    ``snippet``（可选）是用户选择保留的匿名化证据片段：先过本地脱敏再截断，
-    长度受限；没有显式选择时只保留确定性指标说明（不含任何聊天文本）。
+    - 按**消息身份（index）**去重：同一条消息只保留一份证据（写入数据库
+      前的最后一道校验，不依赖 UI 已经去过重）；
+    - ``snippet``（可选）是用户选择保留的匿名化证据片段：先过本地脱敏再
+      截断，长度受限；没有显式选择时只保留确定性指标说明（不含聊天文本）；
+    - ``stance`` 允许 ``supporting`` / ``counter`` / ``mixed``（同一条消息
+      同时入选两类）/ ``context``，其它值归一到 support。
     """
     out: list[dict] = []
-    for item in (evidence or [])[:EVIDENCE_MAX_ITEMS]:
+    seen: set[int] = set()
+    for item in (evidence or []):
         try:
             index = int(item.get("index"))
         except (TypeError, ValueError):
             continue
+        if index in seen:
+            continue                          # 同一条消息：只保留第一份
         stance = str(item.get("stance") or "supporting")
-        if stance not in ("supporting", "counter", "context"):
+        if stance not in ("supporting", "counter", "mixed", "context"):
             stance = "supporting"
         note = anonymize_evidence_text(item.get("note") or "")
         if not note:
             continue
+        seen.add(index)
+        if len(out) >= EVIDENCE_MAX_ITEMS:
+            break
         out.append({"index": index, "stance": stance, "note": note,
                     "snippet": anonymize_evidence_text(item.get("snippet") or "")})
     return out
