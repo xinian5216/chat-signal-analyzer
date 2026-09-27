@@ -2535,6 +2535,14 @@ def _save_behavior_event_verified(store, event: dict,
     if listed is None:
         return {"ok": False, "category": "event_missing_from_friend_list",
                 "idempotent": idempotent}
+    list_mismatches = [key for key, expected in expected_fields.items()
+                       if str(listed.get(key) or "") != expected]
+    if expected_original not in bv.original_identities(listed):
+        list_mismatches.append("original_candidate_identity")
+    if list_mismatches:
+        return {"ok": False, "category": "friend_list_readback_mismatch",
+                "mismatch_fields": list_mismatches,
+                "idempotent": idempotent}
     if expected_original not in bv.reviewed_identities(friend_events):
         return {"ok": False, "category": "candidate_not_in_reviewed_set",
                 "idempotent": idempotent}
@@ -2564,6 +2572,7 @@ _BEHAVIOR_SAVE_FAILURE_LABELS = {
     "original_identity_missing": "回读事件未关联本次原始候选身份",
     "reviewed_events_read_exception": "重新读取该好友事件列表失败",
     "event_missing_from_friend_list": "回读事件未出现在该好友事件列表",
+    "friend_list_readback_mismatch": "好友事件列表回读字段与单条事件不一致",
     "candidate_not_in_reviewed_set": "原始候选身份不在已审核身份集合",
 }
 

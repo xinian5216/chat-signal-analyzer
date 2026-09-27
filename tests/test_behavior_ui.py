@@ -537,7 +537,7 @@ def test_confirm_notice_keeps_other_same_window_types_pending(
     text = _texts(at)
     assert "已确认事件：好感与关系性质 · 亲密友情" in text
     assert "同一段聊天可能还有其他类型的候选，仍需分别审核" in text
-    assert "2 条" in text
+    assert "（2 条待核对）。" in text
     assert len(counting_client) == before_calls
 
     store, events = _events(history)
@@ -555,6 +555,7 @@ def test_confirm_notice_keeps_other_same_window_types_pending(
     ("readback_identity_mismatch", "event_readback_mismatch", 1),
     ("original_identity_missing", "original_identity_missing", 1),
     ("reviewed_missing", "candidate_not_in_reviewed_set", 1),
+    ("list_readback_mismatch", "friend_list_readback_mismatch", 1),
     ("write_exception_no_record", "write_exception_no_record", 0),
     ("write_exception_record_found", "write_exception_record_found", 1),
 ])
@@ -604,28 +605,37 @@ def test_candidate_save_verification_failure_never_claims_success(
 
         monkeypatch.setattr(fh.FriendStore, "save_event", save_then_error)
     elif failure == "reviewed_missing":
+        def count_save(store, event):
+            save_calls.append(1)
+            return original_save(store, event)
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", count_save)
+        # Inject the reviewed-set lookup failure after real DB/list reads;
+        # the verifier must not turn a row-presence check into a false success.
+        monkeypatch.setattr(bv, "reviewed_identities", lambda _events: set())
+    elif failure == "list_readback_mismatch":
         saved_ids = set()
         original_list = fh.FriendStore.list_events
 
-        def save_then_hide_review(store, event):
+        def save_before_list_mismatch(store, event):
             save_calls.append(1)
             event_id = original_save(store, event)
             saved_ids.add(event_id)
             return event_id
 
-        def list_without_reviewed_status(store, friend_id, *, status=None,
-                                         dimension=None):
+        def list_with_mismatch(store, friend_id, *, status=None,
+                               dimension=None):
             rows = original_list(store, friend_id, status=status,
                                  dimension=dimension)
             if status is None and saved_ids:
-                return [dict(row, status="candidate")
+                return [dict(row, status="rejected")
                         if row["event_id"] in saved_ids else row
                         for row in rows]
             return rows
 
-        monkeypatch.setattr(fh.FriendStore, "save_event", save_then_hide_review)
-        monkeypatch.setattr(fh.FriendStore, "list_events",
-                            list_without_reviewed_status)
+        monkeypatch.setattr(fh.FriendStore, "save_event",
+                            save_before_list_mismatch)
+        monkeypatch.setattr(fh.FriendStore, "list_events", list_with_mismatch)
     else:
         def count_save(store, event):
             save_calls.append(1)
