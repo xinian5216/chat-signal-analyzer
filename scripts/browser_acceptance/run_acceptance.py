@@ -934,6 +934,13 @@ def _open_expander(page, fragment: str, index: int = 0):
     return target
 
 
+def _behavior_pending_count(page) -> int:
+    """从「候选 N 条待核对」caption 解析当前待审核数量（-1 = 解析失败）。"""
+    import re as _re
+    m = _re.search(r"候选 (\d+) 条待核对", page.content())
+    return int(m.group(1)) if m else -1
+
+
 def _preview_then_click(page, scope_locator, button_name: str) -> None:
     """两阶段保存：先点同作用域的「查看最终预览」，等「最终预览」块出现，
     再点保存 / 排除按钮（预览未打开时保存按钮根本不渲染）。"""
@@ -953,7 +960,8 @@ def read_behavior_events(data_dir: Path) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT dimension, behavior_type, status, source_kind,"
-            " stance, notes, snippet, fingerprints_json, event_identity"
+            " stance, notes, snippet, fingerprints_json, event_identity,"
+            " original_candidate_identity"
             " FROM behavior_events"
         ).fetchall()
     finally:
@@ -961,7 +969,8 @@ def read_behavior_events(data_dir: Path) -> list[dict]:
     return [{"dimension": r[0], "behavior_type": r[1], "status": r[2],
              "source_kind": r[3], "stance": r[4], "notes": r[5],
              "snippet": r[6], "fingerprints": json.loads(r[7] or "[]"),
-             "event_identity": r[8]}
+             "event_identity": r[8],
+             "original_candidate_identity": r[9] or ""}
             for r in rows]
 
 
@@ -1048,9 +1057,13 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
         ui_click(page, page.get_by_role("button", name="◀ 上一批"))
         wait_text(page, f"第 {step} / ", 30000)
 
-    # --- 确认第一条当前导入候选（带可识别备注，供跨好友隔离检查）---
+    # --- 确认第一条当前导入候选（**先修改行为方向**：覆盖「人工修改候选
+    #     后原候选不消失」的真实缺陷路径；备注供跨好友隔离检查）---
     cand = _open_expander(page, "第一步：核对并修正")
     ui_click(page, cand.locator("label", has_text="支持性").first)
+    # 修改行为方向：关心与回应性 → 尊重与边界（类型随之重置，组合合法）
+    _pick_select_in(page, cand, "行为方向", "尊重与边界")
+    pending_before = _behavior_pending_count(page)
     # 交互 1：勾选「保留一段脱敏片段」→ 编辑框立即出现（不提交表单）
     vis_before = page.evaluate(
         """() => Array.from(document.querySelectorAll('textarea'))
@@ -1068,13 +1081,12 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
           cand.get_by_role("button", name="确认这条事件").count() == 0
           and cand.get_by_role("button", name="排除这条").count() == 0,
           "save buttons hidden until final preview is opened")
-    # 交互 3：输入虚构 PII → 查看最终预览给出脱敏结果（不提交表单）
+    # 全部编辑（PII 片段 + 备注）完成后，最后一步才「查看最终预览」
     snippet = cand.get_by_role("textbox", name="脱敏片段（可编辑）")
-    # 两阶段第二步：输入虚构 PII 后点「查看最终预览」（点击前的失焦恰好
-    # 提交 textarea 值——该 Streamlit 版本击键不 rerun、失焦才提交），
-    # 预览块给出最终将写入档案的脱敏 + 截断内容
     snippet.press_sequentially("电话 13812345678 邮箱 lin@example.com",
                                timeout=30000)
+    cand.get_by_role("textbox", name="你的说明（可选）").fill(
+        "PROFILE2-NOTE-cross-friend")
     ui_click(page, cand.get_by_role("button", name="查看最终预览"))
     deadline = time.time() + 15
     preview_ok = False
@@ -1087,15 +1099,37 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
         time.sleep(0.5)
     check("behavior_final_preview_shows_masked_content", preview_ok,
           "final preview shows masked+truncated content before save")
-    cand.get_by_role("textbox", name="你的说明（可选）").fill(
-        "PROFILE2-NOTE-cross-friend")
-    # 第二步最终预览汇总在场
     check("behavior_final_summary_visible",
           cand.get_by_text("最终预览", exact=False).count() > 0,
           "two-stage final summary rendered before save")
     ui_click(page, cand.get_by_role("button", name="确认这条事件"))
     wait_text(page, "已确认事件", 30000)
     check("behavior_confirm_notice", True, "confirmed candidate notice shown")
+
+    # 关键回归：修改方向后保存，**原候选必须从待审核列表消失**（数量 -1）
+    pending_after = _behavior_pending_count(page)
+    check("behavior_modified_candidate_disappears",
+          pending_after == pending_before - 1,
+          f"pending {pending_before} -> {pending_after}")
+    # 切换视图再切回（模拟 rerun / 重新导入）：原候选不得复活
+    ui_click(page, page.get_by_role("radio", name="概览"))
+    page.wait_for_timeout(800)
+    ui_click(page, page.get_by_role("radio", name="长期观察"))
+    wait_text(page, "待人工核对的候选", 20000)
+    check("behavior_modified_candidate_stays_gone",
+          _behavior_pending_count(page) == pending_before - 1,
+          "candidate stays gone after view switch")
+    # DB：最终事件的原始候选身份必须落库（且与最终身份不同）
+    rows = read_behavior_events(data_dir)
+    rule_rows = [e for e in rows
+                 if e["notes"] == "PROFILE2-NOTE-cross-friend"]
+    check("behavior_original_identity_persisted",
+          len(rule_rows) == 1
+          and rule_rows[0]["original_candidate_identity"]
+          and rule_rows[0]["original_candidate_identity"]
+          != rule_rows[0]["event_identity"],
+          f"original={(rule_rows[0]['original_candidate_identity'][:12] if rule_rows else 'NONE')}"
+          f" final={(rule_rows[0]['event_identity'][:12] if rule_rows else 'NONE')}")
 
     # 排除下一条候选（排除记录保留）；排除前验证方向→类型即时联动
     cand2 = _open_expander(page, "第一步：核对并修正")

@@ -649,27 +649,44 @@ def test_history_candidate_confirm_keeps_run_window(history,
 
 def test_candidate_dimension_change_updates_type_and_rejects_bad_pair(
         history, counting_client):
-    """form 内改方向：类型选项对应新方向；非法组合绝不落库。"""
+    """改方向：类型选项对应新方向；预览后改内容立即失效；原候选消失。"""
     at = _fresh()
     _parse_and_analyze(at)
     _open_behavior(at)
 
-    # 把第一条候选的方向改成「好感与关系性质」再提交
+    # 把第一条候选的方向改成「好感与关系性质」
     dim = _widgets(at, "selectbox", "behavior_dim_")[0]
     dim.set_value("romance")
+    at.run()
+    assert not at.exception
+    # 类型下拉的选项必须立即属于新方向（不提交也生效）
+    type_select = _widgets(at, "selectbox", "behavior_type_")[0]
+    expected_labels = {bv.BEHAVIOR_TYPE_LABELS["romance." + key]
+                       for key, _ in bv.BEHAVIOR_TYPES["romance"]}
+    assert set(type_select.options) == expected_labels, (
+        f"类型选项未跟随新方向：{type_select.options}")
+
+    # 预览后再次修改方向 → 旧预览立即失效（保存按钮消失）
+    _button(at, "查看最终预览").click()
+    at.run()
+    assert not at.exception
+    _widgets(at, "selectbox", "behavior_dim_")[0].set_value("care")
+    at.run()
+    assert not at.exception
+    assert "确认这条事件" not in [b.label for b in at.button]
+
+    # 重新预览后保存（方向最终改回关心：类型组合合法）
     _preview_then_click(at, "确认这条事件", "behavior_note_",
                         "behavior_confirm_")
-
-    # 无论 Streamlit 是否重置了类型值：数据库里绝不允许出现
-    # （方向, 行为类型）非法组合
+    # 数据库里绝不允许出现（方向, 行为类型）非法组合
     store, events = _events(history)
     for event in events:
         assert bv.valid_pair(event["dimension"], event["behavior_type"]), event
-    # 类型下拉的选项必须属于新方向
-    type_select = _widgets(at, "selectbox", "behavior_type_")[0]
-    expected_labels = {bv.BEHAVIOR_TYPE_LABELS[f"romance.{key}"]
-                      for key, _ in bv.BEHAVIOR_TYPES["romance"]}
-    assert set(type_select.options) == expected_labels
+    # 关键回归（本 bug 修复）：修改方向后保存，原候选必须消失
+    assert len(events) == 1
+    assert events[0]["original_candidate_identity"]
+    assert events[0]["original_candidate_identity"] != \
+        events[0]["event_identity"], "方向被改过，两个身份应不同"
 
 
 def test_candidate_editor_immediate_linkage(history, counting_client):
@@ -680,7 +697,8 @@ def test_candidate_editor_immediate_linkage(history, counting_client):
     3. 「查看最终预览」是显式第二步：预览给出**最终将写入档案**的
        脱敏 + 截断内容（该 Streamlit 版本 textarea 击键不 rerun、失焦
        才提交，因此预览必须是显式一步而不能只靠 caption 自动更新）；
-    4. 确认保存 → 落库内容 = 预览内容（脱敏后）。
+    4. 预览后改方向 → 旧预览立即失效，必须重新预览；
+    5. 确认保存 → 落库内容 = 预览内容（脱敏后），原候选消失。
     """
     at = _fresh()
     _parse_and_analyze(at)
@@ -723,18 +741,27 @@ def test_candidate_editor_immediate_linkage(history, counting_client):
     at.run()
     assert not at.exception
     type_select = _widgets(at, "selectbox", "behavior_type_")[0]
-    expected = {bv.BEHAVIOR_TYPE_LABELS[f"respect.{key}"]
+    expected = {bv.BEHAVIOR_TYPE_LABELS["respect." + key]
                 for key, _ in bv.BEHAVIOR_TYPES["respect"]}
     assert set(type_select.options) == expected, (
         f"类型选项未跟随新方向：{type_select.options}")
 
-    # 5) 确认保存 → 落库脱敏（类型已重置为尊重方向的第一个，组合合法）
+    # 5) 改方向后旧预览过期 → 保存按钮消失 → 重新预览后才可保存
+    assert "确认这条事件" not in [b.label for b in at.button], (
+        "改方向后旧预览必须立即失效")
+    preview2 = next((b for b in at.button
+                     if b.key == f"behavior_preview_btn_{scope}"), None)
+    assert preview2 is not None
+    preview2.click()
+    at.run()
+    assert not at.exception
     target = next((b for b in at.button
                    if b.key == f"behavior_confirm_{scope}"), None)
-    assert target is not None, "预览后保存按钮未出现"
+    assert target is not None, "重新预览后保存按钮应出现"
     target.click()
     at.run()
     assert not at.exception
+
     store, events = _events(history)
     assert len(events) == 1
     event = events[0]
@@ -743,6 +770,9 @@ def test_candidate_editor_immediate_linkage(history, counting_client):
     assert "13812345678" not in event["snippet"]
     assert "<PHONE>" in event["snippet"]
     assert "lin@example.com" not in event["snippet"]
+    # 原候选身份与最终事件身份都记录在案
+    assert event["original_candidate_identity"]
+    assert event["original_candidate_identity"] != event["event_identity"]
 
 
 def test_behavior_panel_no_false_truncation_warning(history,

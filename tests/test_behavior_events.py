@@ -469,7 +469,7 @@ class _store:
         return False
 
 
-def test_migration_v1_to_v2_preserves_history_runs():
+def test_migration_v1_to_v3_preserves_history_runs():
     with _store(target_version=1) as store:
         assert store.schema_version() == 1
         friend = store.create_friend("老档案", aliases=["旧昵称"])
@@ -481,12 +481,47 @@ def test_migration_v1_to_v2_preserves_history_runs():
         friend_id = friend.friend_id
         db_path = store.db_path
 
-    # 重新打开（真实 v2 DDL）：增量迁移，旧数据一行不少
+    # 重新打开（真实 DDL）：v1 → v3 增量迁移，旧数据一行不少
     store2 = fh.FriendStore(db_path)
-    assert store2.schema_version() == fh.SCHEMA_VERSION_FRIEND_HISTORY == 2
+    assert store2.schema_version() == fh.SCHEMA_VERSION_FRIEND_HISTORY == 3
     runs = store2.list_runs(friend_id)
     assert len(runs) == 1 and runs[0].summary_text == "旧总结"
     assert store2.friend_count() == 1
+
+
+def test_migration_v2_to_v3_keeps_events_and_backs_up():
+    """v2 老库（已有行为事件）→ v3：事件一条不少、新列存在、迁移前有备份。
+
+    旧事件用 v2 时代的 25 列裸 SQL 插入（模拟迁移前保存的数据）。
+    """
+    with _store(target_version=2) as store:
+        assert store.schema_version() == 2
+        friend = store.create_friend("档案", aliases=["小安"])
+        friend_id = friend.friend_id
+        db_path = store.db_path
+        conn = store._connect()
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO behavior_events VALUES ("
+            "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("e-v2-legacy", friend_id, "care", "care_response",
+             "supporting", "confirmed", "rule", None, None, None,
+             "full", "[0, 1]", '["fp-old"]', "{}", "替代解释",
+             "", "", "旧说明", "", "", "候选命中规则：care_turn；连续关心",
+             1.0, 1.0, None, "id-legacy"))
+        conn.execute("COMMIT")
+        conn.close()
+
+    store2 = fh.FriendStore(db_path)
+    assert store2.schema_version() == 3
+    events = store2.list_events(friend_id)
+    assert len(events) == 1
+    assert events[0]["event_id"] == "e-v2-legacy"
+    assert events[0]["notes"] == "旧说明"
+    # 新列存在；迁移前保存的旧事件原始身份为空（等回填）
+    assert events[0]["original_candidate_identity"] == ""
+    backups = list(db_path.parent.glob(db_path.name + ".v2-backup-*"))
+    assert backups, "v2→v3 迁移前必须留下备份"
 
 
 def test_migration_failure_rolls_back_and_recovers():
@@ -514,9 +549,9 @@ def test_migration_failure_rolls_back_and_recovers():
         assert survived is not None
     finally:
         fh.FriendStore._V2_DDL = orig_ddl
-    # 重新打开：迁移成功，v1 数据还在
+    # 重新打开：迁移成功（v1→v2→v3），v1 数据还在
     store = fh.FriendStore(db_path)
-    assert store.schema_version() == 2
+    assert store.schema_version() == fh.SCHEMA_VERSION_FRIEND_HISTORY
     assert store.get_friend(friend_id) is not None
 
 
@@ -541,11 +576,11 @@ def test_event_dedup_is_structural():
             try:
                 conn.execute(
                     "INSERT INTO behavior_events VALUES ("
-                    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("raw", friend.friend_id, "care", "care_response",
                      "unspecified", "confirmed", "rule", None, None, None,
                      "full", "[]", "[]", "{}", "", "", "", "", "", "", "",
-                     1.0, 1.0, None, event["event_identity"]))
+                     1.0, 1.0, None, event["event_identity"], ""))
                 conn.commit()
             finally:
                 conn.close()
