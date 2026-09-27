@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from merge import message_fingerprint
+from parser import MEDIA_MARKERS, MEDIA_MARKER_TAIL
 from timeline import TIME_FULL, TIME_MISSING, TIME_ONLY, time_kind
 
 # ---------------------------------------------------------------------------
@@ -777,8 +778,48 @@ def _days_between(messages: list[dict], a: int, b: int) -> float | None:
     return (dt_b - dt_a).total_seconds() / 86400.0
 
 
+def strip_media_markers(text) -> str:
+    """剥掉中性媒体 marker（``[发送了一张图片，内容未知]`` 等合成占位符）。
+
+    marker 是 parser 合成的提示，**不是用户写的文字**：绝不能参与关键词 /
+    词语重合检测（否则「图片」「内容」「发送」这类占位符词会让纯媒体消息
+    伪装成「延续话题」「特殊关注」）。混合消息里的真实文字原样保留。
+    """
+    out = str(text or "")
+    for marker in MEDIA_MARKERS.values():
+        out = out.replace(marker, " ")
+    out = out.replace(MEDIA_MARKER_TAIL, " ")
+    return out
+
+
+def message_has_text(message: dict) -> bool:
+    """消息是否含有可理解的文字（纯媒体占位符不算文字）。"""
+    return bool(strip_media_markers(message.get("text")).strip())
+
+
+def _is_media_only_message(message: dict) -> bool:
+    """纯媒体消息（内容未知）——不构成可核对的行为内容。"""
+    if str(message.get("content_type") or "") == "media":
+        return True
+    return not message_has_text(message)
+
+
+def _window_is_media_only(messages: list[dict], start: int, end: int) -> bool:
+    """窗口内 **TA 侧**消息是否全是纯媒体。
+
+    行为事件描述的是对方的行为：我方发了文字而对方只回了纯图片 / 语音 /
+    动画表情时，「认真回应困难 / 延续话题 / 主动发起 / 好感表达」之类的
+    候选没有可核对的内容，不应进入人工审核队列（真实缺陷：用户被要求
+    审核一堆「内容未知」的消息）。混合消息（文字 + 媒体）照常生成候选；
+    媒体消息本身仍保留在聊天里当上下文，绝不删除。
+    """
+    them = [messages[i] for i in range(max(0, start), min(end, len(messages) - 1) + 1)
+            if str(messages[i].get("speaker") or "") == "them"]
+    return bool(them) and all(_is_media_only_message(m) for m in them)
+
+
 def _content_tokens(text: str) -> set[str]:
-    words = re.findall(r"[一-龥A-Za-z0-9]{2,}", str(text or ""))
+    words = re.findall(r"[一-龥A-Za-z0-9]{2,}", strip_media_markers(text))
     return {w for w in words if w not in _TOKEN_STOPWORDS}
 
 
@@ -1279,6 +1320,11 @@ def generate_candidates_with_meta(
     去重：同一窗口同一方向同一行为类型只保留一个候选（指纹集合相同）。
     排序：按窗口起点、方向、行为类型——完全确定，重复运行结果一致。
     ``limit`` 默认 None（不截断）；分页由调用方负责，一次只渲染少量控件。
+
+    无效候选过滤（在分页**之前**）：TA 侧窗口全是纯媒体消息的候选直接
+    剔除并计入 ``media_filtered``——内容未知的消息不构成可核对的行为
+    内容。过滤只丢候选，绝不修改 / 删除用户已确认的事件；已审核的原始
+    候选身份仍按 ``pending_candidates`` 的双身份过滤，不会复活。
     """
     out: list[EventCandidate] = []
     for name, rule in _RULES:
@@ -1292,13 +1338,23 @@ def generate_candidates_with_meta(
         seen.add(candidate.identity)
         unique.append(candidate)
     unique.sort(key=lambda c: (c.start, c.end, c.dimension, c.behavior_type))
+
+    usable: list[EventCandidate] = []
+    media_filtered = 0
+    for candidate in unique:
+        if _window_is_media_only(messages, candidate.start, candidate.end):
+            media_filtered += 1
+            continue
+        usable.append(candidate)
+
     cap = MAX_CANDIDATES_HARD_CAP if limit is None else max(0, limit)
-    returned = unique[:cap]
+    returned = usable[:cap]
     meta = {
         "generated": len(unique),      # 去重后的候选总数（低成本精确值）
         "returned": len(returned),      # 实际进入列表的数量
         "cap": cap,
-        "truncated": len(unique) > cap,
+        "truncated": len(usable) > cap,
+        "media_filtered": media_filtered,   # 因纯媒体被剔除的候选数
     }
     return returned, meta
 

@@ -2450,45 +2450,58 @@ def show_behavior_panel(results: list[dict], stats: dict) -> None:
     st.markdown("#### 长期行为观察（行为事件层，全部本地）")
     st.caption(BEHAVIOR_PANEL_NOTE)
 
-    pending, known, meta = _behavior_pending_candidates(
+    pending, known, meta, clues = _behavior_pending_candidates(
         store, friend_id, results)
-    # 顺序：候选 → 手动添加 → 已确认事件。手动添加放最后（先看候选，
-    # 都不合适才手动加），「查看最终预览」按钮的 DOM 顺序也由此确定。
-    _show_behavior_candidates(store, friend, pending, known, meta)
+    # 顺序：候选 → 历史线索 → 手动添加 → 已确认事件。手动添加放最后
+    # （先看候选，都不合适才手动加），「查看最终预览」按钮的 DOM 顺序
+    # 也由此确定。
+    _show_behavior_candidates(store, friend, pending, known, meta, clues)
     _show_behavior_manual_add(store, friend)
     _show_behavior_events(store, friend)
     _show_behavior_backfill_panel(store, friend)
-    _show_behavior_report(store, friend, pending)
+    # 报告的「待核对候选」计数 = 当前导入候选 + 历史线索（都是未审核项）
+    _show_behavior_report(store, friend, pending + clues)
 
 
 def _behavior_pending_candidates(store, friend_id: str,
                                  results: list[dict]
-                                 ) -> tuple[list, dict, dict]:
+                                 ) -> tuple[list, dict, dict, list]:
     """生成本次待核对的候选，剔除已确认 / 已排除的（按事件身份）。
 
-    返回 ``(pending, known, meta)``：``meta`` 是候选生成的截断元信息，
-    供主界面在超过安全上限时明确提示「部分候选未显示」。
+    返回 ``(pending, known, meta, clues)``：
+
+    - ``pending``：来自**当前导入**的候选（已按身份剔除已审核、已过滤
+      纯媒体无效候选），进入分页审核队列；
+    - ``clues``：**历史线索**——来自历史分析快照、缺聊天原文的候选，
+      单独展示（数量和来源），不进入普通待审核队列、不冒充已核实事件；
+    - ``meta``：生成元信息（截断提示 + ``media_filtered`` 计数）。
+
+    已审核的原始候选身份对两条链路都生效：修改过方向 / 类型的审核不会
+    让原候 choices 复活，过滤也绝不修改 / 删除已有事件。
     """
-    candidates: list[bv.EventCandidate] = []
     meta: dict = {"generated": 0, "returned": 0, "cap": 0,
-                  "truncated": False}
+                  "truncated": False, "media_filtered": 0}
     messages = _behavior_messages()
+    text_candidates: list[bv.EventCandidate] = []
     if messages:
         generated, meta = bv.generate_candidates_with_meta(messages,
                                                            results)
-        candidates.extend(generated)
+        text_candidates.extend(generated)
+    history_candidates: list[bv.EventCandidate] = []
     for run in store.list_runs(friend_id):
-        candidates.extend(bv.history_candidates(store.get_run(run.run_id)))
+        history_candidates.extend(
+            bv.history_candidates(store.get_run(run.run_id)))
     events = store.list_events(friend_id)
     # 顺序：先生成全部 → 按事件身份剔除已确认 / 已排除 → 调用方分页。
     # 历史缺陷：曾在生成阶段截断 40 条，处理完前 40 条后候选再也补不上。
-    pending = bv.pending_candidates(candidates, events)
+    pending = bv.pending_candidates(text_candidates, events)
+    clues = bv.pending_candidates(history_candidates, events)
     # 「已处理」计数同样按双身份：用户修改过方向 / 类型的事件，其原始
     # 候选身份也要计入（否则修改过的审核会被少算一条）
     known = bv.known_candidate_events(events)
     for identity in bv.reviewed_identities(events):
         known.setdefault(identity, {})
-    return pending, known, meta
+    return pending, known, meta, clues
 
 
 def _show_behavior_manual_add(store, friend) -> None:
@@ -2596,7 +2609,8 @@ def _show_behavior_manual_add(store, friend) -> None:
 
 def _show_behavior_candidates(store, friend, pending: list,
                               known: dict,
-                              meta: dict | None = None) -> None:
+                              meta: dict | None = None,
+                              clues: list | None = None) -> None:
     """候选浏览：分页 + 上下文预览 + 即时联动编辑 + 确认 / 排除。
 
     编辑控件全部在 ``st.form`` **之外**：勾选「保留片段」、切换行为方向、
@@ -2613,7 +2627,14 @@ def _show_behavior_candidates(store, friend, pending: list,
     notice = bv.truncation_notice(meta)
     if notice:
         st.warning(notice)
+    media_filtered = int((meta or {}).get("media_filtered") or 0)
+    if media_filtered > 0:
+        st.caption(
+            f"已过滤 {media_filtered} 条无效候选：纯图片 / 语音 / 动画表情等"
+            "内容未知的消息**不构成可核对的行为内容**（仍完整保留在聊天里"
+            "作为上下文）。混合消息（文字 + 媒体）照常生成候选。")
     if not pending:
+        _show_behavior_history_clues(store, friend, clues)
         return
 
     page = int(st.session_state.get("behavior_page") or 1)
@@ -2638,6 +2659,43 @@ def _show_behavior_candidates(store, friend, pending: list,
                      page * BEHAVIOR_PAGE_SIZE]
     for candidate in window:
         _render_behavior_candidate(store, friend, candidate)
+
+    _show_behavior_history_clues(store, friend, clues)
+
+
+def _show_behavior_history_clues(store, friend, clues) -> None:
+    """历史线索区：缺聊天原文的候选单独展示，不进普通待审核队列。
+
+    - 每条线索都来自历史分析快照的既有指标，**没有聊天正文**，因此不是
+      已核实的行为事件，只是提示；
+    - 按来源 run 分组展示数量与来源；
+    - 与当前聊天关联必须先通过**真实消息指纹**逐字节验证（见候选卡片内
+      的指纹提示），再由用户显式确认——绝不自动关联。
+    """
+    if not clues:
+        return
+    st.markdown("##### 历史线索（缺聊天原文，按需核对）")
+    st.caption(
+        f"共 {len(clues)} 条来自历史分析快照的线索。这些快照没有保存聊天"
+        "正文，它们**不是**已核实的行为事件——请结合你自己的记忆核对；"
+        "只有当前导入里出现**指纹逐字节一致**的消息时才可以与之关联，"
+        "且必须由你显式确认。")
+    runs = {r.run_id: r for r in store.list_runs(friend.friend_id)}
+    by_run: dict[str, list] = {}
+    for clue in clues:
+        by_run.setdefault(clue.source_run_id or "", []).append(clue)
+    for run_id, group in by_run.items():
+        run = runs.get(run_id)
+        if run is not None:
+            span = _span_text(run)
+            saved = _fmt_wall_time(run.saved_at)
+            label = (f"历史快照 {run_id[:8]}… · 聊天 {span} · "
+                     f"保存于 {saved} · {len(group)} 条线索")
+        else:
+            label = f"历史快照 {run_id[:8]}… · {len(group)} 条线索"
+        with st.expander(label):
+            for clue in group:
+                _render_behavior_candidate(store, friend, clue)
 
 
 def _behavior_preview_payload(*, dimension, behavior_type, stance,
@@ -2768,9 +2826,18 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
             st.caption(
                 f"这条候选的消息编号 **#{candidate.start + 1}** 属于**原分析"
                 "快照**的消息排序，不是当前导入的编号——历史快照没有保存聊天"
-                "正文，因此不能调整边界、也不能用当前聊天的消息改写范围。"
-                "如将来要与当前聊天互认，必须先逐条核对原始消息指纹，"
-                "并由你显式确认。")
+                "正文，因此不能调整边界、也不能用当前聊天的消息改写范围。")
+            # 与当前聊天关联的前置条件：真实消息指纹逐字节一致（验证通过
+            # 也仍由用户显式确认，绝不自动关联）
+            if messages and candidate.fingerprints:
+                hits = bv.current_matches_by_fingerprint(
+                    candidate.fingerprints[0], messages)
+                if hits:
+                    shown = "、".join(f"#{i + 1}" for i in hits[:3])
+                    st.caption(
+                        f"指纹验证通过：当前导入的第 {shown} 条与该历史消息"
+                        "**逐字节一致**。只有在此验证之后，你确认这条线索才会"
+                        "把它与当前聊天关联；未验证时不会自动关联。")
         elif messages and candidate.msg_texts:
             with st.expander("查看这条候选覆盖的聊天（仅本次会话内存，"
                              "不勾选保留就不会写入档案）",

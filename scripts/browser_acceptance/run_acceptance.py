@@ -1020,22 +1020,29 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
     wait_text(page, "第 1 / ", 20000)
     check("behavior_prev_batch", True, "back to batch 1")
 
-    # 历史来源候选必须标注"无聊天正文"（不得凭旧总结编造上下文）。
-    # 历史候选追加在候选列表末尾：先逐批翻到最后一页再检查。
-    for step in range(2, pages + 1):
-        ui_click(page, page.get_by_role("button", name="下一批 ▶"))
-        wait_text(page, f"第 {step} / ", 30000)
+    # 历史线索单独分区（缺原文，不进普通待审核队列；不冒充已核实事件）
+    check("behavior_history_clues_separate_section",
+          page.get_by_text("历史线索（缺聊天原文，按需核对）",
+                           exact=False).count() > 0,
+          "history clues shown in a separate section")
+    check("behavior_history_clues_not_verified_events",
+          page.get_by_text("不是", exact=False).count() > 0
+          and page.get_by_text("已核实", exact=False).count() > 0,
+          "clues explicitly not verified events")
+    # 历史来源线索必须标注"无聊天正文"（不得凭旧总结编造上下文）
     check("behavior_history_candidate_no_text",
           page.get_by_text("历史来源，无聊天正文", exact=False).count() > 0,
-          f"history-sourced candidates flagged context-missing (last "
-          f"batch of {pages})")
-    # 编号归属提示：历史候选的消息编号属于原 run，不是当前导入
+          "history-sourced clues flagged context-missing")
+    # 编号归属提示：历史线索的消息编号属于原 run，不是当前导入
     check("behavior_history_index_ownership",
           page.get_by_text("原分析快照", exact=False).count() > 0,
-          "history candidate shows run-relative numbering note")
+          "history clue shows run-relative numbering note")
 
-    # --- 在最后一批确认历史候选（Phase 2A.1：不得与当前聊天混）---
-    hist_cand = _open_expander(page, "第一步：核对并修正")
+    # --- 在历史线索分区确认一条线索（不得与当前聊天混）---
+    clue_group = _open_expander(page, "历史快照")
+    hist_cand = clue_group.locator(
+        "[data-testid='stExpander']", has_text="第一步：核对并修正").first
+    ui_click(page, hist_cand.locator("summary").first)
     note_field = hist_cand.get_by_role("textbox", name="你的说明（可选）")
     note_field.fill("历史候选：我记得当时的上下文")
     _preview_then_click(page, hist_cand, "确认这条事件")
@@ -1052,10 +1059,6 @@ def phase_behavior_panel(page, data_dir: Path) -> None:
           and set(history_rows[0]["fingerprints"]) <= run_fps,
           "history event fingerprints come from the original run "
           "(not current-chat indices)")
-
-    for step in range(pages - 1, 0, -1):
-        ui_click(page, page.get_by_role("button", name="◀ 上一批"))
-        wait_text(page, f"第 {step} / ", 30000)
 
     # --- 确认第一条当前导入候选（**先修改行为方向**：覆盖「人工修改候选
     #     后原候选不消失」的真实缺陷路径；备注供跨好友隔离检查）---

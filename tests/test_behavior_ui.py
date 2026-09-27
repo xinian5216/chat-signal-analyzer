@@ -4,6 +4,7 @@
 Jev（每个测试都断言分析调用次数不变）。
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -881,3 +882,104 @@ def test_behavior_backfill_panel_previews_then_applies(history,
     pending = bv.pending_candidates(bv.generate_candidates(messages),
                                     store2.list_events(friend.friend_id))
     assert not any(c.identity == cand.identity for c in pending)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1 追加：纯媒体候选过滤 + 历史线索分区
+# ---------------------------------------------------------------------------
+
+CHAT_MEDIA_UI = """小明.
+2026年08月21日 21:00
+今天好累，压力好大
+
+小安.
+2026年08月21日 21:05
+[图片]
+
+小明.
+2026年08月21日 21:06
+周末有空吗
+
+小安.
+2026年08月21日 21:07
+辛苦啦，那周末再约 [动画表情]"""
+
+
+def test_pure_media_candidates_are_filtered_in_ui(history,
+                                                  counting_client):
+    """纯媒体回应：不进入待审核队列，界面给出过滤计数。"""
+    at = _fresh()
+    at.text_area[0].set_value(CHAT_MEDIA_UI)
+    _button(at, "解析并替换当前聊天").click()
+    at.run()
+    at.selectbox[0].select("小明.")
+    at.selectbox[1].select("小安.")
+    at.run()
+    _button(at, "应用昵称映射并重新解析").click()
+    at.run()
+    _button(at, "开始 Jev 分析").click()
+    at.run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["analysis_state"] == "complete"
+
+    _open_behavior(at)
+    texts = _texts(at)
+    # 过滤计数提示（不再让用户审核「内容未知」的消息）
+    assert "已过滤" in texts
+    assert "无效候选" in texts
+    assert "纯图片" in texts
+    filtered = 0
+    for line in texts.splitlines():
+        m = re.search(r"已过滤 (\d+) 条无效候选", line)
+        if m:
+            filtered = int(m.group(1))
+    assert filtered >= 1, "纯媒体回应必须被计入过滤"
+    # 媒体消息仍完整保留在聊天里（确认阶段的媒体计数）
+    assert "媒体" in texts
+
+
+def test_history_clues_shown_separately(history, counting_client):
+    """历史线索单独分区展示，不进普通待审核队列。"""
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)
+
+    # 预置一条历史快照（含 show_care 的既有结果 → 产出历史线索）
+    import friend_history as _fh
+    store0 = _fh.FriendStore(history)
+    friend = store0.list_friends()[0]
+    messages = _analysis_messages_like_app(CHAT, "小明.", "小安.")
+    them = [i for i, m in enumerate(messages) if m["speaker"] == "them"]
+    results = [
+        {"index": i, "speaker": "them", "time": messages[i].get("time"),
+         "cached": True,
+         "result": {"intent": {"choice": "show_care"}, "model": "m"}}
+        for i in them[:2]
+    ]
+    store0.save_run(_fh.build_run_snapshot(
+        friend_id=friend.friend_id, messages=messages, results=results,
+        stats={}, schema_version="chat-signal-v3.3",
+        request_model="jev-latest", summary_text="旧总结"))
+
+    # 重新进入面板（模拟 rerun 后读取）
+    at.segmented_control[0].set_value("概览")
+    at.run()
+    at.segmented_control[0].set_value("长期观察")
+    at.run()
+    assert not at.exception
+
+    texts = _texts(at)
+    # 历史线索分区存在，且明示「不是已核实的行为事件」
+    assert "历史线索" in texts
+    assert "不是" in texts and "已核实" in texts
+    assert "指纹" in texts                     # 关联必须先过指纹验证
+    # 普通待审核计数只包含当前导入候选（历史线索不计入）
+    for line in texts.splitlines():
+        if "条待核对" in line and "候选 " in line:
+            count = int(line.split("候选 ")[1].split(" 条待核对")[0])
+            assert count < 10, count
+            break
+    # 历史快照的来源 run 展示出来
+    labels = " ".join(str(e.label) for e in at.expander)
+    assert "历史快照" in labels
