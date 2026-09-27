@@ -469,7 +469,7 @@ class _store:
         return False
 
 
-def test_migration_v1_to_v2_preserves_history_runs():
+def test_migration_v1_to_v3_preserves_history_runs():
     with _store(target_version=1) as store:
         assert store.schema_version() == 1
         friend = store.create_friend("老档案", aliases=["旧昵称"])
@@ -481,12 +481,47 @@ def test_migration_v1_to_v2_preserves_history_runs():
         friend_id = friend.friend_id
         db_path = store.db_path
 
-    # 重新打开（真实 v2 DDL）：增量迁移，旧数据一行不少
+    # 重新打开（真实 DDL）：v1 → v3 增量迁移，旧数据一行不少
     store2 = fh.FriendStore(db_path)
-    assert store2.schema_version() == fh.SCHEMA_VERSION_FRIEND_HISTORY == 2
+    assert store2.schema_version() == fh.SCHEMA_VERSION_FRIEND_HISTORY == 3
     runs = store2.list_runs(friend_id)
     assert len(runs) == 1 and runs[0].summary_text == "旧总结"
     assert store2.friend_count() == 1
+
+
+def test_migration_v2_to_v3_keeps_events_and_backs_up():
+    """v2 老库（已有行为事件）→ v3：事件一条不少、新列存在、迁移前有备份。
+
+    旧事件用 v2 时代的 25 列裸 SQL 插入（模拟迁移前保存的数据）。
+    """
+    with _store(target_version=2) as store:
+        assert store.schema_version() == 2
+        friend = store.create_friend("档案", aliases=["小安"])
+        friend_id = friend.friend_id
+        db_path = store.db_path
+        conn = store._connect()
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO behavior_events VALUES ("
+            "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("e-v2-legacy", friend_id, "care", "care_response",
+             "supporting", "confirmed", "rule", None, None, None,
+             "full", "[0, 1]", '["fp-old"]', "{}", "替代解释",
+             "", "", "旧说明", "", "", "候选命中规则：care_turn；连续关心",
+             1.0, 1.0, None, "id-legacy"))
+        conn.execute("COMMIT")
+        conn.close()
+
+    store2 = fh.FriendStore(db_path)
+    assert store2.schema_version() == 3
+    events = store2.list_events(friend_id)
+    assert len(events) == 1
+    assert events[0]["event_id"] == "e-v2-legacy"
+    assert events[0]["notes"] == "旧说明"
+    # 新列存在；迁移前保存的旧事件原始身份为空（等回填）
+    assert events[0]["original_candidate_identity"] == ""
+    backups = list(db_path.parent.glob(db_path.name + ".v2-backup-*"))
+    assert backups, "v2→v3 迁移前必须留下备份"
 
 
 def test_migration_failure_rolls_back_and_recovers():
@@ -514,9 +549,9 @@ def test_migration_failure_rolls_back_and_recovers():
         assert survived is not None
     finally:
         fh.FriendStore._V2_DDL = orig_ddl
-    # 重新打开：迁移成功，v1 数据还在
+    # 重新打开：迁移成功（v1→v2→v3），v1 数据还在
     store = fh.FriendStore(db_path)
-    assert store.schema_version() == 2
+    assert store.schema_version() == fh.SCHEMA_VERSION_FRIEND_HISTORY
     assert store.get_friend(friend_id) is not None
 
 
@@ -541,11 +576,11 @@ def test_event_dedup_is_structural():
             try:
                 conn.execute(
                     "INSERT INTO behavior_events VALUES ("
-                    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     ("raw", friend.friend_id, "care", "care_response",
                      "unspecified", "confirmed", "rule", None, None, None,
                      "full", "[]", "[]", "{}", "", "", "", "", "", "", "",
-                     1.0, 1.0, None, event["event_identity"]))
+                     1.0, 1.0, None, event["event_identity"], ""))
                 conn.commit()
             finally:
                 conn.close()
@@ -1134,3 +1169,91 @@ def test_generate_candidates_meta_and_truncation_notice():
     assert bv.truncation_notice({}) is None
     # 兼容包装仍然只返回列表
     assert bv.generate_candidates(messages) == cands
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1 追加：SQLite 官方在线备份（替代 shutil.copy2）
+# ---------------------------------------------------------------------------
+
+
+def test_v2_to_v3_online_backup_contains_uncommitted_wal():
+    """在线备份必须包含尚未 checkpoint 的 WAL 帧（copy2 会丢）。"""
+    import sqlite3
+    with _store(target_version=2) as store:
+        assert store.schema_version() == 2
+        friend = store.create_friend("档案", aliases=["小安"])
+        db_path = store.db_path
+        # 用一个长期持有的连接写入并保持不 checkpoint：WAL 里有已提交帧
+        holder = sqlite3.connect(str(db_path))
+        try:
+            holder.execute("PRAGMA journal_mode=WAL")
+            holder.execute("BEGIN")
+            holder.execute(
+                "INSERT INTO behavior_events VALUES ("
+                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("e-wal", friend.friend_id, "care", "care_response",
+                 "supporting", "confirmed", "rule", None, None, None,
+                 "full", "[0, 1]", '["fp"]', "{}", "", "", "",
+                 "wal 数据", "", "",
+                 "候选命中规则：difficulty_then_reply；x",
+                 1.0, 1.0, None, "id-wal"))
+            holder.execute("COMMIT")
+            wal = db_path.with_name(db_path.name + "-wal")
+            assert wal.exists() and wal.stat().st_size > 0, (
+                "测试前置失败：WAL 应为未 checkpoint 状态")
+        finally:
+            holder.close()
+
+    # holder 关闭后仍可能残留未 checkpoint 帧；以真实目标版本重新打开，
+    # 触发在线备份 + v2→v3 迁移
+    store2 = fh.FriendStore(db_path)
+    assert store2.schema_version() == 3
+
+    backups = list(db_path.parent.glob(db_path.name + ".v2-backup-*"))
+    assert backups, "v2→v3 迁移前必须留下备份"
+    bak = sqlite3.connect(str(backups[0]))
+    try:
+        row = bak.execute(
+            "SELECT notes FROM behavior_events WHERE event_id = 'e-wal'"
+        ).fetchone()
+        assert row is not None and row[0] == "wal 数据", (
+            "在线备份必须包含未 checkpoint 的已提交数据")
+        ic = bak.execute("PRAGMA integrity_check").fetchone()
+        assert ic and str(ic[0]).lower() == "ok"
+    finally:
+        bak.close()
+
+
+def test_backup_failure_aborts_migration_and_keeps_v2_data(monkeypatch):
+    """备份失败必须终止迁移并明确报错；旧数据与 v2 结构原样保留。"""
+    import sqlite3
+    import time as _time
+    with _store(target_version=2) as store:
+        friend = store.create_friend("档案", aliases=["昵称"])
+        db_path = store.db_path
+
+    # 固定备份文件名 → 预先放一个损坏文件占位，使在线备份失败
+    monkeypatch.setattr(_time, "strftime", lambda fmt: "FIXED")
+    blocker = db_path.with_name(db_path.name + ".v2-backup-FIXED")
+    blocker.write_bytes(b"this is not a sqlite database")
+    try:
+        with pytest.raises(fh.FriendHistoryBackupError):
+            fh.FriendStore(db_path)
+    finally:
+        blocker.unlink(missing_ok=True)
+
+    # 迁移被终止：v2 数据与表结构原样
+    chk = sqlite3.connect(str(db_path))
+    try:
+        cols = [r[1] for r in chk.execute("PRAGMA table_info(behavior_events)")]
+        assert "original_candidate_identity" not in cols
+        assert chk.execute(
+            "SELECT 1 FROM friends WHERE friend_id = ?",
+            (friend.friend_id,)).fetchone() is not None
+    finally:
+        chk.close()
+
+    # 障碍移除后重新打开：迁移正常完成
+    store2 = fh.FriendStore(db_path)
+    assert store2.schema_version() == 3
+    assert store2.get_friend(friend.friend_id) is not None

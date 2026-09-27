@@ -2457,6 +2457,7 @@ def show_behavior_panel(results: list[dict], stats: dict) -> None:
     _show_behavior_candidates(store, friend, pending, known, meta)
     _show_behavior_manual_add(store, friend)
     _show_behavior_events(store, friend)
+    _show_behavior_backfill_panel(store, friend)
     _show_behavior_report(store, friend, pending)
 
 
@@ -2482,7 +2483,11 @@ def _behavior_pending_candidates(store, friend_id: str,
     # 顺序：先生成全部 → 按事件身份剔除已确认 / 已排除 → 调用方分页。
     # 历史缺陷：曾在生成阶段截断 40 条，处理完前 40 条后候选再也补不上。
     pending = bv.pending_candidates(candidates, events)
+    # 「已处理」计数同样按双身份：用户修改过方向 / 类型的事件，其原始
+    # 候选身份也要计入（否则修改过的审核会被少算一条）
     known = bv.known_candidate_events(events)
+    for identity in bv.reviewed_identities(events):
+        known.setdefault(identity, {})
     return pending, known, meta
 
 
@@ -2553,13 +2558,23 @@ def _show_behavior_manual_add(store, friend) -> None:
             "你主动填写的**说明、备注与主观感受**同样可能包含个人信息"
             "（姓名、经历、地点……）。这些字段不会自动脱敏，"
             "请在保存前自行检查。")
+        manual_window = f"当前导入消息 #{int(start)} ~ #{int(end)}"
         allow_save = _behavior_final_preview(
             mscope, dimension=dimension,
             behavior_type=type_key, stance=stance,
-            window_text=(f"当前导入消息 #{int(start)} ~ #{int(end)}"),
+            window_text=manual_window,
             snippet=snippet, notes=notes)
         if allow_save and st.button("添加事件",
                                     key=f"behavior_manual_submit_{mscope}"):
+            if _behavior_preview_payload(
+                    dimension=dimension, behavior_type=type_key,
+                    stance=stance, window_text=manual_window,
+                    snippet=snippet, notes=notes,
+                    alternative="") != (st.session_state.get(
+                        f"behavior_previewed_{mscope}") or ""):
+                st.error("预览之后内容又有修改：请重新点击"
+                         "「查看最终预览」再保存。")
+                st.rerun()
             lo, hi = sorted((int(start) - 1, int(end) - 1))
             try:
                 event = bv.build_event_dict(
@@ -2625,10 +2640,33 @@ def _show_behavior_candidates(store, friend, pending: list,
         _render_behavior_candidate(store, friend, candidate)
 
 
+def _behavior_preview_payload(*, dimension, behavior_type, stance,
+                              window_text, snippet, notes, alternative,
+                              feeling="") -> str:
+    """预览身份的稳定序列化：覆盖**最终将保存的全部关键字段**。
+
+    用户查看最终预览后继续修改其中任何一项（方向 / 类型 / 立场 /
+    消息范围 / 证据片段 / 人工说明 / 替代解释 / 主观感受），负载就会变，
+    旧预览立即失效——渲染侧隐藏保存按钮，保存处理器侧再次校验并拒绝，
+    任何情况下都不会「看到的预览一套、落库另一套」。
+    """
+    return json.dumps({
+        "dimension": dimension,
+        "behavior_type": behavior_type,
+        "stance": stance,
+        "window_text": window_text,
+        "snippet": snippet,
+        "notes": notes,
+        "alternative": alternative,
+        "feeling": feeling,
+    }, ensure_ascii=False, sort_keys=True)
+
+
 def _behavior_final_preview(scope: str, *, dimension: str,
                             behavior_type: str, stance: str,
                             window_text: str, snippet: str,
-                            notes: str) -> bool:
+                            notes: str, alternative: str = "",
+                            feeling: str = "") -> bool:
     """两阶段第二步：显式「查看最终预览」→ 最终内容汇总 → 允许保存。
 
     返回 True = 预览未过期，调用方可以渲染保存按钮。
@@ -2641,11 +2679,15 @@ def _behavior_final_preview(scope: str, *, dimension: str,
     """
     preview_key = f"behavior_preview_{scope}"
     previewed_key = f"behavior_previewed_{scope}"
+    payload = _behavior_preview_payload(
+        dimension=dimension, behavior_type=behavior_type, stance=stance,
+        window_text=window_text, snippet=snippet, notes=notes,
+        alternative=alternative, feeling=feeling)
     c1, c2 = st.columns([1, 2])
     with c1:
         if st.button("查看最终预览", key=f"behavior_preview_btn_{scope}"):
             st.session_state[preview_key] = True
-            st.session_state[previewed_key] = snippet
+            st.session_state[previewed_key] = payload
             st.rerun()
     with c2:
         st.caption("修改上面任何内容后请重新点击——"
@@ -2654,7 +2696,7 @@ def _behavior_final_preview(scope: str, *, dimension: str,
         return False
 
     final_snippet = fh.anonymize_evidence_text(snippet)
-    stale = (snippet or "") != (st.session_state.get(previewed_key) or "")
+    stale = payload != (st.session_state.get(previewed_key) or "")
     st.divider()
     st.caption("最终预览——下面就是保存后将写入档案的内容")
     summary = [
@@ -2815,7 +2857,7 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
         allow_save = _behavior_final_preview(
             scope, dimension=dimension, behavior_type=behavior_type,
             stance=stance, window_text=window_text, snippet=snippet,
-            notes=notes)
+            notes=notes, alternative=alternative)
         if not allow_save:
             return
 
@@ -2823,11 +2865,16 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
         with c1:
             if st.button("确认这条事件", type="primary",
                          key=f"behavior_confirm_{scope}"):
-                # 过期守卫：预览后片段又被改过 → 拒绝写入
-                previewed = st.session_state.get(
-                    f"behavior_previewed_{scope}")
-                if (snippet or "") != (previewed or ""):
-                    st.error("片段正文在预览之后又有修改：请重新点击"
+                # 过期守卫（处理器侧最后一道）：预览后**任何关键字段**又被
+                # 改过 → 拒绝写入，必须重新预览
+                current = _behavior_preview_payload(
+                    dimension=dimension, behavior_type=behavior_type,
+                    stance=stance, window_text=window_text,
+                    snippet=snippet, notes=notes,
+                    alternative=alternative)
+                if current != (st.session_state.get(
+                        f"behavior_previewed_{scope}") or ""):
+                    st.error("预览之后内容又有修改：请重新点击"
                              "「查看最终预览」再保存。")
                     st.rerun()
                 try:
@@ -2855,6 +2902,16 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
                     st.rerun()
         with c2:
             if st.button("排除这条", key=f"behavior_exclude_{scope}"):
+                current = _behavior_preview_payload(
+                    dimension=dimension, behavior_type=behavior_type,
+                    stance=stance, window_text=window_text,
+                    snippet=snippet, notes=notes,
+                    alternative=alternative)
+                if current != (st.session_state.get(
+                        f"behavior_previewed_{scope}") or ""):
+                    st.error("预览之后内容又有修改：请重新点击"
+                             "「查看最终预览」再保存。")
+                    st.rerun()
                 try:
                     event = bv.build_event_dict(
                         candidate=candidate, friend_id=friend.friend_id,
@@ -2953,9 +3010,22 @@ def _show_behavior_events(store, friend) -> None:
                 event_id, dimension=dimension,
                 behavior_type=event["behavior_type"], stance=stance,
                 window_text=_behavior_time_text(event), snippet=snippet,
-                notes=notes)
+                notes=notes, alternative=event.get("alternative") or "",
+                feeling=feeling)
             if allow_save and st.button(
                     "保存修改", key=f"behavior_event_save_{event_id}"):
+                if _behavior_preview_payload(
+                        dimension=dimension,
+                        behavior_type=event["behavior_type"],
+                        stance=stance,
+                        window_text=_behavior_time_text(event),
+                        snippet=snippet, notes=notes,
+                        alternative=event.get("alternative") or "",
+                        feeling=feeling) != (st.session_state.get(
+                            f"behavior_previewed_{event_id}") or ""):
+                    st.error("预览之后内容又有修改：请重新点击"
+                             "「查看最终预览」再保存。")
+                    st.rerun()
                 store.update_event(event_id, {
                     "stance": stance, "notes": notes,
                     "user_feeling": feeling, "snippet": snippet})
@@ -2994,6 +3064,52 @@ def _show_behavior_events(store, friend) -> None:
             if st.button("取消", key="behavior_delete_no"):
                 st.session_state["behavior_event_delete"] = None
                 st.rerun()
+
+
+def _show_behavior_backfill_panel(store, friend) -> None:
+    """旧事件候选关联修复入口（v3 迁移前保存的历史数据，可选）。
+
+    安全约束（缺一不可）：
+
+    - **先预览后执行**：先显示「可关联 / 证据不足跳过 / 已有关联」计数，
+      用户点确认才写入；
+    - 只补充「原始候选身份」这一列（并集写入），**绝不**改方向 / 类型 /
+      立场 / 片段，不删除事件，不推测原始窗口；
+    - 证据不足（人工创建 / 无规则备注 / 未知规则）一律跳过并如实计数，
+      对应候选继续留给用户重新核对。
+    """
+    with st.expander("修复旧事件的候选关联（v3 迁移前的历史数据，可选）"):
+        st.caption(
+            "更早版本保存的事件可能没有记录「原始候选身份」：如果你当时"
+            "修改过候选的方向 / 类型，重新导入同一批聊天后，原候选可能仍"
+            "出现在待审核列表。这里按事件**自身记录的规则与消息指纹**反推"
+            "原始候选身份——只补充这一列，不改任何已有内容、不删除事件；"
+            "证据不足的会跳过。")
+        if st.button("检查可关联的旧事件",
+                     key="behavior_backfill_check"):
+            st.session_state["behavior_backfill_plan"] = bv.plan_backfill(
+                store, friend_id=friend.friend_id)
+            st.rerun()
+        plan = st.session_state.get("behavior_backfill_plan")
+        if plan:
+            st.info(
+                f"检查完成：可关联 **{plan['would_fill']}** 条 · "
+                f"证据不足跳过 **{plan['would_skip']}** 条 · "
+                f"已有关联 **{plan['already_linked']}** 条（不计入）。")
+            if plan["would_fill"]:
+                if st.button("执行关联（只补充原始候选身份）",
+                             key="behavior_backfill_run"):
+                    stats = bv.backfill_original_identities(
+                        store, friend_id=friend.friend_id)
+                    st.session_state["behavior_backfill_plan"] = None
+                    set_input_notice(
+                        "success",
+                        f"已补充 {stats['filled']} 条事件的原始候选身份"
+                        f"（证据不足跳过 {stats['skipped']} 条，未改动任何"
+                        "已有内容）。")
+                    st.rerun()
+            else:
+                st.caption("没有可关联的旧事件。")
 
 
 def _behavior_source_text(event: dict) -> str:

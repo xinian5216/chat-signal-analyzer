@@ -27,6 +27,7 @@ Context Builder / 分析 schema；出站白名单（``build_state``）不受影�
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -339,9 +340,115 @@ def new_event_id() -> str:
     return secrets.token_hex(12)
 
 
+# 每个确定性规则产出的 (方向, 行为类型) 固定映射。
+# 用途：legacy 事件（v3 迁移前保存、没有 original_candidate_identity）
+# 的回填——用 review_note 里记录的 rule + 事件自己的指纹集合反推出
+# **原始候选**身份。规则与类型的对应由
+# ``test_rule_behavior_mapping_matches_generated_candidates`` 钉死。
+RULE_BEHAVIOR: dict[str, tuple[str, str]] = {
+    # 关心与回应性
+    "care_turn": (DIMENSION_CARE, "emotion_understanding"),
+    "difficulty_then_reply": (DIMENSION_CARE, "care_response"),
+    "support_offer": (DIMENSION_CARE, "concrete_support"),
+    "difficulty_then_later_question": (DIMENSION_CARE, "continued_attention"),
+    # 尊重与边界
+    "disagreement_then_reply": (DIMENSION_RESPECT, "disagreement_response"),
+    "refusal_reaction": (DIMENSION_RESPECT, "refusal_reaction"),
+    "refusal_then_pressure": (DIMENSION_RESPECT, "pressure_or_disdain"),
+    "disdain": (DIMENSION_RESPECT, "pressure_or_disdain"),
+    "conflict_then_repair": (DIMENSION_RESPECT, "conflict_repair"),
+    # 主动性与投入
+    "proactive_after_gap": (DIMENSION_INITIATIVE, "proactive_contact"),
+    "shared_content_word": (DIMENSION_INITIATIVE, "topic_continuation"),
+    "invitation": (DIMENSION_INITIATIVE, "invitation"),
+    "invitation_with_arrangement": (DIMENSION_INITIATIVE,
+                                    "concrete_arrangement"),
+    "invitation_then_follow_up": (DIMENSION_INITIATIVE,
+                                  "concrete_arrangement"),
+    # 好感与关系性质
+    "closest_friend_marker": (DIMENSION_ROMANCE, "close_friendship"),
+    "special_attention_marker": (DIMENSION_ROMANCE, "special_attention"),
+    "romantic_marker": (DIMENSION_ROMANCE, "romantic_expression"),
+    # 历史快照辅助筛选
+    "history_intent_care": (DIMENSION_CARE, "care_response"),
+    "history_distancing_strong": (DIMENSION_RESPECT, "refusal_reaction"),
+    "history_romantic_strong": (DIMENSION_ROMANCE, "romantic_expression"),
+}
+
+# review_note 里记录候选规则的固定前缀（build_event_dict 写入）
+REVIEW_RULE_PREFIX = "候选命中规则："
+
+
 def valid_pair(dimension: str, behavior_type: str) -> bool:
     """方向 / 行为类型组合是否合法（行为类型必须属于该方向）。"""
     return behavior_type in {key for key, _ in BEHAVIOR_TYPES.get(dimension, ())}
+
+
+def reviewed_identities(events: list[dict]) -> set[str]:
+    """全部"已审核"身份 = 最终事件身份 ∪ 原始候选身份。
+
+    - ``event_identity``：最终事件身份（未修改推荐时与候选身份相同）；
+    - ``original_candidate_identity``：**原始推荐**的稳定身份——用户改了
+      方向 / 类型 / 范围之后，最终事件身份会变，但原始候选身份不变，
+      原候选必须凭它判定为已审核（否则会反复出现——已修复的真实缺陷）。
+    手动创建的事件没有原始候选身份（original 为空），不参与候选过滤。
+    """
+    known: set[str] = set()
+    for event in events:
+        if event.get("status") not in ("confirmed", "rejected"):
+            continue
+        identity = str(event.get("event_identity") or "")
+        if identity:
+            known.add(identity)
+        known.update(original_identities(event))
+    return known
+
+
+def encode_original_identities(identities) -> str:
+    """原始候选身份集合 → 存储形态（单个写标量，多个写 JSON 数组）。
+
+    与 :func:`original_identities` 互为逆运算；保持 v3 标量行可读。
+    """
+    seen: list[str] = []
+    for value in identities or []:
+        s = str(value or "")
+        if s and s not in seen:
+            seen.append(s)
+    if not seen:
+        return ""
+    if len(seen) == 1:
+        return seen[0]
+    return json.dumps(seen, ensure_ascii=False)
+
+
+def original_identities(event: dict) -> list[str]:
+    """事件的全部「原始候选身份」（一个最终事件可能来自多个原始候选）。
+
+    存储兼容两种形态：
+
+    - v3 标量：单个 identity 字符串；
+    - 多值：JSON 数组字符串（与仓库已有的 ``fingerprints_json`` /
+      ``msg_window_json`` 同款列内 JSON 模式，**不新增表结构**）。
+
+    容忍脏数据：解析失败 / 非字符串元素一律忽略（宁可少关联，不猜）。
+    """
+    raw = str((event or {}).get("original_candidate_identity") or "")
+    if not raw.strip():
+        return []
+    if raw.lstrip().startswith("["):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        out: list[str] = []
+        for item in data:
+            value = str(item or "")
+            if value and value not in out:
+                out.append(value)
+        return out
+    return [raw]
 
 
 def pending_candidates(candidates: list[EventCandidate],
@@ -351,8 +458,122 @@ def pending_candidates(candidates: list[EventCandidate],
     顺序不可交换：在生成阶段截断会让"逐批处理完前 N 条"之后的候选永远
     消失（Phase 2A.1 修复的真实缺陷）。控件数量由调用方分页控制。
     """
-    known = known_candidate_events(events)
+    known = reviewed_identities(events)
     return [c for c in candidates if c.identity not in known]
+
+
+def parse_review_rule(event: dict) -> str | None:
+    """从事件里取回生成它的候选规则 id（review_note 由本模块写入，格式固定）。
+
+    review_note 形如 ``候选命中规则：care_turn；<确定性依据>``；人工创建 /
+    历史来源 / 备注被用户改写过导致解析失败时返回 None（宁可不知道，
+    不猜测）。
+    """
+    note = str((event or {}).get("review_note") or "")
+    if not note.startswith(REVIEW_RULE_PREFIX):
+        return None
+    rest = note[len(REVIEW_RULE_PREFIX):]
+    rule = rest.split("；", 1)[0].strip()
+    return rule or None
+
+
+def original_identity_from_event(event: dict) -> str:
+    """从一条**已保存**的事件反推它来源的原始候选 identity。
+
+    证据链（全部来自事件自身已持久化的字段，不猜测用户意图）：
+
+    1. ``review_note`` 里的候选规则 id（``parse_review_rule``）；
+    2. ``RULE_BEHAVIOR[rule]`` → 该规则产出的 (方向, 行为类型)——
+       每个规则的产出固定，因此 (窗口, 规则) 唯一确定一个候选；
+    3. 事件自己的 ``fingerprints``（最终窗口的消息指纹集合）。
+
+    → ``event_identity(fps, rule_dim, rule_type)`` 即**原始候选**身份。
+
+    只覆盖"范围未改"的情形（原始窗口 == 最终窗口）：用户连范围一起改过
+    时，反推身份不会匹配任何现存候选（窗口不同），因此不会产生错误关联。
+    证据不足（无 rule / 无指纹 / 未知 rule）时返回空串。
+    """
+    rule = parse_review_rule(event)
+    if not rule:
+        return ""
+    pair = RULE_BEHAVIOR.get(rule)
+    if pair is None:
+        return ""
+    fps = [str(f) for f in (event or {}).get("fingerprints") or [] if f]
+    if not fps:
+        return ""
+    return event_identity(fps, pair[0], pair[1])
+
+
+def plan_backfill(store, *, friend_id: str | None = None) -> dict:
+    """回填**预览**：只统计、不写入（应用入口先看数再执行）。
+
+    返回 ``{checked, would_fill, would_skip, already_linked}``：
+
+    - ``would_fill``：证据充分、执行回填会被关联的事件数；
+    - ``would_skip``：source_kind 是规则候选但没有证据（无规则备注 /
+      未知规则 / 无指纹）——执行时也会跳过，原候 choices 留给用户重新
+      核对（不猜）；
+    - ``already_linked``：已有原始候选身份的事件（不计入）。
+    """
+    would_fill = would_skip = already_linked = 0
+    friends = ([friend_id] if friend_id
+               else [f.friend_id for f in store.list_friends()])
+    for fid in friends:
+        for event in store.list_events(fid):
+            if event.get("status") not in ("confirmed", "rejected"):
+                continue
+            if event.get("source_kind") != "rule":
+                continue
+            if original_identities(event):
+                already_linked += 1
+                continue
+            if original_identity_from_event(event):
+                would_fill += 1
+            else:
+                would_skip += 1
+    return {"checked": would_fill + would_skip,
+            "would_fill": would_fill, "would_skip": would_skip,
+            "already_linked": already_linked}
+
+
+def backfill_original_identities(store, *, friend_id: str | None = None
+                                 ) -> dict:
+    """为 v3 迁移前的旧事件补写 ``original_candidate_identity``。
+
+    保守策略（对应"缺少充分证据不能自动猜测"的硬约束）：
+
+    - 只**新增**原始候选身份这一列的值，绝不改动方向 / 类型 / 立场 /
+      片段等任何用户数据，绝不删除事件；
+    - 只处理 ``source_kind == "rule"``（确定性规则候选审核而来）且当前
+      原始身份为空的事件；
+    - 用 :func:`original_identity_from_event` 从事件自身证据反推；
+      证据不足 → 跳过并计入 ``skipped``（原候选会继续出现在待审核列表，
+      由用户重新核对——不猜、不丢数据）；
+    - 同一原始身份被多个事件共享是允许的（用户修改后多次保存），这不
+      构成重复计算：待审核过滤按身份去重，事件按 event_id 独立统计。
+
+    返回 {"checked", "filled", "skipped"} 统计（供日志 / 测试断言）。
+    """
+    checked = filled = skipped = 0
+    friends = ([friend_id] if friend_id
+               else [f.friend_id for f in store.list_friends()])
+    for fid in friends:
+        for event in store.list_events(fid):
+            if original_identities(event):
+                continue
+            if event.get("source_kind") != "rule":
+                continue
+            if event.get("status") not in ("confirmed", "rejected"):
+                continue
+            checked += 1
+            original = original_identity_from_event(event)
+            if not original:
+                skipped += 1
+                continue
+            store.set_event_original_identity(event["event_id"], original)
+            filled += 1
+    return {"checked": checked, "filled": filled, "skipped": skipped}
 
 
 def current_matches_by_fingerprint(fingerprint: str,
@@ -389,7 +610,8 @@ def build_event_dict(*, candidate: EventCandidate | None, friend_id: str,
                      user_feeling: str = "", alternative: str = "",
                      messages: list[dict] | None = None,
                      start: int | None = None, end: int | None = None,
-                     status: str = "confirmed") -> dict:
+                     status: str = "confirmed",
+                     original_candidate_identity: str = "") -> dict:
 
     if not valid_pair(dimension, behavior_type):
         raise ValueError(
@@ -458,6 +680,12 @@ def build_event_dict(*, candidate: EventCandidate | None, friend_id: str,
         alternative = candidate.alternative
     event.update({
         "friend_id": friend_id,
+        # 原始候选身份：候选被人工修改（方向 / 类型 / 范围）后，最终事件
+        # 身份会变，但原始候选必须凭这个身份判定为已审核。
+        # 手动创建的事件没有来源候选 → 空串。
+        "original_candidate_identity": str(
+            original_candidate_identity
+            or (candidate.identity if candidate else "")),
         "stance": stance,
         "notes": str(notes or ""),
         "snippet": str(snippet or ""),

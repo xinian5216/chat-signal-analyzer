@@ -649,27 +649,44 @@ def test_history_candidate_confirm_keeps_run_window(history,
 
 def test_candidate_dimension_change_updates_type_and_rejects_bad_pair(
         history, counting_client):
-    """form 内改方向：类型选项对应新方向；非法组合绝不落库。"""
+    """改方向：类型选项对应新方向；预览后改内容立即失效；原候选消失。"""
     at = _fresh()
     _parse_and_analyze(at)
     _open_behavior(at)
 
-    # 把第一条候选的方向改成「好感与关系性质」再提交
+    # 把第一条候选的方向改成「好感与关系性质」
     dim = _widgets(at, "selectbox", "behavior_dim_")[0]
     dim.set_value("romance")
+    at.run()
+    assert not at.exception
+    # 类型下拉的选项必须立即属于新方向（不提交也生效）
+    type_select = _widgets(at, "selectbox", "behavior_type_")[0]
+    expected_labels = {bv.BEHAVIOR_TYPE_LABELS["romance." + key]
+                       for key, _ in bv.BEHAVIOR_TYPES["romance"]}
+    assert set(type_select.options) == expected_labels, (
+        f"类型选项未跟随新方向：{type_select.options}")
+
+    # 预览后再次修改方向 → 旧预览立即失效（保存按钮消失）
+    _button(at, "查看最终预览").click()
+    at.run()
+    assert not at.exception
+    _widgets(at, "selectbox", "behavior_dim_")[0].set_value("care")
+    at.run()
+    assert not at.exception
+    assert "确认这条事件" not in [b.label for b in at.button]
+
+    # 重新预览后保存（方向最终改回关心：类型组合合法）
     _preview_then_click(at, "确认这条事件", "behavior_note_",
                         "behavior_confirm_")
-
-    # 无论 Streamlit 是否重置了类型值：数据库里绝不允许出现
-    # （方向, 行为类型）非法组合
+    # 数据库里绝不允许出现（方向, 行为类型）非法组合
     store, events = _events(history)
     for event in events:
         assert bv.valid_pair(event["dimension"], event["behavior_type"]), event
-    # 类型下拉的选项必须属于新方向
-    type_select = _widgets(at, "selectbox", "behavior_type_")[0]
-    expected_labels = {bv.BEHAVIOR_TYPE_LABELS[f"romance.{key}"]
-                      for key, _ in bv.BEHAVIOR_TYPES["romance"]}
-    assert set(type_select.options) == expected_labels
+    # 关键回归（本 bug 修复）：修改方向后保存，原候选必须消失
+    assert len(events) == 1
+    assert events[0]["original_candidate_identity"]
+    assert events[0]["original_candidate_identity"] != \
+        events[0]["event_identity"], "方向被改过，两个身份应不同"
 
 
 def test_candidate_editor_immediate_linkage(history, counting_client):
@@ -680,7 +697,8 @@ def test_candidate_editor_immediate_linkage(history, counting_client):
     3. 「查看最终预览」是显式第二步：预览给出**最终将写入档案**的
        脱敏 + 截断内容（该 Streamlit 版本 textarea 击键不 rerun、失焦
        才提交，因此预览必须是显式一步而不能只靠 caption 自动更新）；
-    4. 确认保存 → 落库内容 = 预览内容（脱敏后）。
+    4. 预览后改方向 → 旧预览立即失效，必须重新预览；
+    5. 确认保存 → 落库内容 = 预览内容（脱敏后），原候选消失。
     """
     at = _fresh()
     _parse_and_analyze(at)
@@ -723,18 +741,27 @@ def test_candidate_editor_immediate_linkage(history, counting_client):
     at.run()
     assert not at.exception
     type_select = _widgets(at, "selectbox", "behavior_type_")[0]
-    expected = {bv.BEHAVIOR_TYPE_LABELS[f"respect.{key}"]
+    expected = {bv.BEHAVIOR_TYPE_LABELS["respect." + key]
                 for key, _ in bv.BEHAVIOR_TYPES["respect"]}
     assert set(type_select.options) == expected, (
         f"类型选项未跟随新方向：{type_select.options}")
 
-    # 5) 确认保存 → 落库脱敏（类型已重置为尊重方向的第一个，组合合法）
+    # 5) 改方向后旧预览过期 → 保存按钮消失 → 重新预览后才可保存
+    assert "确认这条事件" not in [b.label for b in at.button], (
+        "改方向后旧预览必须立即失效")
+    preview2 = next((b for b in at.button
+                     if b.key == f"behavior_preview_btn_{scope}"), None)
+    assert preview2 is not None
+    preview2.click()
+    at.run()
+    assert not at.exception
     target = next((b for b in at.button
                    if b.key == f"behavior_confirm_{scope}"), None)
-    assert target is not None, "预览后保存按钮未出现"
+    assert target is not None, "重新预览后保存按钮应出现"
     target.click()
     at.run()
     assert not at.exception
+
     store, events = _events(history)
     assert len(events) == 1
     event = events[0]
@@ -743,6 +770,9 @@ def test_candidate_editor_immediate_linkage(history, counting_client):
     assert "13812345678" not in event["snippet"]
     assert "<PHONE>" in event["snippet"]
     assert "lin@example.com" not in event["snippet"]
+    # 原候选身份与最终事件身份都记录在案
+    assert event["original_candidate_identity"]
+    assert event["original_candidate_identity"] != event["event_identity"]
 
 
 def test_behavior_panel_no_false_truncation_warning(history,
@@ -781,3 +811,73 @@ def test_candidate_stale_preview_blocks_save(history, counting_client):
     assert "重新点击" in _texts(at)
     store, events = _events(history)
     assert events == []
+
+
+def _analysis_messages_like_app(chat: str, me: str, them: str):
+    """复刻应用里 analysis_messages 的构造（parse → mask → sort）。"""
+    from parser import parse_chat
+    from privacy import mask_messages
+    from timeline import sort_messages
+    return sort_messages(mask_messages(
+        parse_chat(chat, me, them))).messages
+
+
+def test_behavior_backfill_panel_previews_then_applies(history,
+                                                       counting_client):
+    """回填入面板：先预览计数、确认后执行；只补原始身份，不动其它数据。"""
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)                       # 建档 + 打开行为面板
+
+    # 造一条 v2 时代的 legacy 事件：改过方向、无原始身份
+    import friend_history as _fh
+    store0 = _fh.FriendStore(history)
+    friend = store0.list_friends()[0]
+    messages = _analysis_messages_like_app(CHAT, "小明.", "小安.")
+    cands = bv.generate_candidates(messages)
+    cand = [c for c in cands if c.dimension == "care"
+            and c.behavior_type == "care_response"][0]
+    import json as _json
+    conn = store0._connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO behavior_events VALUES ("
+            "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("e-legacy-ui", friend.friend_id, "initiative",
+             "proactive_contact", "supporting", "confirmed", "rule",
+             None, None, None, "full", "[0, 1]",
+             _json.dumps(cand.fingerprints, ensure_ascii=False), "{}",
+             "替代解释", "", "", "legacy 说明", "", "",
+             "候选命中规则：difficulty_then_replay；x".replace(
+                 "difficulty_then_replay", "difficulty_then_reply"),
+             1.0, 1.0, None, "id-legacy-ui", ""))
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+
+    # 预览：可关联 1 条
+    _button(at, "检查可关联的旧事件").click()
+    at.run()
+    assert not at.exception
+    texts = _texts(at)
+    assert "可关联" in texts and "1" in texts
+    assert "已有关联" in texts
+
+    # 执行：提示 + 落库
+    _button(at, "执行关联（只补充原始候选身份）").click()
+    at.run()
+    assert not at.exception
+    assert "已补充 1 条" in _texts(at)
+
+    store2, evs = _events(history)
+    stored = store2.get_event("e-legacy-ui")
+    assert stored is not None
+    assert stored["original_candidate_identity"] == cand.identity
+    # 只补了新列：其它用户数据一个字段都没动
+    assert stored["notes"] == "legacy 说明"
+    assert stored["dimension"] == "initiative"
+    # 原候选随之从待审核列表消失
+    pending = bv.pending_candidates(bv.generate_candidates(messages),
+                                    store2.list_events(friend.friend_id))
+    assert not any(c.identity == cand.identity for c in pending)
