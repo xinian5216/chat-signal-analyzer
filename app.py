@@ -2457,6 +2457,7 @@ def show_behavior_panel(results: list[dict], stats: dict) -> None:
     _show_behavior_candidates(store, friend, pending, known, meta)
     _show_behavior_manual_add(store, friend)
     _show_behavior_events(store, friend)
+    _show_behavior_backfill_panel(store, friend)
     _show_behavior_report(store, friend, pending)
 
 
@@ -3063,6 +3064,52 @@ def _show_behavior_events(store, friend) -> None:
             if st.button("取消", key="behavior_delete_no"):
                 st.session_state["behavior_event_delete"] = None
                 st.rerun()
+
+
+def _show_behavior_backfill_panel(store, friend) -> None:
+    """旧事件候选关联修复入口（v3 迁移前保存的历史数据，可选）。
+
+    安全约束（缺一不可）：
+
+    - **先预览后执行**：先显示「可关联 / 证据不足跳过 / 已有关联」计数，
+      用户点确认才写入；
+    - 只补充「原始候选身份」这一列（并集写入），**绝不**改方向 / 类型 /
+      立场 / 片段，不删除事件，不推测原始窗口；
+    - 证据不足（人工创建 / 无规则备注 / 未知规则）一律跳过并如实计数，
+      对应候选继续留给用户重新核对。
+    """
+    with st.expander("修复旧事件的候选关联（v3 迁移前的历史数据，可选）"):
+        st.caption(
+            "更早版本保存的事件可能没有记录「原始候选身份」：如果你当时"
+            "修改过候选的方向 / 类型，重新导入同一批聊天后，原候选可能仍"
+            "出现在待审核列表。这里按事件**自身记录的规则与消息指纹**反推"
+            "原始候选身份——只补充这一列，不改任何已有内容、不删除事件；"
+            "证据不足的会跳过。")
+        if st.button("检查可关联的旧事件",
+                     key="behavior_backfill_check"):
+            st.session_state["behavior_backfill_plan"] = bv.plan_backfill(
+                store, friend_id=friend.friend_id)
+            st.rerun()
+        plan = st.session_state.get("behavior_backfill_plan")
+        if plan:
+            st.info(
+                f"检查完成：可关联 **{plan['would_fill']}** 条 · "
+                f"证据不足跳过 **{plan['would_skip']}** 条 · "
+                f"已有关联 **{plan['already_linked']}** 条（不计入）。")
+            if plan["would_fill"]:
+                if st.button("执行关联（只补充原始候选身份）",
+                             key="behavior_backfill_run"):
+                    stats = bv.backfill_original_identities(
+                        store, friend_id=friend.friend_id)
+                    st.session_state["behavior_backfill_plan"] = None
+                    set_input_notice(
+                        "success",
+                        f"已补充 {stats['filled']} 条事件的原始候选身份"
+                        f"（证据不足跳过 {stats['skipped']} 条，未改动任何"
+                        "已有内容）。")
+                    st.rerun()
+            else:
+                st.caption("没有可关联的旧事件。")
 
 
 def _behavior_source_text(event: dict) -> str:

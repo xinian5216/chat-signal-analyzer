@@ -811,3 +811,73 @@ def test_candidate_stale_preview_blocks_save(history, counting_client):
     assert "重新点击" in _texts(at)
     store, events = _events(history)
     assert events == []
+
+
+def _analysis_messages_like_app(chat: str, me: str, them: str):
+    """复刻应用里 analysis_messages 的构造（parse → mask → sort）。"""
+    from parser import parse_chat
+    from privacy import mask_messages
+    from timeline import sort_messages
+    return sort_messages(mask_messages(
+        parse_chat(chat, me, them))).messages
+
+
+def test_behavior_backfill_panel_previews_then_applies(history,
+                                                       counting_client):
+    """回填入面板：先预览计数、确认后执行；只补原始身份，不动其它数据。"""
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)                       # 建档 + 打开行为面板
+
+    # 造一条 v2 时代的 legacy 事件：改过方向、无原始身份
+    import friend_history as _fh
+    store0 = _fh.FriendStore(history)
+    friend = store0.list_friends()[0]
+    messages = _analysis_messages_like_app(CHAT, "小明.", "小安.")
+    cands = bv.generate_candidates(messages)
+    cand = [c for c in cands if c.dimension == "care"
+            and c.behavior_type == "care_response"][0]
+    import json as _json
+    conn = store0._connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO behavior_events VALUES ("
+            "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("e-legacy-ui", friend.friend_id, "initiative",
+             "proactive_contact", "supporting", "confirmed", "rule",
+             None, None, None, "full", "[0, 1]",
+             _json.dumps(cand.fingerprints, ensure_ascii=False), "{}",
+             "替代解释", "", "", "legacy 说明", "", "",
+             "候选命中规则：difficulty_then_replay；x".replace(
+                 "difficulty_then_replay", "difficulty_then_reply"),
+             1.0, 1.0, None, "id-legacy-ui", ""))
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+
+    # 预览：可关联 1 条
+    _button(at, "检查可关联的旧事件").click()
+    at.run()
+    assert not at.exception
+    texts = _texts(at)
+    assert "可关联" in texts and "1" in texts
+    assert "已有关联" in texts
+
+    # 执行：提示 + 落库
+    _button(at, "执行关联（只补充原始候选身份）").click()
+    at.run()
+    assert not at.exception
+    assert "已补充 1 条" in _texts(at)
+
+    store2, evs = _events(history)
+    stored = store2.get_event("e-legacy-ui")
+    assert stored is not None
+    assert stored["original_candidate_identity"] == cand.identity
+    # 只补了新列：其它用户数据一个字段都没动
+    assert stored["notes"] == "legacy 说明"
+    assert stored["dimension"] == "initiative"
+    # 原候选随之从待审核列表消失
+    pending = bv.pending_candidates(bv.generate_candidates(messages),
+                                    store2.list_events(friend.friend_id))
+    assert not any(c.identity == cand.identity for c in pending)

@@ -52,6 +52,41 @@ EVIDENCE_MAX_ITEMS = 20
 CONNECT_TIMEOUT = 5.0
 BUSY_TIMEOUT_MS = 5000
 
+
+class FriendHistoryBackupError(RuntimeError):
+    """迁移前备份失败：拒绝继续迁移（用户数据安全优先于迁移成功）。"""
+
+
+# 原始候选身份列的解码 / 编码（v3 标量与多值 JSON 数组都容忍）。
+# 多值形态的由来：一个最终事件可能来自多个原始候选（用户把不同候选
+# 修正成同一个结论）。与 behavior 同名helper保持同一语义。
+def _decode_identities(raw) -> list[str]:
+    s = str(raw or "").strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        try:
+            data = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [str(x) for x in data if str(x or "")]
+    return [s]
+
+
+def _encode_identities(identities) -> str:
+    seen: list[str] = []
+    for value in identities or []:
+        item = str(value or "")
+        if item and item not in seen:
+            seen.append(item)
+    if not seen:
+        return ""
+    if len(seen) == 1:
+        return seen[0]
+    return json.dumps(seen, ensure_ascii=False)
+
 ALIAS_KINDS = ("wechat_name", "remark", "alias")
 
 # 档案数据库 schema 版本（Phase 2A 引入行为事件表 → v2）。
@@ -474,28 +509,47 @@ class FriendStore:
     )
 
     def _backup_before_migration(self, version: int) -> Path | None:
-        """v2→v3 迁移前把档案库复制一份到同名 ``.v2-backup-<时间戳>`` 文件。
+        """迁移前用 **SQLite 官方在线备份 API** 生成一致性快照。
 
-        迁移本身是单事务可回滚的（失败即 ROLLBACK，不留半套表）；备份是
-        第二道保险：用户磁盘上永远保留迁移前的 v2 原件。只在实际需要
-        迁移时执行一次；已经是 v3 的库不会产生备份。
+        为什么不用 ``shutil.copy2``（本轮修复）：copy2 复制的是磁盘文件，
+        尚未 checkpoint 的 WAL 帧会丢，备份可能不含最新已提交数据。
+        ``Connection.backup()`` 由 SQLite 保证快照一致性（含 WAL 中已
+        提交的帧），生成后立即 ``PRAGMA integrity_check`` 校验。
+
+        **备份失败 = 迁移终止**：抛 :class:`FriendHistoryBackupError`，
+        绝不静默继续——用户磁盘上的档案库比“迁移成功”更重要。
+        全新库（version <= 0）没有旧数据可保，跳过。
         """
-        if version >= SCHEMA_VERSION_FRIEND_HISTORY:
+        if version <= 0 or version >= self._TARGET_VERSION:
             return None
         stamp = time.strftime("%Y%m%d-%H%M%S")
         backup = self.db_path.with_name(
             f"{self.db_path.name}.v{version}-backup-{stamp}")
+        src = sqlite3.connect(str(self.db_path), timeout=CONNECT_TIMEOUT)
         try:
-            shutil.copy2(self.db_path, backup)
-            for suffix in ("-wal", "-shm"):
-                sidecar = self.db_path.with_name(self.db_path.name + suffix)
-                if sidecar.exists():
-                    shutil.copy2(sidecar,
-                                 backup.with_name(backup.name + suffix))
-        except OSError:
-            # 备份失败不阻塞迁移（事务本身保证原子性）；但绝不静默：
-            # 调用方日志 / 测试可检查返回值
-            return None
+            src.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+            dst = sqlite3.connect(str(backup))
+            try:
+                src.backup(dst)                # 官方在线备份：一致性快照
+                row = dst.execute("PRAGMA integrity_check").fetchone()
+                if not row or str(row[0]).lower() != "ok":
+                    raise FriendHistoryBackupError(
+                        f"备份完整性校验失败：{row}")
+            except Exception:
+                try:
+                    backup.unlink()
+                except OSError:
+                    pass
+                raise
+            finally:
+                dst.close()
+        except FriendHistoryBackupError:
+            raise
+        except sqlite3.Error as exc:
+            raise FriendHistoryBackupError(
+                "档案库迁移前备份失败，已终止迁移：" + str(exc)) from exc
+        finally:
+            src.close()
         return backup
 
     def _connect(self) -> sqlite3.Connection:
@@ -511,6 +565,11 @@ class FriendStore:
             # （sqlite3 默认只在 DML 前隐式 BEGIN，DDL 会在 autocommit 下
             #   逐条提交，因此这里手工管理隔离级别。）
             conn.isolation_level = None
+            current = self._read_schema_version(conn)
+            # 在线备份必须在任何写事务**之前**：备份源连接需要读锁，
+            # 且快照必须是迁移前的原状（含未 checkpoint 的 WAL 帧）。
+            if 0 < current < SCHEMA_VERSION_FRIEND_HISTORY:
+                self._backup_before_migration(current)   # 失败即抛，终止迁移
             conn.execute("BEGIN IMMEDIATE")
             try:
                 self._upgrade_schema(conn)
@@ -521,22 +580,28 @@ class FriendStore:
         finally:
             conn.close()
 
-    def _upgrade_schema(self, conn: sqlite3.Connection) -> None:
-        """按版本号增量迁移（幂等；失败由调用方整体回滚）。"""
+    @staticmethod
+    def _read_schema_version(conn: sqlite3.Connection) -> int:
+        """读当前 schema 版本（没有 schema_meta 表 / 无记录 → 0）。"""
         row = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
             " AND name = 'schema_meta'").fetchone()
-        version = 0
-        if row is not None:
-            value = conn.execute(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            if value and str(value[0]).isdigit():
-                version = int(value[0])
+        if row is None:
+            return 0
+        value = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if value and str(value[0]).isdigit():
+            return int(value[0])
+        return 0
+
+    def _upgrade_schema(self, conn: sqlite3.Connection) -> None:
+        """按版本号增量迁移（幂等；失败由调用方整体回滚）。"""
+        version = self._read_schema_version(conn)
         if version < 1:
             for stmt in self._V1_DDL:
                 conn.execute(stmt)
-            if row is None:
+            if version == 0:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS schema_meta ("
                     " key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -552,8 +617,6 @@ class FriendStore:
                 " ('schema_version', '2')")
             version = 2
         if version < 3 and self._TARGET_VERSION >= 3:
-            # 追加列之前的最后一道保险：复制 v2 原件
-            self._backup_before_migration(version)
             for stmt in self._V3_DDL:
                 conn.execute(stmt)
             conn.execute(
@@ -1026,6 +1089,14 @@ class FriendStore:
         if identity and friend_id and status in ("confirmed", "rejected"):
             existing = self.events_by_identity(friend_id, identity)
             if existing:
+                # 同一最终事件由**第二个原始候选**修正而来：把新原始身份
+                # 并入既有事件的原始身份集合——不得丢失第二条已审核关联
+                #（否则第二个原候 choices 会在重新导入后复活）。
+                incoming_original = str(
+                    event.get("original_candidate_identity") or "")
+                if incoming_original:
+                    self.add_event_original_identity(
+                        existing[0]["event_id"], incoming_original)
                 return existing[0]["event_id"]
 
         event_id = str(event.get("event_id") or new_run_id())
@@ -1246,29 +1317,35 @@ class FriendStore:
             conn.close()
         return True
 
-    def set_event_original_identity(self, event_id: str,
+    def add_event_original_identity(self, event_id: str,
                                      original_identity: str) -> bool:
-        """只更新「原始候选身份」这一列（legacy 回填 / 关联修复用）。
+        """把一个原始候选身份**并入**事件的原始身份集合（幂等并集）。
 
-        绝不触碰方向 / 类型 / 立场 / 片段等用户数据；identity 为空时
-        拒绝写入（没有证据就不留关联）。
+        一个最终事件可能来自多个原始候选（用户把不同候选修正成同一个
+        结论）：集合以「单个标量 / JSON 数组」两种形态存于同一列，
+        不新增表结构。只动这一列 + 写审计，绝不触碰方向 / 类型 / 立场 /
+        片段等用户数据，也不删除事件；identity 为空拒绝写入。
         """
         original = str(original_identity or "")
         if not original:
             return False
         conn = self._connect()
         try:
-            exists = conn.execute(
-                "SELECT 1 FROM behavior_events WHERE event_id = ?",
-                (event_id,)).fetchone()
-            if exists is None:
+            row = conn.execute(
+                "SELECT original_candidate_identity FROM behavior_events"
+                " WHERE event_id = ?", (event_id,)).fetchone()
+            if row is None:
                 return False
+            current = _decode_identities(row[0])
+            if original in current:
+                return True                      # 幂等：已在集合中
             conn.execute("BEGIN IMMEDIATE")
+            current.append(original)
             conn.execute(
                 "UPDATE behavior_events SET"
                 " original_candidate_identity = ?, updated_at = ?"
                 " WHERE event_id = ?",
-                (original, time.time(), event_id))
+                (_encode_identities(current), time.time(), event_id))
             self._insert_audit(
                 conn, event_id, "original_identity_linked",
                 f"原始候选身份 {original[:12]}…")
@@ -1276,6 +1353,11 @@ class FriendStore:
         finally:
             conn.close()
         return True
+
+    # 兼容旧调用名（behavior.backfill_original_identities 使用）
+    def set_event_original_identity(self, event_id: str,
+                                    original_identity: str) -> bool:
+        return self.add_event_original_identity(event_id, original_identity)
 
     def delete_event(self, event_id: str) -> bool:
         """删除一个事件及其审计记录（用户的人工修正）。"""

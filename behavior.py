@@ -27,6 +27,7 @@ Context Builder / 分析 schema；出站白名单（``build_state``）不受影�
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -399,10 +400,55 @@ def reviewed_identities(events: list[dict]) -> set[str]:
         identity = str(event.get("event_identity") or "")
         if identity:
             known.add(identity)
-        original = str(event.get("original_candidate_identity") or "")
-        if original:
-            known.add(original)
+        known.update(original_identities(event))
     return known
+
+
+def encode_original_identities(identities) -> str:
+    """原始候选身份集合 → 存储形态（单个写标量，多个写 JSON 数组）。
+
+    与 :func:`original_identities` 互为逆运算；保持 v3 标量行可读。
+    """
+    seen: list[str] = []
+    for value in identities or []:
+        s = str(value or "")
+        if s and s not in seen:
+            seen.append(s)
+    if not seen:
+        return ""
+    if len(seen) == 1:
+        return seen[0]
+    return json.dumps(seen, ensure_ascii=False)
+
+
+def original_identities(event: dict) -> list[str]:
+    """事件的全部「原始候选身份」（一个最终事件可能来自多个原始候选）。
+
+    存储兼容两种形态：
+
+    - v3 标量：单个 identity 字符串；
+    - 多值：JSON 数组字符串（与仓库已有的 ``fingerprints_json`` /
+      ``msg_window_json`` 同款列内 JSON 模式，**不新增表结构**）。
+
+    容忍脏数据：解析失败 / 非字符串元素一律忽略（宁可少关联，不猜）。
+    """
+    raw = str((event or {}).get("original_candidate_identity") or "")
+    if not raw.strip():
+        return []
+    if raw.lstrip().startswith("["):
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        if not isinstance(data, list):
+            return []
+        out: list[str] = []
+        for item in data:
+            value = str(item or "")
+            if value and value not in out:
+                out.append(value)
+        return out
+    return [raw]
 
 
 def pending_candidates(candidates: list[EventCandidate],
@@ -459,6 +505,38 @@ def original_identity_from_event(event: dict) -> str:
     return event_identity(fps, pair[0], pair[1])
 
 
+def plan_backfill(store, *, friend_id: str | None = None) -> dict:
+    """回填**预览**：只统计、不写入（应用入口先看数再执行）。
+
+    返回 ``{checked, would_fill, would_skip, already_linked}``：
+
+    - ``would_fill``：证据充分、执行回填会被关联的事件数；
+    - ``would_skip``：source_kind 是规则候选但没有证据（无规则备注 /
+      未知规则 / 无指纹）——执行时也会跳过，原候 choices 留给用户重新
+      核对（不猜）；
+    - ``already_linked``：已有原始候选身份的事件（不计入）。
+    """
+    would_fill = would_skip = already_linked = 0
+    friends = ([friend_id] if friend_id
+               else [f.friend_id for f in store.list_friends()])
+    for fid in friends:
+        for event in store.list_events(fid):
+            if event.get("status") not in ("confirmed", "rejected"):
+                continue
+            if event.get("source_kind") != "rule":
+                continue
+            if original_identities(event):
+                already_linked += 1
+                continue
+            if original_identity_from_event(event):
+                would_fill += 1
+            else:
+                would_skip += 1
+    return {"checked": would_fill + would_skip,
+            "would_fill": would_fill, "would_skip": would_skip,
+            "already_linked": already_linked}
+
+
 def backfill_original_identities(store, *, friend_id: str | None = None
                                  ) -> dict:
     """为 v3 迁移前的旧事件补写 ``original_candidate_identity``。
@@ -482,7 +560,7 @@ def backfill_original_identities(store, *, friend_id: str | None = None
                else [f.friend_id for f in store.list_friends()])
     for fid in friends:
         for event in store.list_events(fid):
-            if event.get("original_candidate_identity"):
+            if original_identities(event):
                 continue
             if event.get("source_kind") != "rule":
                 continue
