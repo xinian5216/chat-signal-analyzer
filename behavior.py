@@ -778,17 +778,27 @@ def _days_between(messages: list[dict], a: int, b: int) -> float | None:
     return (dt_b - dt_a).total_seconds() / 86400.0
 
 
+# 完整媒体 marker（含**带时长的语音变体**「[发送了一条 7 秒语音，内容未知]」：
+# 时长是动态插入的，逐字 replace 匹配不到，必须用模式匹配整段）。
+_MEDIA_MARKER_RE = re.compile(r"\[发送了[^\[\]]*?内容未知\]")
+# 裸尾巴兜底（异常拼接的半截 marker）
+_MEDIA_MARKER_TAIL_RE = re.compile(r"[，,]\s*内容未知\s*\]")
+
+
 def strip_media_markers(text) -> str:
     """剥掉中性媒体 marker（``[发送了一张图片，内容未知]`` 等合成占位符）。
 
     marker 是 parser 合成的提示，**不是用户写的文字**：绝不能参与关键词 /
     词语重合检测（否则「图片」「内容」「发送」这类占位符词会让纯媒体消息
     伪装成「延续话题」「特殊关注」）。混合消息里的真实文字原样保留。
+
+    必须整段移除（含时长变体）：只删尾巴会残留
+    「[发送了一条 7 秒语音」这类碎片，其词元（发送了一条 / 秒语音）
+    照样会参与重合检测——已按此回归固定。
     """
     out = str(text or "")
-    for marker in MEDIA_MARKERS.values():
-        out = out.replace(marker, " ")
-    out = out.replace(MEDIA_MARKER_TAIL, " ")
+    out = _MEDIA_MARKER_RE.sub(" ", out)
+    out = _MEDIA_MARKER_TAIL_RE.sub(" ", out)
     return out
 
 

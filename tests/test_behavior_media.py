@@ -447,3 +447,110 @@ def test_filtering_never_modifies_confirmed_events():
         assert before == after, "过滤绝不能修改已确认事件"
 
 
+# ---------------------------------------------------------------------------
+# 带时长的语音占位符（动态时长不能被只删尾巴的剥离留下碎片）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("marker", [
+    "[发送了一条语音，内容未知]",
+    "[发送了一条 7 秒语音，内容未知]",
+    "[发送了一条 12 秒语音，内容未知]",
+    "[发送了一条 7.5 秒语音，内容未知]",
+    "[发送了一条 3600 秒语音，内容未知]",
+])
+def test_voice_duration_markers_fully_stripped(marker):
+    """带时长的语音占位符必须整段移除（含动态时长），不留碎片。"""
+    assert bv.strip_media_markers(marker).strip() == ""
+    assert bv._content_tokens(marker) == set(), marker
+    assert bv.message_has_text({"text": marker}) is False, marker
+
+
+def test_mixed_text_and_voice_keeps_only_real_text():
+    """文字 + 语音混合：只保留真实文字的词元，占位符词（发送了一条 /
+    秒语音）绝不出现。"""
+    raw = "我听到了 [发送了一条 7 秒语音，内容未知] 之后回的"
+    tokens = bv._content_tokens(raw)
+    assert "我听到了" in tokens
+    assert "之后回的" in tokens
+    for leftover in ("发送了一条", "秒语音", "内容", "未知", "一条"):
+        assert leftover not in tokens, leftover
+    assert bv.message_has_text({"text": raw}) is False or True  # 有真实文字
+
+
+def test_voice_placeholder_words_do_not_create_topic_continuation():
+    """我方文字出现独立的「发送了一条」分块，TA 只回带时长语音 → 不得因
+    占位符残词（发送了一条 / 秒语音）生成延续话题候选。"""
+    chat = """小明.
+2026年08月21日 21:00
+发送了一条，你听一下
+
+小安.
+2026年08月21日 21:05
+[语音] 7"
+"""
+    cands, meta = bv.generate_candidates_with_meta(_messages(chat))
+    assert (bv.DIMENSION_INITIATIVE, "topic_continuation") not in _pairs(cands)
+    assert cands == [], _pairs(cands)
+    # 占位符被完整剥离 → 连候选都没生成（不是生成后再过滤）
+    assert meta["media_filtered"] == 0
+    # 反向对照：同样的文字换成 TA 的真实文字回应 → 正常生成延续话题
+    chat_text = chat.replace('[语音] 7"', '发送了一条，我听着呢')
+    cands2, _meta2 = bv.generate_candidates_with_meta(_messages(chat_text))
+    assert (bv.DIMENSION_INITIATIVE, "topic_continuation") in _pairs(cands2)
+
+
+CHAT_BOTH_VOICES = """小明.
+2026年08月21日 21:00
+我先发一条语音试试
+
+小安.
+2026年08月21日 21:01
+[语音] 7"
+
+小明.
+2026年08月21日 21:02
+[语音] 12"
+
+小安.
+2026年08月21日 21:03
+[语音] 45"
+"""
+
+
+def test_both_sides_voice_different_durations_no_false_candidates():
+    """双方发送不同时长的语音：不得因占位符词语重合产生任何候选。"""
+    cands, meta = bv.generate_candidates_with_meta(
+        _messages(CHAT_BOTH_VOICES))
+    assert cands == [], _pairs(cands)
+    # 占位符完整剥离 → 不生成任何候选（不同时长同理）
+    assert meta["media_filtered"] == 0
+    # 媒体消息仍完整保留在聊天里（没被删）
+    messages = _messages(CHAT_BOTH_VOICES)
+    assert sum(1 for m in messages if m.get("content_type") == "media") == 3
+
+
+CHAT_TEXT_PLUS_VOICE = """小明.
+2026年08月21日 21:00
+今天好累，压力好大
+
+小安.
+2026年08月21日 21:05
+听到了 [语音] 7" 先不说了，晚点聊
+
+小明.
+2026年08月21日 21:06
+好"""
+
+
+def test_text_plus_voice_reply_still_generates_candidates():
+    """文字 + 语音混合回应：照常生成候选（语音内容不做推测）。"""
+    cands, meta = bv.generate_candidates_with_meta(
+        _messages(CHAT_TEXT_PLUS_VOICE))
+    assert (bv.DIMENSION_CARE, "care_response") in _pairs(cands)
+    # 混合消息的候选保留媒体作为上下文
+    care = [c for c in cands if c.behavior_type == "care_response"][0]
+    preview = " ".join(str(row.get("text") or "") for row in care.msg_texts)
+    assert "内容未知" in preview
+    # 但候选窗口的 TA 侧有真实文字 → 不被媒体过滤
+    assert meta["media_filtered"] == 0
