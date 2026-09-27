@@ -68,6 +68,18 @@ CHAT_SAME_SPEAKER_SAME_MINUTE = """小明.
 2026年08月21日 21:01
 收到"""
 
+CHAT_MULTI_CANDIDATE_SAME_WINDOW = """小明.
+2026年08月21日 17:00
+收工啦
+
+小安.
+2026年08月21日 20:41
+哥们，有空一起吃饭吧
+
+小安.
+2026年08月21日 20:41
+改天聊聊"""
+
 
 @pytest.fixture
 def history(tmp_path, monkeypatch):
@@ -271,6 +283,9 @@ def test_confirm_candidate_creates_event_and_report(history,
     # 事件身份与候选不匹配、确认后候选不消失的缺陷）
     assert event["behavior_type"] == "care_response"
     assert event["msg_window"] == [0, 1]
+    event_panel = next(e for e in at.expander
+                       if e.key == f"behavior_event_panel_{event['event_id']}")
+    assert "2026-08-21 21:00 ~ 2026-08-21 21:05" in event_panel.label
     # 确认后：候选数减一（同身份不重复呈现）、报告区出现
     assert _pending_count(at) == pending_before - 1
     assert "长期行为事件报告" in _texts(at)
@@ -281,6 +296,7 @@ def test_confirm_candidate_creates_event_and_report(history,
 @pytest.mark.parametrize(("operation", "expected_status"), [
     ("default_confirm", "confirmed"),
     ("changed_classification", "confirmed"),
+    ("changed_range", "confirmed"),
     ("different_stance", "confirmed"),
     ("exclude", "rejected"),
 ])
@@ -364,6 +380,14 @@ def test_same_speaker_same_minute_candidate_review_does_not_reappear(
                       if e.key == f"behavior_stance_{scope}")
         stance.set_value("counter")
         at.run()
+    elif operation == "changed_range":
+        start = next(e for e in at.number_input
+                     if e.key == f"behavior_start_{scope}")
+        end = next(e for e in at.number_input
+                   if e.key == f"behavior_end_{scope}")
+        start.set_value(1)
+        end.set_value(3)
+        at.run()
 
     preview = next(b for b in at.button
                    if b.key == f"behavior_preview_btn_{scope}")
@@ -389,10 +413,12 @@ def test_same_speaker_same_minute_candidate_review_does_not_reappear(
     assert event["status"] == expected_status
     assert event["original_candidate_identity"] == target.identity
     assert built[0]["original_candidate_identity"] == target.identity
-    if operation == "changed_classification":
+    if operation in ("changed_classification", "changed_range"):
         assert event["event_identity"] != target.identity
     else:
         assert event["event_identity"] == target.identity
+    if operation == "changed_range":
+        assert event["msg_window"] == [0, 2]
     if operation == "different_stance":
         assert event["stance"] == "counter"
 
@@ -468,6 +494,230 @@ def test_same_speaker_same_minute_candidate_review_does_not_reappear(
     assert not any(str(getattr(e, "key", "")).endswith(target.identity[:12])
                    and str(getattr(e, "key", "")).startswith("behavior_dim_")
                    for e in at2.selectbox)
+
+
+def test_confirm_notice_keeps_other_same_window_types_pending(
+        history, counting_client):
+    """共享指纹不应把邀约 / 主动联系等其它类型误标成已审核。"""
+    at = _fresh()
+    _parse_and_analyze(at, CHAT_MULTI_CANDIDATE_SAME_WINDOW)
+    _open_behavior(at)
+    messages = (at.session_state.get("analysis_messages")
+                or at.session_state["messages"])
+    candidates = bv.generate_candidates(messages)
+    target = next(c for c in candidates
+                  if c.dimension == bv.DIMENSION_ROMANCE
+                  and c.behavior_type == "close_friendship")
+    siblings = {c.identity for c in candidates if c.identity != target.identity
+                and set(c.fingerprints) == set(target.fingerprints)}
+    assert {(c.dimension, c.behavior_type) for c in candidates} == {
+        (bv.DIMENSION_INITIATIVE, "proactive_contact"),
+        (bv.DIMENSION_INITIATIVE, "invitation"),
+        (bv.DIMENSION_ROMANCE, "close_friendship"),
+    }
+    assert len(siblings) == 2
+    before_calls = len(counting_client)
+    assert any("候选 3 条待核对" in line for line in _texts(at).splitlines())
+
+    scope_widget = next(e for e in at.selectbox
+                        if str(getattr(e, "key", "")).startswith(
+                            "behavior_dim_")
+                        and str(getattr(e, "key", "")).endswith(
+                            target.identity[:12]))
+    scope = scope_widget.key[len("behavior_dim_"):]
+    preview = next(b for b in at.button
+                   if b.key == f"behavior_preview_btn_{scope}")
+    preview.click()
+    at.run()
+    save = next(b for b in at.button
+                if b.key == f"behavior_confirm_{scope}")
+    save.click()
+    at.run()
+    assert not at.exception
+    text = _texts(at)
+    assert "已确认事件：好感与关系性质 · 亲密友情" in text
+    assert "同一段聊天可能还有其他类型的候选，仍需分别审核" in text
+    assert "2 条" in text
+    assert len(counting_client) == before_calls
+
+    store, events = _events(history)
+    assert len(events) == 1
+    reviewed = bv.reviewed_identities(events)
+    assert target.identity in reviewed
+    assert not (siblings & reviewed)
+    pending = bv.pending_candidates(bv.generate_candidates(messages), events)
+    assert siblings <= {c.identity for c in pending}
+    assert any("候选 2 条待核对" in line for line in _texts(at).splitlines())
+
+
+@pytest.mark.parametrize(("failure", "category", "stored_rows"), [
+    ("readback_missing", "event_readback_missing", 1),
+    ("readback_identity_mismatch", "event_readback_mismatch", 1),
+    ("original_identity_missing", "original_identity_missing", 1),
+    ("reviewed_missing", "candidate_not_in_reviewed_set", 1),
+    ("write_exception_no_record", "write_exception_no_record", 0),
+    ("write_exception_record_found", "write_exception_record_found", 1),
+])
+def test_candidate_save_verification_failure_never_claims_success(
+        history, counting_client, monkeypatch, failure, category, stored_rows):
+    """保存或回读异常必须明确提示，绝不自动重试或虚报成功。"""
+    import sqlite3
+
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)
+    save_calls = []
+    original_save = fh.FriendStore.save_event
+    original_get = fh.FriendStore.get_event
+
+    if failure in ("readback_missing", "readback_identity_mismatch"):
+        def fake_get(store, event_id):
+            row = original_get(store, event_id)
+            if failure == "readback_missing":
+                return None
+            if row is not None:
+                row = dict(row)
+                row["event_identity"] = "fictional-readback-mismatch"
+            return row
+
+        monkeypatch.setattr(fh.FriendStore, "get_event", fake_get)
+
+    if failure == "original_identity_missing":
+        def save_without_original(store, event):
+            save_calls.append(1)
+            stored = dict(event)
+            stored["original_candidate_identity"] = ""
+            return original_save(store, stored)
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", save_without_original)
+    elif failure == "write_exception_no_record":
+        def write_error(_store, _event):
+            save_calls.append(1)
+            raise sqlite3.OperationalError("fictional write failure")
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", write_error)
+    elif failure == "write_exception_record_found":
+        def save_then_error(store, event):
+            save_calls.append(1)
+            original_save(store, event)
+            raise sqlite3.OperationalError("fictional post-commit error")
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", save_then_error)
+    elif failure == "reviewed_missing":
+        saved_ids = set()
+        original_list = fh.FriendStore.list_events
+
+        def save_then_hide_review(store, event):
+            save_calls.append(1)
+            event_id = original_save(store, event)
+            saved_ids.add(event_id)
+            return event_id
+
+        def list_without_reviewed_status(store, friend_id, *, status=None,
+                                         dimension=None):
+            rows = original_list(store, friend_id, status=status,
+                                 dimension=dimension)
+            if status is None and saved_ids:
+                return [dict(row, status="candidate")
+                        if row["event_id"] in saved_ids else row
+                        for row in rows]
+            return rows
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", save_then_hide_review)
+        monkeypatch.setattr(fh.FriendStore, "list_events",
+                            list_without_reviewed_status)
+    else:
+        def count_save(store, event):
+            save_calls.append(1)
+            return original_save(store, event)
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", count_save)
+
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
+    assert not at.exception
+    text = _texts(at)
+    assert "保存结果未通过核验" in text
+    assert f"核验代码：{category}" in text
+    assert "未自动重试" in text
+    assert "请检查下方" in text
+    assert "已确认事件：" not in text
+    assert len(save_calls) == 1
+    friend_id = at.session_state["friend_selected"]
+    assert len(fh.FriendStore(history).list_events(friend_id)) == stored_rows
+
+
+def test_verified_save_helper_classifies_idempotent_original_union(
+        history, counting_client):
+    """已有最终事件时只幂等调用一次，并验证第二个原始候选已并入。"""
+    import app as app_module
+    from parser import parse_chat
+    from privacy import mask_messages
+    from timeline import sort_messages
+
+    messages = sort_messages(mask_messages(parse_chat(
+        CHAT_MULTI_CANDIDATE_SAME_WINDOW, "小明.", "小安."))).messages
+    candidates = bv.generate_candidates(messages)
+    first = next(c for c in candidates
+                 if c.behavior_type == "invitation")
+    second = next(c for c in candidates
+                  if c.behavior_type == "proactive_contact")
+    assert first.start == second.start and first.end == second.end
+    assert set(first.fingerprints) == set(second.fingerprints)
+
+    store = fh.FriendStore(history)
+    friend = store.create_friend("虚构档案", aliases=["小安"])
+    event_a = bv.build_event_dict(
+        candidate=first, friend_id=friend.friend_id,
+        dimension=first.dimension, behavior_type=first.behavior_type,
+        stance="supporting", messages=messages,
+        start=first.start, end=first.end)
+    saved_a = app_module._save_behavior_event_verified(
+        store, event_a, first.identity)
+    assert saved_a["ok"] is True
+    assert saved_a["idempotent"] is False
+
+    event_b = bv.build_event_dict(
+        candidate=second, friend_id=friend.friend_id,
+        dimension=first.dimension, behavior_type=first.behavior_type,
+        stance="supporting", messages=messages,
+        start=second.start, end=second.end)
+    assert event_a["event_identity"] == event_b["event_identity"]
+    saved_b = app_module._save_behavior_event_verified(
+        store, event_b, second.identity)
+    assert saved_b["ok"] is True
+    assert saved_b["idempotent"] is True
+    assert saved_b["event_id"] == saved_a["event_id"]
+    rows = store.list_events(friend.friend_id)
+    assert len(rows) == 1
+    assert set(bv.original_identities(rows[0])) == {
+        first.identity, second.identity}
+    assert {first.identity, second.identity} <= bv.reviewed_identities(rows)
+
+
+def test_behavior_render_helpers_accept_event_dict_and_objects(
+        monkeypatch, tmp_path):
+    """数据库字典与候选对象都正确显示时间和限制标记。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-not-a-real-secret")
+    monkeypatch.setenv("SIGNALLENS_DATA_DIR", str(tmp_path / "runtime-data"))
+    import app as app_module
+
+    start, end = "2026-04-16 20:41", "2026-04-16 20:42"
+    flags = {"time_uncertain": True, "media_unknown": True,
+             "context_missing": True}
+    expected_time = f"{start} ~ {end}"
+    expected_flags = "时间不能完整归位；窗口含媒体（内容未知，未推测）；历史来源，无聊天正文"
+    for value in (
+        {"event_start_time": start, "event_end_time": end, "flags": flags},
+        SimpleNamespace(event_start_time=start, event_end_time=end,
+                        flags=flags),
+    ):
+        assert app_module._behavior_time_text(value) == expected_time
+        assert app_module._behavior_flags_text(value) == expected_flags
+    assert app_module._behavior_time_text({
+        "event_start_time": None, "event_end_time": None}) == "（时间不明）"
 
 
 def test_exclude_candidate_keeps_rejected_trace(history, counting_client):

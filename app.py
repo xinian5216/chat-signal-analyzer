@@ -2413,7 +2413,9 @@ def _behavior_type_label(dimension: str, behavior_type: str) -> str:
 
 
 def _behavior_flags_text(candidate_or_event) -> str:
-    flags = getattr(candidate_or_event, "flags", None) or {}
+    flags = _behavior_value(candidate_or_event, "flags") or {}
+    if not isinstance(flags, dict):
+        flags = {}
     bits = []
     if flags.get("time_uncertain"):
         bits.append("时间不能完整归位")
@@ -2425,13 +2427,194 @@ def _behavior_flags_text(candidate_or_event) -> str:
 
 
 def _behavior_time_text(candidate_or_event) -> str:
-    start = getattr(candidate_or_event, "event_start_time", None)
-    end = getattr(candidate_or_event, "event_end_time", None)
+    start = _behavior_value(candidate_or_event, "event_start_time")
+    end = _behavior_value(candidate_or_event, "event_end_time")
     if start and end:
         return start if start == end else f"{start} ~ {end}"
-    if start:
-        return start
+    if start or end:
+        return start or end
     return "（时间不明）"
+
+
+def _behavior_value(value, key: str, default=None):
+    """读取候选对象或 SQLite dict 行的同名字段。"""
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _save_behavior_event_verified(store, event: dict,
+                                  original_candidate_identity: str) -> dict:
+    """单次写事件，随后经独立 Store 读取验证落库与双身份。
+
+    绝不在失败后重试写入。返回只含状态、字段名和异常类型的本地诊断；
+    调用方不得把存储内容或完整身份放入提示 / 日志。
+    """
+    friend_id = str(event.get("friend_id") or "")
+    identity = str(event.get("event_identity") or "")
+    expected_original = str(original_candidate_identity or "")
+    expected_status = str(event.get("status") or "candidate")
+    if not friend_id or not identity or not expected_original:
+        return {"ok": False, "category": "invalid_expected_identity"}
+    if expected_original not in bv.original_identities(event):
+        return {"ok": False, "category": "request_original_identity_missing"}
+
+    try:
+        existing = store.events_by_identity(friend_id, identity)
+    except Exception as exc:
+        return {"ok": False, "category": "preflight_read_exception",
+                "exception_type": type(exc).__name__}
+    if len(existing) > 1:
+        return {"ok": False, "category": "preexisting_identity_conflict"}
+    if existing and existing[0].get("status") != expected_status:
+        return {"ok": False, "category": "preexisting_status_conflict"}
+
+    existing_ids = {str(row.get("event_id") or "") for row in existing}
+    try:
+        saved_id = store.save_event(event)
+    except Exception as exc:
+        # 写入抛错后只做一次只读探测；绝不重试写入。
+        try:
+            after_error = store.events_by_identity(friend_id, identity)
+        except Exception as read_exc:
+            return {"ok": False, "category": "write_exception_probe_failed",
+                    "exception_type": type(exc).__name__,
+                    "probe_exception_type": type(read_exc).__name__}
+        return {"ok": False,
+                "category": ("write_exception_record_found" if after_error
+                             else "write_exception_no_record"),
+                "exception_type": type(exc).__name__}
+
+    if not saved_id:
+        try:
+            after_empty = store.events_by_identity(friend_id, identity)
+        except Exception as exc:
+            return {"ok": False, "category": "save_returned_no_id_probe_failed",
+                    "exception_type": type(exc).__name__}
+        return {"ok": False,
+                "category": ("save_returned_no_id_record_found" if after_empty
+                             else "save_returned_no_id")}
+
+    saved_id = str(saved_id)
+    idempotent = saved_id in existing_ids
+    if existing and not idempotent:
+        return {"ok": False, "category": "idempotent_return_mismatch"}
+    try:
+        saved = store.get_event(saved_id)
+    except Exception as exc:
+        return {"ok": False, "category": "event_readback_exception",
+                "exception_type": type(exc).__name__, "idempotent": idempotent}
+    if saved is None:
+        return {"ok": False, "category": "event_readback_missing",
+                "idempotent": idempotent}
+
+    expected_fields = {
+        "event_id": saved_id,
+        "friend_id": friend_id,
+        "event_identity": identity,
+        "status": expected_status,
+        "dimension": str(event.get("dimension") or ""),
+        "behavior_type": str(event.get("behavior_type") or ""),
+    }
+    mismatches = [key for key, expected in expected_fields.items()
+                  if str(saved.get(key) or "") != expected]
+    if mismatches:
+        return {"ok": False, "category": "event_readback_mismatch",
+                "mismatch_fields": mismatches, "idempotent": idempotent}
+    if expected_original not in bv.original_identities(saved):
+        return {"ok": False, "category": "original_identity_missing",
+                "idempotent": idempotent}
+
+    try:
+        friend_events = store.list_events(friend_id)
+    except Exception as exc:
+        return {"ok": False, "category": "reviewed_events_read_exception",
+                "exception_type": type(exc).__name__, "idempotent": idempotent}
+    listed = next((row for row in friend_events
+                   if str(row.get("event_id") or "") == saved_id), None)
+    if listed is None:
+        return {"ok": False, "category": "event_missing_from_friend_list",
+                "idempotent": idempotent}
+    if expected_original not in bv.reviewed_identities(friend_events):
+        return {"ok": False, "category": "candidate_not_in_reviewed_set",
+                "idempotent": idempotent}
+    return {"ok": True,
+            "category": "idempotent_existing" if idempotent
+            else "write_verified",
+            "event_id": saved_id, "idempotent": idempotent,
+            "friend_events": friend_events}
+
+
+_BEHAVIOR_SAVE_FAILURE_LABELS = {
+    "invalid_expected_identity": "待保存事件缺少必要身份字段",
+    "request_original_identity_missing": "待保存事件没有原始候选身份",
+    "preflight_read_exception": "写入前读取既有事件失败",
+    "preexisting_identity_conflict": "发现多个相同最终身份的既有事件",
+    "preexisting_status_conflict": "既有事件状态与本次操作不一致",
+    "write_exception_no_record": "数据库写入异常，未发现同身份记录",
+    "write_exception_record_found": "写入调用异常，但数据库中发现同身份记录",
+    "write_exception_probe_failed": "数据库写入异常且后续只读探测失败",
+    "save_returned_no_id": "保存接口未返回事件 ID，也未发现同身份记录",
+    "save_returned_no_id_record_found": "保存接口未返回事件 ID，但数据库中发现同身份记录",
+    "save_returned_no_id_probe_failed": "保存接口未返回事件 ID，且后续只读探测失败",
+    "idempotent_return_mismatch": "既有事件幂等返回 ID 不一致",
+    "event_readback_exception": "写入返回 ID 后独立回读异常",
+    "event_readback_missing": "写入返回 ID 后独立回读未找到事件",
+    "event_readback_mismatch": "回读事件字段与预期不一致",
+    "original_identity_missing": "回读事件未关联本次原始候选身份",
+    "reviewed_events_read_exception": "重新读取该好友事件列表失败",
+    "event_missing_from_friend_list": "回读事件未出现在该好友事件列表",
+    "candidate_not_in_reviewed_set": "原始候选身份不在已审核身份集合",
+}
+
+
+def _behavior_save_failure_notice(result: dict) -> str:
+    category = str(result.get("category") or "unknown")
+    label = _BEHAVIOR_SAVE_FAILURE_LABELS.get(category, "数据库核验未通过")
+    details = [f"核验代码：{category}"]
+    for key in ("exception_type", "probe_exception_type"):
+        if result.get(key):
+            details.append(f"{key}={result[key]}")
+    if result.get("mismatch_fields"):
+        details.append("字段=" + ",".join(result["mismatch_fields"]))
+    return (
+        f"保存结果未通过核验：{label}（{'；'.join(details)}）。"
+        "未自动重试，以避免重复事件。请检查下方「已确认的行为事件」或"
+        "「已排除的候选」记录；如果事件已存在，请勿重复提交。")
+
+
+def _same_window_pending_candidates(candidate, messages,
+                                    friend_events: list[dict]) -> list:
+    """找同一当前聊天窗口尚待核对的其它规则候选；不按指纹批量审核。"""
+    if candidate.source_kind != "rule" or not messages:
+        return []
+    pending = bv.pending_candidates(bv.generate_candidates(messages),
+                                    friend_events)
+    target_fingerprints = set(candidate.fingerprints)
+    return [other for other in pending
+            if other.identity != candidate.identity
+            and (set(other.fingerprints) == target_fingerprints
+                 or (other.start == candidate.start
+                     and other.end == candidate.end))]
+
+
+def _behavior_save_success_notice(candidate, dimension: str,
+                                  behavior_type: str, status: str,
+                                  result: dict, remaining: int) -> str:
+    direction = bv.DIMENSION_LABELS.get(dimension, dimension)
+    type_label = _behavior_type_label(dimension, behavior_type)
+    if status == "rejected":
+        text = f"已排除该候选：{direction} · {type_label}。"
+    else:
+        text = f"已确认事件：{direction} · {type_label}。"
+    if result.get("idempotent"):
+        text += "已有事件已幂等回读，且原始候选关联核验通过。"
+    else:
+        text += "数据库回读及原始候选身份核验通过。"
+    if remaining:
+        text += (f"同一段聊天可能还有其他类型的候选，仍需分别审核"
+                 f"（{remaining} 条待核对）。")
+    return text
 
 
 def show_behavior_panel(results: list[dict], stats: dict) -> None:
@@ -2961,11 +3144,18 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
                     st.error(f"方向与行为类型不匹配，未写入：{exc}")
                 else:
                     _behavior_clear_preview(scope)
-                    store.save_event(event)
+                    verified = _save_behavior_event_verified(
+                        store, event, candidate.identity)
+                    if not verified["ok"]:
+                        set_input_notice(
+                            "error", _behavior_save_failure_notice(verified))
+                        st.rerun()
+                    remaining = _same_window_pending_candidates(
+                        candidate, messages, verified["friend_events"])
                     set_input_notice(
-                        "success",
-                        f"已确认事件：{bv.DIMENSION_LABELS[dimension]} · "
-                        f"{_behavior_type_label(dimension, behavior_type)}。")
+                        "success", _behavior_save_success_notice(
+                            candidate, dimension, behavior_type, "confirmed",
+                            verified, len(remaining)))
                     st.rerun()
         with c2:
             if st.button("排除这条", key=f"behavior_exclude_{scope}"):
@@ -2998,9 +3188,19 @@ def _render_behavior_candidate(store, friend, candidate) -> None:
                     st.error(f"方向与行为类型不匹配，未写入：{exc}")
                 else:
                     _behavior_clear_preview(scope)
-                    store.save_event(event)
-                    set_input_notice("info", "已排除该候选（排除记录会保留，"
-                                              "可追溯你的取舍）。")
+                    verified = _save_behavior_event_verified(
+                        store, event, candidate.identity)
+                    if not verified["ok"]:
+                        set_input_notice(
+                            "error", _behavior_save_failure_notice(verified))
+                        st.rerun()
+                    remaining = _same_window_pending_candidates(
+                        candidate, messages, verified["friend_events"])
+                    notice = _behavior_save_success_notice(
+                        candidate, dimension, behavior_type, "rejected",
+                        verified, len(remaining))
+                    notice += "排除记录会保留，可追溯你的取舍。"
+                    set_input_notice("info", notice)
                     st.rerun()
 
 
