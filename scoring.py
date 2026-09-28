@@ -404,8 +404,10 @@ def evidence_level_label(value: float | None) -> str:
     return "存在强信号"
 
 
-def total_evidence_label(total_weight: float) -> str:
-    """顶部“有效关系证据”总量标签。"""
+def total_evidence_label(total_weight: float | None) -> str:
+    """顶部“有效关系证据”总量标签（None = 没有可统计样本）。"""
+    if total_weight is None:
+        return "样本不足"
     if total_weight >= EVIDENCE_TOTAL_HIGH:
         return "较高"
     if total_weight >= EVIDENCE_TOTAL_MEDIUM:

@@ -4,6 +4,7 @@
 Jev（每个测试都断言分析调用次数不变）。
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -53,10 +54,37 @@ CHAT = """小明.
 2026年08月27日 11:00
 出发了"""
 
+# 确认候选的边界回归：两条连续 TA 消息同一分钟，同一 turn，只有第一条含
+# 「哥们」。整个候选应是 #2–#3，默认分类确认后不得继续留在待审核列表。
+CHAT_SAME_SPEAKER_SAME_MINUTE = """小明.
+2026年08月21日 21:00
+今天准备休息
+
+小安.
+2026年08月21日 21:01
+哥们
+
+小安.
+2026年08月21日 21:01
+收到"""
+
+CHAT_MULTI_CANDIDATE_SAME_WINDOW = """小明.
+2026年08月21日 17:00
+收工啦
+
+小安.
+2026年08月21日 20:41
+哥们，有空一起吃饭吧
+
+小安.
+2026年08月21日 20:41
+改天聊聊"""
+
 
 @pytest.fixture
 def history(tmp_path, monkeypatch):
     """把好友档案数据库重定向到临时目录（绝不碰仓库里的真实档案）。"""
+    monkeypatch.setenv("SIGNALLENS_DATA_DIR", str(tmp_path / "runtime-data"))
     monkeypatch.setattr(paths, "friend_history_db_path",
                         lambda: tmp_path / "friend_history.db")
     return tmp_path / "friend_history.db"
@@ -174,8 +202,8 @@ def _widgets(at, kind, key_prefix):
             if str(getattr(e, "key", "")).startswith(key_prefix)]
 
 
-def _parse_and_analyze(at):
-    at.text_area[0].set_value(CHAT)
+def _parse_and_analyze(at, chat=CHAT):
+    at.text_area[0].set_value(chat)
     _button(at, "解析并替换当前聊天").click()
     at.run()
     at.selectbox[0].select("小明.")
@@ -255,11 +283,451 @@ def test_confirm_candidate_creates_event_and_report(history,
     # 事件身份与候选不匹配、确认后候选不消失的缺陷）
     assert event["behavior_type"] == "care_response"
     assert event["msg_window"] == [0, 1]
+    event_panel = next(e for e in at.expander
+                       if e.key == f"behavior_event_panel_{event['event_id']}")
+    assert "2026-08-21 21:00 ~ 2026-08-21 21:05" in event_panel.label
     # 确认后：候选数减一（同身份不重复呈现）、报告区出现
     assert _pending_count(at) == pending_before - 1
     assert "长期行为事件报告" in _texts(at)
     # 整个流程 0 额外 Jev 请求
     assert len(counting_client) == before
+
+
+@pytest.mark.parametrize(("operation", "expected_status"), [
+    ("default_confirm", "confirmed"),
+    ("changed_classification", "confirmed"),
+    ("changed_range", "confirmed"),
+    ("different_stance", "confirmed"),
+    ("exclude", "rejected"),
+])
+def test_same_speaker_same_minute_candidate_review_does_not_reappear(
+        history, counting_client, monkeypatch, operation, expected_status):
+    """真实 Streamlit UI 链路：同说话方同分钟双消息审核后不再入待审核。
+
+    覆盖默认分类确认、改分类、改立场、排除；同时核对 UI 按钮、事件构造、
+    save_event 返回值、SQLite 行、list_events/reviewed_identities、分页前
+    pending_candidates，以及同会话刷新和新会话重启后的候选状态。所有数据
+    都是虚构的，friend_history 和分析缓存由测试临时目录 fixture 隔离。
+    """
+    import sqlite3
+
+    at = _fresh()
+    _parse_and_analyze(at, CHAT_SAME_SPEAKER_SAME_MINUTE)
+    _open_behavior(at)
+
+    messages = (at.session_state.get("analysis_messages")
+                or at.session_state["messages"])
+    generated = bv.generate_candidates(messages)
+    matches = [c for c in generated
+               if c.dimension == bv.DIMENSION_ROMANCE
+               and c.behavior_type == "close_friendship"]
+    assert len(matches) == 1
+    target = matches[0]
+    assert (target.start, target.end) == (1, 2)
+    assert [m["speaker"] for m in messages[1:3]] == ["them", "them"]
+    assert messages[1]["time"] == messages[2]["time"]
+
+    pending_before = next(
+        int(m.group(1)) for line in _texts(at).splitlines()
+        if (m := re.search(r"候选 (\d+) 条待核对", line)))
+    assert pending_before == 1
+    analysis_calls_before_review = len(counting_client)
+    friend_id = at.session_state["friend_selected"]
+    assert friend_id
+
+    # 只捕获身份/状态字段，避免把聊天正文写入诊断数据。
+    built, saved = [], []
+    original_build = bv.build_event_dict
+    original_save = fh.FriendStore.save_event
+
+    def traced_build(*args, **kwargs):
+        event = original_build(*args, **kwargs)
+        built.append({k: event.get(k) for k in (
+            "friend_id", "event_identity", "original_candidate_identity",
+            "dimension", "behavior_type", "stance", "status")})
+        return event
+
+    def traced_save(store, event):
+        event_id = original_save(store, event)
+        saved.append({"event_id": event_id,
+                      "friend_id": event.get("friend_id"),
+                      "event_identity": event.get("event_identity"),
+                      "original_candidate_identity": event.get(
+                          "original_candidate_identity"),
+                      "status": event.get("status")})
+        return event_id
+
+    monkeypatch.setattr(bv, "build_event_dict", traced_build)
+    monkeypatch.setattr(fh.FriendStore, "save_event", traced_save)
+
+    scope_widget = next(
+        e for e in at.selectbox
+        if str(getattr(e, "key", "")).startswith("behavior_dim_")
+        and str(getattr(e, "key", "")).endswith(target.identity[:12]))
+    scope = scope_widget.key[len("behavior_dim_"):]
+
+    if operation == "changed_classification":
+        dim = next(e for e in at.selectbox
+                   if e.key == f"behavior_dim_{scope}")
+        dim.set_value(bv.DIMENSION_CARE)
+        at.run()
+        typ = next(e for e in at.selectbox
+                   if e.key == f"behavior_type_{scope}")
+        typ.set_value("care_response")
+        at.run()
+    elif operation == "different_stance":
+        stance = next(e for e in at.radio
+                      if e.key == f"behavior_stance_{scope}")
+        stance.set_value("counter")
+        at.run()
+    elif operation == "changed_range":
+        start = next(e for e in at.number_input
+                     if e.key == f"behavior_start_{scope}")
+        end = next(e for e in at.number_input
+                   if e.key == f"behavior_end_{scope}")
+        start.set_value(1)
+        end.set_value(3)
+        at.run()
+
+    preview = next(b for b in at.button
+                   if b.key == f"behavior_preview_btn_{scope}")
+    assert preview.label == "查看最终预览"
+    _preview_then_click(
+        at, "排除这条" if operation == "exclude" else "确认这条事件",
+        "behavior_note_",
+        "behavior_exclude_" if operation == "exclude"
+        else "behavior_confirm_")
+    assert not at.exception
+    assert len(built) == len(saved) == 1
+    assert len(counting_client) == analysis_calls_before_review
+    assert saved[0]["event_id"]
+    assert built[0]["friend_id"] == saved[0]["friend_id"] == friend_id
+    assert saved[0]["status"] == expected_status
+
+    store = fh.FriendStore(history)
+    rows = store.list_events(friend_id)
+    assert len(rows) == 1
+    event = rows[0]
+    assert event["event_id"] == saved[0]["event_id"]
+    assert event["friend_id"] == friend_id
+    assert event["status"] == expected_status
+    assert event["original_candidate_identity"] == target.identity
+    assert built[0]["original_candidate_identity"] == target.identity
+    if operation in ("changed_classification", "changed_range"):
+        assert event["event_identity"] != target.identity
+    else:
+        assert event["event_identity"] == target.identity
+    if operation == "changed_range":
+        assert event["msg_window"] == [0, 2]
+    if operation == "different_stance":
+        assert event["stance"] == "counter"
+
+    # SQLite 原始行、Store 读取、已审核身份与重生成候选逐层一致。
+    with sqlite3.connect(f"file:{history}?mode=ro", uri=True) as db:
+        db_row = db.execute(
+            "SELECT event_id, friend_id, status, event_identity, "
+            "original_candidate_identity FROM behavior_events "
+            "WHERE friend_id = ?", (friend_id,)).fetchone()
+        db_count = db.execute(
+            "SELECT COUNT(*) FROM behavior_events WHERE friend_id = ?",
+            (friend_id,)).fetchone()[0]
+    assert db_count == 1
+    assert db_row == (event["event_id"], friend_id, expected_status,
+                      event["event_identity"], target.identity)
+    reviewed = bv.reviewed_identities(rows)
+    assert target.identity in reviewed
+    if operation == "changed_classification":
+        assert event["event_identity"] in reviewed
+    pending = bv.pending_candidates(bv.generate_candidates(messages), rows)
+    assert target.identity not in {c.identity for c in pending}
+    assert not any(c.dimension == bv.DIMENSION_ROMANCE
+                   and c.behavior_type == "close_friendship" for c in pending)
+    assert pending_before - 1 == next(
+        int(m.group(1)) for line in _texts(at).splitlines()
+        if (m := re.search(r"候选 (\d+) 条待核对", line)))
+    assert not any(e.key == f"behavior_dim_{scope}" for e in at.selectbox)
+    if expected_status == "confirmed":
+        assert any(e.key == f"behavior_event_panel_{event['event_id']}"
+                   for e in at.expander)
+    else:
+        assert any("已排除的候选" in e.label for e in at.expander)
+
+    # 页面切换触发刷新后仍不复活。
+    at.segmented_control[0].set_value("概览")
+    at.run()
+    at.segmented_control[0].set_value("长期观察")
+    at.run()
+    assert not at.exception
+    assert pending_before - 1 == next(
+        int(m.group(1)) for line in _texts(at).splitlines()
+        if (m := re.search(r"候选 (\d+) 条待核对", line)))
+    assert not any(e.key == f"behavior_dim_{scope}" for e in at.selectbox)
+
+    # 新 AppTest session 模拟重启：经 UI 查找并再次选择同一 friend_id。
+    at2 = _fresh()
+    _parse_and_analyze(at2, CHAT_SAME_SPEAKER_SAME_MINUTE)
+    at2.segmented_control[0].set_value("长期观察")
+    at2.run()
+    search = next(e for e in at2.text_input
+                  if e.label == "用微信昵称 / 备注 / 别名查找已有档案（只在本机查找）")
+    search.set_value("小安")
+    _button(at2, "查找档案").click()
+    at2.run()
+    at2.radio[0].set_value(at2.radio[0].options[0])
+    _button(at2, "确认使用这个档案").click()
+    at2.run()
+    assert not at2.exception
+    assert len(counting_client) == analysis_calls_before_review
+    assert at2.session_state["friend_selected"] == friend_id
+    messages2 = (at2.session_state.get("analysis_messages")
+                 or at2.session_state["messages"])
+    target2 = next(c for c in bv.generate_candidates(messages2)
+                   if c.dimension == bv.DIMENSION_ROMANCE
+                   and c.behavior_type == "close_friendship")
+    assert target2.identity == target.identity
+    after_restart = bv.pending_candidates(
+        bv.generate_candidates(messages2), store.list_events(friend_id))
+    assert target2.identity not in {c.identity for c in after_restart}
+    assert pending_before - 1 == next(
+        int(m.group(1)) for line in _texts(at2).splitlines()
+        if (m := re.search(r"候选 (\d+) 条待核对", line)))
+    assert not any(str(getattr(e, "key", "")).endswith(target.identity[:12])
+                   and str(getattr(e, "key", "")).startswith("behavior_dim_")
+                   for e in at2.selectbox)
+
+
+def test_confirm_notice_keeps_other_same_window_types_pending(
+        history, counting_client):
+    """共享指纹不应把邀约 / 主动联系等其它类型误标成已审核。"""
+    at = _fresh()
+    _parse_and_analyze(at, CHAT_MULTI_CANDIDATE_SAME_WINDOW)
+    _open_behavior(at)
+    messages = (at.session_state.get("analysis_messages")
+                or at.session_state["messages"])
+    candidates = bv.generate_candidates(messages)
+    target = next(c for c in candidates
+                  if c.dimension == bv.DIMENSION_ROMANCE
+                  and c.behavior_type == "close_friendship")
+    siblings = {c.identity for c in candidates if c.identity != target.identity
+                and set(c.fingerprints) == set(target.fingerprints)}
+    assert {(c.dimension, c.behavior_type) for c in candidates} == {
+        (bv.DIMENSION_INITIATIVE, "proactive_contact"),
+        (bv.DIMENSION_INITIATIVE, "invitation"),
+        (bv.DIMENSION_ROMANCE, "close_friendship"),
+    }
+    assert len(siblings) == 2
+    before_calls = len(counting_client)
+    assert any("候选 3 条待核对" in line for line in _texts(at).splitlines())
+
+    scope_widget = next(e for e in at.selectbox
+                        if str(getattr(e, "key", "")).startswith(
+                            "behavior_dim_")
+                        and str(getattr(e, "key", "")).endswith(
+                            target.identity[:12]))
+    scope = scope_widget.key[len("behavior_dim_"):]
+    preview = next(b for b in at.button
+                   if b.key == f"behavior_preview_btn_{scope}")
+    preview.click()
+    at.run()
+    save = next(b for b in at.button
+                if b.key == f"behavior_confirm_{scope}")
+    save.click()
+    at.run()
+    assert not at.exception
+    text = _texts(at)
+    assert "已确认事件：好感与关系性质 · 亲密友情" in text
+    assert "同一段聊天可能还有其他类型的候选，仍需分别审核" in text
+    assert "（2 条待核对）。" in text
+    assert len(counting_client) == before_calls
+
+    store, events = _events(history)
+    assert len(events) == 1
+    reviewed = bv.reviewed_identities(events)
+    assert target.identity in reviewed
+    assert not (siblings & reviewed)
+    pending = bv.pending_candidates(bv.generate_candidates(messages), events)
+    assert siblings <= {c.identity for c in pending}
+    assert any("候选 2 条待核对" in line for line in _texts(at).splitlines())
+
+
+@pytest.mark.parametrize(("failure", "category", "stored_rows"), [
+    ("readback_missing", "event_readback_missing", 1),
+    ("readback_identity_mismatch", "event_readback_mismatch", 1),
+    ("original_identity_missing", "original_identity_missing", 1),
+    ("reviewed_missing", "candidate_not_in_reviewed_set", 1),
+    ("list_readback_mismatch", "friend_list_readback_mismatch", 1),
+    ("write_exception_no_record", "write_exception_no_record", 0),
+    ("write_exception_record_found", "write_exception_record_found", 1),
+])
+def test_candidate_save_verification_failure_never_claims_success(
+        history, counting_client, monkeypatch, failure, category, stored_rows):
+    """保存或回读异常必须明确提示，绝不自动重试或虚报成功。"""
+    import sqlite3
+
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)
+    save_calls = []
+    original_save = fh.FriendStore.save_event
+    original_get = fh.FriendStore.get_event
+
+    if failure in ("readback_missing", "readback_identity_mismatch"):
+        def fake_get(store, event_id):
+            row = original_get(store, event_id)
+            if failure == "readback_missing":
+                return None
+            if row is not None:
+                row = dict(row)
+                row["event_identity"] = "fictional-readback-mismatch"
+            return row
+
+        monkeypatch.setattr(fh.FriendStore, "get_event", fake_get)
+
+    if failure == "original_identity_missing":
+        def save_without_original(store, event):
+            save_calls.append(1)
+            stored = dict(event)
+            stored["original_candidate_identity"] = ""
+            return original_save(store, stored)
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", save_without_original)
+    elif failure == "write_exception_no_record":
+        def write_error(_store, _event):
+            save_calls.append(1)
+            raise sqlite3.OperationalError("fictional write failure")
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", write_error)
+    elif failure == "write_exception_record_found":
+        def save_then_error(store, event):
+            save_calls.append(1)
+            original_save(store, event)
+            raise sqlite3.OperationalError("fictional post-commit error")
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", save_then_error)
+    elif failure == "reviewed_missing":
+        def count_save(store, event):
+            save_calls.append(1)
+            return original_save(store, event)
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", count_save)
+        # Inject the reviewed-set lookup failure after real DB/list reads;
+        # the verifier must not turn a row-presence check into a false success.
+        monkeypatch.setattr(bv, "reviewed_identities", lambda _events: set())
+    elif failure == "list_readback_mismatch":
+        saved_ids = set()
+        original_list = fh.FriendStore.list_events
+
+        def save_before_list_mismatch(store, event):
+            save_calls.append(1)
+            event_id = original_save(store, event)
+            saved_ids.add(event_id)
+            return event_id
+
+        def list_with_mismatch(store, friend_id, *, status=None,
+                               dimension=None):
+            rows = original_list(store, friend_id, status=status,
+                                 dimension=dimension)
+            if status is None and saved_ids:
+                return [dict(row, status="rejected")
+                        if row["event_id"] in saved_ids else row
+                        for row in rows]
+            return rows
+
+        monkeypatch.setattr(fh.FriendStore, "save_event",
+                            save_before_list_mismatch)
+        monkeypatch.setattr(fh.FriendStore, "list_events", list_with_mismatch)
+    else:
+        def count_save(store, event):
+            save_calls.append(1)
+            return original_save(store, event)
+
+        monkeypatch.setattr(fh.FriendStore, "save_event", count_save)
+
+    _preview_then_click(at, "确认这条事件", "behavior_note_",
+                        "behavior_confirm_")
+    assert not at.exception
+    text = _texts(at)
+    assert "保存结果未通过核验" in text
+    assert f"核验代码：{category}" in text
+    assert "未自动重试" in text
+    assert "请检查下方" in text
+    assert "已确认事件：" not in text
+    assert len(save_calls) == 1
+    friend_id = at.session_state["friend_selected"]
+    assert len(fh.FriendStore(history).list_events(friend_id)) == stored_rows
+
+
+def test_verified_save_helper_classifies_idempotent_original_union(
+        history, counting_client):
+    """已有最终事件时只幂等调用一次，并验证第二个原始候选已并入。"""
+    import app as app_module
+    from parser import parse_chat
+    from privacy import mask_messages
+    from timeline import sort_messages
+
+    messages = sort_messages(mask_messages(parse_chat(
+        CHAT_MULTI_CANDIDATE_SAME_WINDOW, "小明.", "小安."))).messages
+    candidates = bv.generate_candidates(messages)
+    first = next(c for c in candidates
+                 if c.behavior_type == "invitation")
+    second = next(c for c in candidates
+                  if c.behavior_type == "proactive_contact")
+    assert first.start == second.start and first.end == second.end
+    assert set(first.fingerprints) == set(second.fingerprints)
+
+    store = fh.FriendStore(history)
+    friend = store.create_friend("虚构档案", aliases=["小安"])
+    event_a = bv.build_event_dict(
+        candidate=first, friend_id=friend.friend_id,
+        dimension=first.dimension, behavior_type=first.behavior_type,
+        stance="supporting", messages=messages,
+        start=first.start, end=first.end)
+    saved_a = app_module._save_behavior_event_verified(
+        store, event_a, first.identity)
+    assert saved_a["ok"] is True
+    assert saved_a["idempotent"] is False
+
+    event_b = bv.build_event_dict(
+        candidate=second, friend_id=friend.friend_id,
+        dimension=first.dimension, behavior_type=first.behavior_type,
+        stance="supporting", messages=messages,
+        start=second.start, end=second.end)
+    assert event_a["event_identity"] == event_b["event_identity"]
+    saved_b = app_module._save_behavior_event_verified(
+        store, event_b, second.identity)
+    assert saved_b["ok"] is True
+    assert saved_b["idempotent"] is True
+    assert saved_b["event_id"] == saved_a["event_id"]
+    rows = store.list_events(friend.friend_id)
+    assert len(rows) == 1
+    assert set(bv.original_identities(rows[0])) == {
+        first.identity, second.identity}
+    assert {first.identity, second.identity} <= bv.reviewed_identities(rows)
+
+
+def test_behavior_render_helpers_accept_event_dict_and_objects(
+        monkeypatch, tmp_path):
+    """数据库字典与候选对象都正确显示时间和限制标记。"""
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-not-a-real-secret")
+    monkeypatch.setenv("SIGNALLENS_DATA_DIR", str(tmp_path / "runtime-data"))
+    import app as app_module
+
+    start, end = "2026-04-16 20:41", "2026-04-16 20:42"
+    flags = {"time_uncertain": True, "media_unknown": True,
+             "context_missing": True}
+    expected_time = f"{start} ~ {end}"
+    expected_flags = "时间不能完整归位；窗口含媒体（内容未知，未推测）；历史来源，无聊天正文"
+    for value in (
+        {"event_start_time": start, "event_end_time": end, "flags": flags},
+        SimpleNamespace(event_start_time=start, event_end_time=end,
+                        flags=flags),
+    ):
+        assert app_module._behavior_time_text(value) == expected_time
+        assert app_module._behavior_flags_text(value) == expected_flags
+    assert app_module._behavior_time_text({
+        "event_start_time": None, "event_end_time": None}) == "（时间不明）"
 
 
 def test_exclude_candidate_keeps_rejected_trace(history, counting_client):
@@ -881,3 +1349,104 @@ def test_behavior_backfill_panel_previews_then_applies(history,
     pending = bv.pending_candidates(bv.generate_candidates(messages),
                                     store2.list_events(friend.friend_id))
     assert not any(c.identity == cand.identity for c in pending)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A.1 追加：纯媒体候选过滤 + 历史线索分区
+# ---------------------------------------------------------------------------
+
+CHAT_MEDIA_UI = """小明.
+2026年08月21日 21:00
+今天好累，压力好大
+
+小安.
+2026年08月21日 21:05
+[图片]
+
+小明.
+2026年08月21日 21:06
+周末有空吗
+
+小安.
+2026年08月21日 21:07
+辛苦啦，那周末再约 [动画表情]"""
+
+
+def test_pure_media_candidates_are_filtered_in_ui(history,
+                                                  counting_client):
+    """纯媒体回应：不进入待审核队列，界面给出过滤计数。"""
+    at = _fresh()
+    at.text_area[0].set_value(CHAT_MEDIA_UI)
+    _button(at, "解析并替换当前聊天").click()
+    at.run()
+    at.selectbox[0].select("小明.")
+    at.selectbox[1].select("小安.")
+    at.run()
+    _button(at, "应用昵称映射并重新解析").click()
+    at.run()
+    _button(at, "开始 Jev 分析").click()
+    at.run()
+    at.run()
+    assert not at.exception
+    assert at.session_state["analysis_state"] == "complete"
+
+    _open_behavior(at)
+    texts = _texts(at)
+    # 过滤计数提示（不再让用户审核「内容未知」的消息）
+    assert "已过滤" in texts
+    assert "无效候选" in texts
+    assert "纯图片" in texts
+    filtered = 0
+    for line in texts.splitlines():
+        m = re.search(r"已过滤 (\d+) 条无效候选", line)
+        if m:
+            filtered = int(m.group(1))
+    assert filtered >= 1, "纯媒体回应必须被计入过滤"
+    # 媒体消息仍完整保留在聊天里（确认阶段的媒体计数）
+    assert "媒体" in texts
+
+
+def test_history_clues_shown_separately(history, counting_client):
+    """历史线索单独分区展示，不进普通待审核队列。"""
+    at = _fresh()
+    _parse_and_analyze(at)
+    _open_behavior(at)
+
+    # 预置一条历史快照（含 show_care 的既有结果 → 产出历史线索）
+    import friend_history as _fh
+    store0 = _fh.FriendStore(history)
+    friend = store0.list_friends()[0]
+    messages = _analysis_messages_like_app(CHAT, "小明.", "小安.")
+    them = [i for i, m in enumerate(messages) if m["speaker"] == "them"]
+    results = [
+        {"index": i, "speaker": "them", "time": messages[i].get("time"),
+         "cached": True,
+         "result": {"intent": {"choice": "show_care"}, "model": "m"}}
+        for i in them[:2]
+    ]
+    store0.save_run(_fh.build_run_snapshot(
+        friend_id=friend.friend_id, messages=messages, results=results,
+        stats={}, schema_version="chat-signal-v3.3",
+        request_model="jev-latest", summary_text="旧总结"))
+
+    # 重新进入面板（模拟 rerun 后读取）
+    at.segmented_control[0].set_value("概览")
+    at.run()
+    at.segmented_control[0].set_value("长期观察")
+    at.run()
+    assert not at.exception
+
+    texts = _texts(at)
+    # 历史线索分区存在，且明示「不是已核实的行为事件」
+    assert "历史线索" in texts
+    assert "不是" in texts and "已核实" in texts
+    assert "指纹" in texts                     # 关联必须先过指纹验证
+    # 普通待审核计数只包含当前导入候选（历史线索不计入）
+    for line in texts.splitlines():
+        if "条待核对" in line and "候选 " in line:
+            count = int(line.split("候选 ")[1].split(" 条待核对")[0])
+            assert count < 10, count
+            break
+    # 历史快照的来源 run 展示出来
+    labels = " ".join(str(e.label) for e in at.expander)
+    assert "历史快照" in labels
