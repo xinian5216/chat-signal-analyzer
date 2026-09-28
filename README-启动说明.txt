@@ -19,6 +19,11 @@ SignalLens Windows Portable
 * 升级方法：先复制一份 data 文件夹作为备份，再用新版本覆盖
   程序文件，保留原来的 data 文件夹即可（API Key 与分析缓存
   都保存在那里）。
+* 新版首次打开时，好友档案数据库 data/friend_history.db 可能
+  自动升级其数据库结构（schema，例如 v2 -> v3）。迁移前程序会
+  先生成一致性备份 friend_history.db.v2-backup-<时间戳>；
+  若备份或迁移失败则中止并停止写入，不会静默继续，也不会留下
+  半套结构。请保留原 data 与该备份文件以便回滚。
 
 文件说明
 --------

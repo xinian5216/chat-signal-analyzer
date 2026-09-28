@@ -16,7 +16,7 @@ SignalLens 是一个**本地优先**的 Streamlit 工具：聊天解析、隐私
 **下载 → 解压 → 双击 SignalLens.exe → 使用**。不需要 Python、pip、venv、
 PowerShell、CMD，也不用手工创建 `.env` 或执行 `streamlit run`。
 
-1. 到 GitHub Releases 下载 `SignalLens-v0.2.0-Windows-x64-portable.zip`
+1. 到 GitHub Releases 下载 `SignalLens-v0.3.0-Windows-x64-portable.zip`
    （用页面给出的 SHA256 校验完整性）；
 2. 解压整个 ZIP 到**可写**目录（桌面、文档等；不要放进 Program Files，
    也不要直接在压缩包里运行）；
@@ -35,11 +35,33 @@ SignalLens/
 ```
 
 - SignalLens 只监听本机 `127.0.0.1`，不对外开放，也不收集使用统计；
-- 升级：先复制 `data` 文件夹作为备份，再用新版本覆盖程序文件、保留 `data` 即可；
+- 升级请看下面的「升级（保留 `data`）」，**先备份再换程序文件**；
 - 端口首选 8765，被占用时自动在 8765~8785 里挑一个；已经有一个实例在运行时，
   再次双击只会打开已有页面，不会启动第二个服务；
 - 首次运行第三方未签名程序时，Windows 可能显示 SmartScreen 提示：
   点“更多信息”→“仍要运行”。
+
+### 升级（保留 `data`）
+
+升级**不会**自动迁移你的 `data` 之外的东西，也不会上传任何数据。请按顺序做：
+
+1. **完全退出 SignalLens**（关闭它的控制台窗口，确认进程已结束）；
+2. **先备份旧版 `data` 整个文件夹**（复制一份到别处，例如 `data-backup-日期`）；
+3. 用新版程序文件（`SignalLens.exe`、`_internal/`）覆盖旧版程序文件；
+4. **保留原来的 `data` 文件夹**（不要删、不要用新版的空 `data` 替换它，
+   这样 API Key、本地缓存、好友档案才会被新版接续使用）；
+5. 首次打开新版时，好友档案库（`data/friend_history.db`）可能需要升级
+   **数据库 schema**（例如从 v2 升到 v3）。这是本机数据库结构升级，
+   与分析 schema（`chat-signal`）、程序版本号都是**不同的概念**；
+6. 迁移开始前，程序会先用 SQLite 在线备份接口生成**一致性备份**
+   （`friend_history.db.v2-backup-<时间戳>`），并做完整性校验；
+7. **如果备份或迁移失败，程序会中止迁移并停止写入旧库**，不会静默继续、
+   也不会留下半套结构。此时请保留原 `data` 与备份文件用于排查，
+   不要在失败状态下继续写入。
+
+回滚（仅在新版有问题时使用）：完全退出 SignalLens → 保留问题库副本 →
+用第 6 步生成的 `*.v2-backup-<时间戳>` 覆盖回 `friend_history.db` →
+再运行旧版程序。SignalLens **不会**自动做数据库降级。
 
 ### 本机数据位置
 
@@ -394,7 +416,7 @@ interrupted）。如果一次新的 rerun 开始时仍看到 `running`，说明�
 - `state` 只包含：目标消息 + 由 **Context Builder v2** 选出的有界上下文 + 发言人身份 + 可选时间 +
   一条分析规则（“只判断可观察信号，不得仅凭礼貌推断浪漫兴趣”）。
   **不包含任何未来消息**——模拟“当时看到这句话时能判断出什么”。
-- **上下文选择（Context Builder v2，v0.2.0 起）**：不再机械取“之前最多 5 条”，而是
+- **上下文选择（Context Builder v2，v0.3.0 起）**：不再机械取“之前最多 5 条”，而是
   **turn-aware + 有界预算**（`context_builder.py`，纯本地逻辑、0 次额外 API）：
   - turn = 连续同一方的消息（一次“连发”就是一个 turn）；从 target 向前按 turn 回溯，
     优先完整保留最近的 turn——尤其最近的“我”的 turn（TA 最可能正在回应的内容）；
