@@ -1,0 +1,297 @@
+{
+  "version": "salience-scenarios-v0.4",
+  "meta": {
+    "provenance": "synthetic",
+    "disclaimer": "人工构造的合成场景（message spec 形式）：只能证明“若 Jev 给出这些原始信号，本地 salience 通道会发生什么”，绝不能证明真实 Jev 在这些聊天上会给出这些结果。",
+    "schema_version": "chat-signal-v3.3",
+    "case_set": "Issue #19 §20 S1~S15",
+    "materializer": "salience_diagnostics.materialize_messages（确定性：score = 数值，probabilities = 该值的两档插值分布）",
+    "authoring": "每条消息按 analyzer.py 九问的等级说明人工判定数值；显式事件只允许当前 schema 真正支持的事件类（special / care / romantic / withdrawal / 三个第 0 档反向类）；S14 复用 #17 D5 fixture 的实测数值。",
+    "expectation_semantics": "expectation 由 salience_diagnostics.evaluate_scenario 做约束检查（确定性），不是模型判分。"
+  },
+  "cases": [
+    {
+      "id": "S1_strong_special_plus_30_ordinary",
+      "scenario": "S1",
+      "title": "1 条明确特殊关注事件 + 30 条普通消息",
+      "description": "强事件不得被 30 条普通消息平均消失；基线仍由普通消息决定。",
+      "messages": [
+        {"repeat": {"count": 30, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.6, "engagement": 3.0, "special": 3.6, "evidence": 3.2, "ease": 2.4, "romantic": 0.2, "distancing": 0.04, "conf": 0.85}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 1, "max": 1}},
+        "forbidden_event_classes": ["explicit_care_behavior", "explicit_romantic_signal", "explicit_relationship_withdrawal", "low_investment_or_refusal", "cold_or_rejecting_response", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 1, "max": 1},
+        "salient_tiers": {"special_attention": "single"},
+        "baseline": {"special_attention": {"min": 1.0, "max": 2.0}},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S2_strong_special_plus_100_ordinary",
+      "scenario": "S2",
+      "title": "1 条明确特殊关注事件 + 100 条普通消息",
+      "description": "极端稀释下事件仍必须可见（分类保留，不依赖任何数值聚合）。",
+      "messages": [
+        {"repeat": {"count": 100, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.6, "engagement": 3.0, "special": 3.6, "evidence": 3.2, "ease": 2.4, "romantic": 0.2, "distancing": 0.04, "conf": 0.85}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 1, "max": 1}},
+        "forbidden_event_classes": ["explicit_care_behavior", "explicit_romantic_signal", "explicit_relationship_withdrawal"],
+        "total_events": {"min": 1, "max": 1},
+        "salient_tiers": {"special_attention": "single"},
+        "baseline": {"special_attention": {"min": 1.0, "max": 2.0}},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S3_three_special_events_plus_ordinary",
+      "scenario": "S3",
+      "title": "3 条不同消息上的明确特殊关注 + 10 条普通消息",
+      "description": "重复同类显著证据形成更强证据结构（capped tier），但禁止线性累加成分数。",
+      "messages": [
+        {"repeat": {"count": 3, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.4, "engagement": 2.8, "special": 3.2, "evidence": 2.8, "ease": 2.3, "romantic": 0.15, "distancing": 0.05, "conf": 0.8},
+        {"repeat": {"count": 3, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.5, "engagement": 2.9, "special": 3.4, "evidence": 3.0, "ease": 2.3, "romantic": 0.18, "distancing": 0.04, "conf": 0.82},
+        {"repeat": {"count": 3, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.6, "engagement": 3.0, "special": 3.6, "evidence": 3.2, "ease": 2.4, "romantic": 0.2, "distancing": 0.04, "conf": 0.85},
+        {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 3, "max": 3}},
+        "forbidden_event_classes": ["explicit_care_behavior", "explicit_romantic_signal", "explicit_relationship_withdrawal"],
+        "total_events": {"min": 3, "max": 3},
+        "salient_tiers": {"special_attention": "repeated"},
+        "baseline": {"special_attention": {"min": 1.0, "max": 2.0}},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S4_isolated_extreme_plus_ordinary_baseline",
+      "scenario": "S4",
+      "title": "1 条孤立极端事件 + 大量普通消息",
+      "description": "单条极端值不得控制 baseline（事件消息被排除在基线外），事件本身仍可见。",
+      "messages": [
+        {"repeat": {"count": 30, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 4.0, "engagement": 4.0, "special": 4.0, "evidence": 4.0, "ease": 2.4, "romantic": 0.95, "distancing": 0.02, "conf": 0.95}
+      ],
+      "expectation": {
+        "event_classes": {
+          "explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 1, "max": 1},
+          "explicit_care_behavior": {"direction": "supporting", "dimension": "care_responsiveness", "min": 1, "max": 1},
+          "explicit_romantic_signal": {"direction": "supporting", "dimension": "romantic", "min": 1, "max": 1}
+        },
+        "forbidden_event_classes": ["explicit_relationship_withdrawal", "low_investment_or_refusal", "cold_or_rejecting_response", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 3, "max": 3},
+        "baseline": {"special_attention": {"min": 1.0, "max": 2.0}, "warmth": {"min": 1.5, "max": 2.5}},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S5_supporting_plus_counter_coexist",
+      "scenario": "S5",
+      "title": "强 supporting + 强 counter 并存",
+      "description": "相反方向证据必须同时保留，禁止 +80+(−80)=0 式抵消。",
+      "messages": [
+        {"warmth": 2.2, "engagement": 2.4, "special": 1.4, "evidence": 1.8, "ease": 2.3, "romantic": 0.08, "distancing": 0.05, "conf": 0.75},
+        {"warmth": 2.6, "engagement": 3.0, "special": 3.6, "evidence": 3.2, "ease": 2.4, "romantic": 0.2, "distancing": 0.04, "conf": 0.85},
+        {"warmth": 2.2, "engagement": 2.2, "special": 1.2, "evidence": 1.6, "ease": 2.2, "romantic": 0.06, "distancing": 0.08, "conf": 0.75},
+        {"warmth": 0.4, "engagement": 0.5, "special": 0.8, "evidence": 2.6, "ease": 0.8, "romantic": 0.04, "distancing": 0.3, "conf": 0.8},
+        {"warmth": 2.1, "engagement": 2.2, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.06, "distancing": 0.06, "conf": 0.75}
+      ],
+      "expectation": {
+        "event_classes": {
+          "explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 1, "max": 1},
+          "cold_or_rejecting_response": {"direction": "counter", "dimension": "care_responsiveness", "min": 1, "max": 1},
+          "low_investment_or_refusal": {"direction": "counter", "dimension": "initiative_engagement", "min": 1, "max": 1},
+          "stiff_or_unfamiliar_interaction": {"direction": "counter", "dimension": "familiarity", "min": 1, "max": 1}
+        },
+        "forbidden_event_classes": ["explicit_care_behavior", "explicit_romantic_signal", "explicit_relationship_withdrawal"],
+        "total_events": {"min": 4, "max": 4},
+        "no_averaging": true,
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S6_repeated_short_replies_no_salience",
+      "scenario": "S6",
+      "title": "大量重复“嗯 / 好 / 哈哈”",
+      "description": "重复普通短回复不得制造任何显著事件或反向事件。",
+      "messages": [
+        {"repeat": {"count": 10, "message": {"warmth": 1.6, "engagement": 1.4, "special": 0.6, "evidence": 1.2, "ease": 2.0, "romantic": 0.05, "distancing": 0.08, "conf": 0.7}}},
+        {"repeat": {"count": 10, "message": {"warmth": 1.8, "engagement": 1.6, "special": 0.7, "evidence": 1.3, "ease": 2.1, "romantic": 0.05, "distancing": 0.07, "conf": 0.7}}},
+        {"repeat": {"count": 10, "message": {"warmth": 2.0, "engagement": 1.7, "special": 0.9, "evidence": 1.4, "ease": 2.2, "romantic": 0.12, "distancing": 0.06, "conf": 0.7}}},
+        {"repeat": {"count": 10, "message": {"warmth": 1.5, "engagement": 1.2, "special": 0.5, "evidence": 1.0, "ease": 1.9, "romantic": 0.04, "distancing": 0.09, "conf": 0.65}}}
+      ],
+      "expectation": {
+        "event_classes": {},
+        "forbidden_event_classes": ["explicit_special_attention", "explicit_care_behavior", "explicit_romantic_signal", "explicit_relationship_withdrawal", "low_investment_or_refusal", "cold_or_rejecting_response", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 0, "max": 0},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S7_high_warmth_engagement_no_special",
+      "scenario": "S7",
+      "title": "高 warmth / 高 engagement 但无 special",
+      "description": "热情、高投入不得制造 special / romantic 事件（care 事件允许）。",
+      "messages": [
+        {"repeat": {"count": 2, "message": {"warmth": 2.2, "engagement": 2.3, "special": 1.3, "evidence": 1.7, "ease": 2.3, "romantic": 0.08, "distancing": 0.05, "conf": 0.75}}},
+        {"warmth": 3.2, "engagement": 3.6, "special": 1.5, "evidence": 2.8, "ease": 3.0, "romantic": 0.15, "distancing": 0.05, "conf": 0.8},
+        {"warmth": 3.1, "engagement": 3.5, "special": 1.6, "evidence": 2.7, "ease": 2.9, "romantic": 0.12, "distancing": 0.04, "conf": 0.8}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_care_behavior": {"direction": "supporting", "dimension": "care_responsiveness", "min": 0, "max": 2}},
+        "forbidden_event_classes": ["explicit_special_attention", "explicit_romantic_signal", "explicit_relationship_withdrawal"],
+        "total_events": {"min": 0, "max": 2},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S8_high_familiarity_no_romantic",
+      "scenario": "S8",
+      "title": "高 familiarity 但无 romantic",
+      "description": "熟悉 / 默契不得制造 romantic 或 special 事件。",
+      "messages": [
+        {"repeat": {"count": 2, "message": {"warmth": 2.4, "engagement": 3.0, "special": 1.6, "evidence": 2.2, "ease": 3.6, "romantic": 0.2, "distancing": 0.03, "conf": 0.8}}},
+        {"warmth": 2.6, "engagement": 3.2, "special": 1.8, "evidence": 2.4, "ease": 3.7, "romantic": 0.25, "distancing": 0.03, "conf": 0.8}
+      ],
+      "expectation": {
+        "event_classes": {},
+        "forbidden_event_classes": ["explicit_special_attention", "explicit_care_behavior", "explicit_romantic_signal", "explicit_relationship_withdrawal", "low_investment_or_refusal", "cold_or_rejecting_response", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 0, "max": 0},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S9_health_care_only_care",
+      "scenario": "S9",
+      "title": "普通健康关心",
+      "description": "只允许 care 事件，不允许 special / romantic。",
+      "messages": [
+        {"warmth": 3.1, "engagement": 2.8, "special": 1.2, "evidence": 2.2, "ease": 2.4, "romantic": 0.05, "distancing": 0.04, "conf": 0.8, "intent_choice": "show_care", "intent_probs": {"show_care": 0.8, "other": 0.2}},
+        {"warmth": 3.0, "engagement": 2.7, "special": 1.1, "evidence": 2.1, "ease": 2.4, "romantic": 0.04, "distancing": 0.05, "conf": 0.78, "intent_choice": "show_care", "intent_probs": {"show_care": 0.75, "other": 0.25}}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_care_behavior": {"direction": "supporting", "dimension": "care_responsiveness", "min": 2, "max": 2}},
+        "forbidden_event_classes": ["explicit_special_attention", "explicit_romantic_signal", "explicit_relationship_withdrawal"],
+        "total_events": {"min": 2, "max": 2},
+        "salient_tiers": {"care_responsiveness": "multiple"},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S10_only_tell_you_special_not_romantic",
+      "scenario": "S10",
+      "title": "“这个我只告诉你”类选择性披露 + 30 条普通消息",
+      "description": "special 可显著，romantic 不自动出现。",
+      "messages": [
+        {"repeat": {"count": 30, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.8, "engagement": 3.2, "special": 3.6, "evidence": 3.4, "ease": 2.5, "romantic": 0.28, "distancing": 0.02, "conf": 0.85}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 1, "max": 1}},
+        "forbidden_event_classes": ["explicit_romantic_signal", "explicit_relationship_withdrawal", "explicit_care_behavior"],
+        "total_events": {"min": 1, "max": 1},
+        "salient_tiers": {"special_attention": "single"},
+        "baseline": {"special_attention": {"min": 1.0, "max": 2.0}},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S11_explicit_romantic_expression",
+      "scenario": "S11",
+      "title": "明确浪漫表达",
+      "description": "明确浪漫证据必须保留为 romantic 维度的显著事件（单条不外推为长期结论）。",
+      "messages": [
+        {"repeat": {"count": 30, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.8, "engagement": 2.6, "special": 2.2, "evidence": 3.0, "ease": 2.5, "romantic": 0.92, "distancing": 0.05, "conf": 0.85}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_romantic_signal": {"direction": "supporting", "dimension": "romantic", "min": 1, "max": 1}},
+        "forbidden_event_classes": ["explicit_special_attention", "explicit_care_behavior", "explicit_relationship_withdrawal"],
+        "total_events": {"min": 1, "max": 1},
+        "salient_tiers": {"romantic": "single"},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S12_explicit_relationship_withdrawal",
+      "scenario": "S12",
+      "title": "明确关系后撤（虚构“以后别联系我了。”）",
+      "description": "withdrawal 显著事件必须保留；同消息的第 0 档冷淡 / 拒绝是各维度的反向事件，不抵消。",
+      "messages": [
+        {"repeat": {"count": 3, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 0.8, "engagement": 0.6, "special": 0.6, "evidence": 3.2, "ease": 1.4, "romantic": 0.04, "distancing": 0.95, "conf": 0.85}
+      ],
+      "expectation": {
+        "event_classes": {
+          "explicit_relationship_withdrawal": {"direction": "supporting", "dimension": "withdrawal", "min": 1, "max": 1},
+          "cold_or_rejecting_response": {"direction": "counter", "dimension": "care_responsiveness", "min": 1, "max": 1},
+          "low_investment_or_refusal": {"direction": "counter", "dimension": "initiative_engagement", "min": 1, "max": 1}
+        },
+        "forbidden_event_classes": ["explicit_special_attention", "explicit_care_behavior", "explicit_romantic_signal", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 3, "max": 3},
+        "no_averaging": true,
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S13_natural_closing_no_withdrawal",
+      "scenario": "S13",
+      "title": "自然结束话题",
+      "description": "自然收尾不得成为 withdrawal 显著事件，也不得制造其它事件。",
+      "messages": [
+        {"repeat": {"count": 5, "message": {"warmth": 2.1, "engagement": 2.2, "special": 1.1, "evidence": 1.6, "ease": 2.3, "romantic": 0.06, "distancing": 0.05, "conf": 0.75}}},
+        {"warmth": 2.2, "engagement": 1.8, "special": 0.8, "evidence": 1.6, "ease": 2.4, "romantic": 0.05, "distancing": 0.12, "conf": 0.75}
+      ],
+      "expectation": {
+        "event_classes": {},
+        "forbidden_event_classes": ["explicit_relationship_withdrawal", "explicit_special_attention", "explicit_care_behavior", "explicit_romantic_signal", "low_investment_or_refusal", "cold_or_rejecting_response", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 0, "max": 0},
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S14_d5_boundary_pressure_no_positive_event",
+      "scenario": "S14",
+      "title": "D5 边界施压消息（#17 fixture 实测数值）",
+      "description": "高 engagement / 高 evidence / 高 special 的施压消息：不得生成全局正向事件、不得生成 romantic / care 事件、不得伪造 boundary pressure 事件；special 事件（若保留）必须携带 D5 限制与替代解释；boundary_pressure 维度保持 unsupported。",
+      "messages": [
+        {"repeat": {"count": 2, "message": {"warmth": 2.0, "engagement": 2.1, "special": 1.2, "evidence": 1.5, "ease": 2.2, "romantic": 0.08, "distancing": 0.06, "conf": 0.75}}},
+        {"warmth": 2.4, "engagement": 3.4, "special": 3.2, "evidence": 3.4, "ease": 2.2, "romantic": 0.55, "distancing": 0.1, "conf": 0.8}
+      ],
+      "expectation": {
+        "event_classes": {"explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 1, "max": 1}},
+        "forbidden_event_classes": ["explicit_care_behavior", "explicit_romantic_signal", "explicit_relationship_withdrawal", "low_investment_or_refusal", "cold_or_rejecting_response", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 1, "max": 1},
+        "d5_high_info_caveat": true,
+        "boundary_pressure_unsupported": true,
+        "no_global_valence": true
+      }
+    },
+    {
+      "id": "S15_same_message_multi_class_dedup",
+      "scenario": "S15",
+      "title": "同一消息多事件类：跨维度各一条，同维度同事件类不重复",
+      "description": "同一条消息同时支持 special / care / romantic 时允许各维度各一条；同一 (source, message, dimension, event_class, metric) 身份只保留一条。",
+      "messages": [
+        {"warmth": 3.2, "engagement": 3.4, "special": 3.6, "evidence": 3.6, "ease": 2.4, "romantic": 0.9, "distancing": 0.05, "conf": 0.85}
+      ],
+      "expectation": {
+        "event_classes": {
+          "explicit_special_attention": {"direction": "supporting", "dimension": "special_attention", "min": 1, "max": 1},
+          "explicit_care_behavior": {"direction": "supporting", "dimension": "care_responsiveness", "min": 1, "max": 1},
+          "explicit_romantic_signal": {"direction": "supporting", "dimension": "romantic", "min": 1, "max": 1}
+        },
+        "forbidden_event_classes": ["explicit_relationship_withdrawal", "low_investment_or_refusal", "cold_or_rejecting_response", "stiff_or_unfamiliar_interaction"],
+        "total_events": {"min": 3, "max": 3},
+        "unique_event_ids": true,
+        "no_global_valence": true
+      }
+    }
+  ]
+}

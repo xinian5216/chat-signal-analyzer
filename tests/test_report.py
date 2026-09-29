@@ -106,9 +106,11 @@ def test_json_schema_and_validity():
     text = json.dumps(data, ensure_ascii=False)  # 必须可序列化
     assert json.loads(text) == data
     # Issue #18：新增 additive 顶层键 relationship_profile（legacy 键不变）；
+    # Issue #19：新增 additive 顶层键 salience（事件明细在 relationship_profile
+    # 维度内，顶层只留版本 / 基线摘要 / diagnostics，避免重复保存）；
     # 此处是 schema 形状守卫，随有意的 additive 扩展同步，不是 benchmark expectation。
     assert set(data) == {"metadata", "summary", "aggregate", "behavior_stats",
-                         "messages", "relationship_profile"}
+                         "messages", "relationship_profile", "salience"}
     m = data["messages"][0]
     for field in ("time", "speaker", "text", "emotion", "intent", "warmth",
                   "engagement", "special_attention", "relationship_evidence_strength",

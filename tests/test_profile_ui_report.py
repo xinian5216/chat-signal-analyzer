@@ -39,7 +39,8 @@ class FakeAnswer:
         self.__dict__.update(kw)
 
 
-def fake_response(evidence=2.4, ease=2.3, warmth=2.0):
+def fake_response(evidence=2.4, ease=2.3, warmth=2.0, special=1.5,
+                  distancing=0.2):
     from types import SimpleNamespace as NS
     return NS(answers={
         "emotion": FakeAnswer(choice="teasing",
@@ -53,7 +54,8 @@ def fake_response(evidence=2.4, ease=2.3, warmth=2.0):
                              confidence=0.8),
         "engagement": FakeAnswer(score=2.0, probabilities={"2": 1.0},
                                  confidence=0.8),
-        "special_attention": FakeAnswer(score=1.5, probabilities={"1": 0.5, "2": 0.5},
+        "special_attention": FakeAnswer(score=special,
+                                        probabilities={str(int(special)): 1.0},
                                         confidence=0.8),
         "relationship_evidence_strength": FakeAnswer(score=evidence,
                                                      probabilities={str(int(evidence)): 1.0},
@@ -61,7 +63,7 @@ def fake_response(evidence=2.4, ease=2.3, warmth=2.0):
         "relational_ease": FakeAnswer(score=ease, probabilities={str(int(ease)): 1.0},
                                       confidence=0.8),
         "romantic_signal": FakeAnswer(noul=0.2),
-        "distancing_signal": FakeAnswer(noul=0.2),
+        "distancing_signal": FakeAnswer(noul=distancing),
     }, model="fake")
 
 
@@ -286,3 +288,97 @@ def test_low_evidence_shows_insufficient_not_mid(counting_client):
     assert "当前样本关系信息不足" in body
     labels = _metric_labels(at)
     assert "参考指数" in labels
+
+
+# ---------------------------------------------------------------------------
+# Issue #19：salience 通道（JSON additive / Markdown 分区 / UI 显著与相反证据）
+# ---------------------------------------------------------------------------
+
+
+def _event_entries():
+    """虚构：30 条普通 + 1 条明确特殊关注 + 1 条明显冷淡（反向）。"""
+    ordinary = make_result()
+    special = make_result(warmth=2.6, engagement=3.0, special=3.6, evidence=3.2)
+    cold = make_result(warmth=0.4, engagement=0.5, special=0.8, evidence=2.6,
+                       ease=0.8, distancing=0.3)
+    specs = [ordinary] * 30 + [special, cold]
+    return [{"index": i, "speaker": "them", "time": f"22:{i % 60:02d}",
+             "text": f"消息{i}", "result": r} for i, r in enumerate(specs)]
+
+
+def test_json_report_salience_key_additive_no_duplication():
+    results = _event_entries()
+    stats = compute_conversation_stats(results)
+    payload = build_json_report(results, stats, include_text=False)
+    assert payload["salience"]["version"] == "salience-v1"
+    assert payload["salience"]["salient_event_count"] == 1
+    assert payload["salience"]["counter_event_count"] == 3
+    # 事件明细只保存在 relationship_profile 维度内（顶层不重复保存事件列表）
+    assert "events" not in payload["salience"]
+    dims = payload["relationship_profile"]["dimensions"]
+    assert len(dims["special_attention"]["salient_events"]) == 1
+    assert dims["special_attention"]["baseline"]["value"] is not None
+    # legacy 键不变
+    assert payload["aggregate"]["overall"] == stats["overall"]
+
+
+def test_markdown_report_shows_baseline_salient_counter():
+    results = _event_entries()
+    stats = compute_conversation_stats(results)
+    md = build_markdown_report(results, stats, include_text=False)
+    assert "基线互动" in md
+    assert "显著证据" in md and "相反证据" in md
+    assert "明确特殊关注信号" in md
+    assert "不与显著证据抵消或平均" in md
+    # 无伪精度 / 无 boost 类数值
+    for banned in ("salience 8", "boost", "重要度", "加分", "综合抵消后"):
+        assert banned not in md, banned
+
+
+def test_report_events_section_is_deterministic():
+    results = _event_entries()
+    stats = compute_conversation_stats(results)
+    first = build_markdown_report(results, stats, include_text=False)
+    second = build_markdown_report(results, stats, include_text=False)
+    strip = lambda s: re.sub(r"\d{4}-\d\d-\d\d \d\d:\d\d", "", s)
+    assert strip(first) == strip(second)
+
+
+@pytest.fixture
+def event_client(monkeypatch, tmp_path):
+    """返回“明确特殊关注 + 明显冷淡”答案的假客户端（0 真实 API）。"""
+    calls = []
+
+    class EventClient:
+        def system_one(self, state, questions):
+            calls.append(state)
+            return fake_response(special=3.6, warmth=0.4, evidence=3.2)
+
+    class TmpCache(Cache):
+        def __init__(self, *a, **k):
+            super().__init__(tmp_path / "cache.db")
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-not-a-real-secret")
+    import paths
+    monkeypatch.setattr(paths, "friend_history_db_path",
+                        lambda: tmp_path / "friend_history.db")
+    monkeypatch.setattr(analyzer, "create_client",
+                        lambda api_key: EventClient())
+    monkeypatch.setattr(storage, "Cache", TmpCache)
+    return calls
+
+
+def test_ui_profile_card_shows_salient_and_counter_sections(event_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _run_to_results(at, CHAT)
+    body = _texts(at)
+    # §26：显著证据与相反证据分区并存，禁止抵消成“中等”
+    assert "显著证据" in body
+    assert "相反证据" in body
+    assert "明确特殊关注信号" in body
+    assert "基线互动" in body
+    assert "综合抵消" not in body and "抵消后" not in body
+    # §27：不暴露伪精度
+    for banned in ("salience ", "重要度", "boost", "加分"):
+        assert banned not in body, banned

@@ -14,8 +14,9 @@ unsupported 作为一等状态。
   绝不决定 supporting / counter 方向；
 - **absence ≠ counter**：低分 / 未发现 / 不确定都不是反证；counter 只在量表
   的明确负向行为档开启（详见 `docs/issue18-relationship-profile-v2.md`）；
-- **不偷做 #19**：不实现任何 salience 聚合（top-k / percentile / boost），
-  `salient_events` / `counter_events` 仅预留接口，本版本恒为空；
+- **不偷做数值聚合**：#19 的 salience 通道（`salience.py`）只以**分类事件**
+  （salient_events / counter_events）注入本模块，绝不产生 top-k / percentile /
+  boost / 新权重 / 新综合分数；本模块自身不计算 salience；
 - **不偷做 #20**：不产生话题开启 / 追问 / 跨日重提 / 邀约推进 / reciprocity /
   拒绝后反应等 turn-level 事件，`interaction_events` 仅预留接口；
 - **确定性文案**：所有用户可见文字由模板生成，无生成式 LLM、无心理脑补；
@@ -912,14 +913,38 @@ def _summary_lines(dimensions: dict) -> list[str]:
     return lines
 
 
+def _salience_summary_lines(salience: dict) -> list[str]:
+    """#19 显著 / 相反事件的确定性摘要（分类保留，无任何数值聚合）。"""
+    lines: list[str] = []
+    sal_dims = salience.get("dimensions") or {}
+    if salience.get("baseline_summary"):
+        lines.append(salience["baseline_summary"])
+    has_salient = has_counter = False
+    for key in DIMENSION_ORDER:
+        entry = sal_dims.get(key) or {}
+        if entry.get("salient_phrase"):
+            has_salient = True
+            lines.append(f"{DIMENSION_LABELS[key]}：{entry['salient_phrase']}"
+                         "（显著证据，单独保留，不并入基线）")
+        if entry.get("counter_phrase"):
+            has_counter = True
+            lines.append(f"{DIMENSION_LABELS[key]}：{entry['counter_phrase']}"
+                         "（相反证据，独立存在，不与显著证据抵消）")
+    if has_salient and has_counter:
+        lines.append("显著证据与相反证据并存，未做加权抵消或平均。")
+    if has_salient:
+        lines.append("显著事件不因普通消息数量多而消失；"
+                     "单条明确证据也不外推为长期关系模式。")
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 
 
 def build_profile(results: list[dict], *, stats: dict | None = None,
-                  salient_events: list | None = None,
-                  counter_events: list | None = None,
+                  salience: dict | None = None,
                   interaction_events: list | None = None) -> dict:
     """由现有分析结果派生 Relationship Profile v2（纯函数、确定性）。
 
@@ -927,8 +952,9 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
         results: ``analyze_messages`` 的结果列表（只读；不修改、不持久化）。
         stats: 可选的 ``scoring.compute_conversation_stats(results)`` 输出；
             缺省时内部调用生产函数计算（不复制公式）。
-        salient_events / counter_events: **#19 预留**注入接口；本版本不产生、
-            不模拟任何 salient 聚合，缺省恒为空列表。
+        salience: 可选的 ``salience.build_salience(results)`` 输出（#19）；
+            提供时按维度填充 ``baseline`` / ``salient_events`` / ``counter_events``
+            （#18 预留槽位，schema 不变）。缺省时槽位为空（#18 行为）。
         interaction_events: **#20 预留**注入接口；本版本不产生 turn-level 事件。
 
     返回:
@@ -951,13 +977,24 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
         "withdrawal": _build_withdrawal(effective, items, stats),
         "boundary_pressure": _build_boundary_pressure(effective, items, stats),
     }
+    sal_dims = (salience or {}).get("dimensions") or {}
     for key in DIMENSION_ORDER:
-        dims_events = {
-            "salient_events": list(salient_events or []),
-            "counter_events": list(counter_events or []),
+        entry = sal_dims.get(key) or {}
+        dimensions[key].update({
+            "salient_events": list(entry.get("salient_events") or []),
+            "counter_events": list(entry.get("counter_events") or []),
             "interaction_events": list(interaction_events or []),
-        }
-        dimensions[key].update(dims_events)
+        })
+        if entry.get("baseline"):
+            dimensions[key]["baseline"] = entry["baseline"]
+        if entry.get("salient_tier") is not None:
+            dimensions[key]["salient_tier"] = entry["salient_tier"]
+        if entry.get("counter_tier") is not None:
+            dimensions[key]["counter_tier"] = entry["counter_tier"]
+        if entry.get("salient_phrase") is not None:
+            dimensions[key]["salient_phrase"] = entry["salient_phrase"]
+        if entry.get("counter_phrase") is not None:
+            dimensions[key]["counter_phrase"] = entry["counter_phrase"]
 
     limitations = [
         "本画像只描述聊天文本中可观察到的信号，不代表对方真实心理状态。",
@@ -969,6 +1006,16 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
             f"{unavailable} 条结果缺少画像所需字段（旧缓存格式），已从画像中排除。")
     if not items:
         limitations.append("没有可分析的成功结果，画像各维度均为数据不足。")
+    unclassified = ((salience or {}).get("diagnostics") or {}) \
+        .get("unclassified_high_information") or []
+    if unclassified:
+        limitations.append(
+            f"{len(unclassified)} 条高信息量消息当前 schema 无法定向"
+            "（仅记录于 diagnostics），不得据此推断正向或负向关系结论。")
+
+    summary_lines = _summary_lines(dimensions)
+    if salience:
+        summary_lines = _salience_summary_lines(salience) + summary_lines
 
     return {
         "version": PROFILE_VERSION,
@@ -983,20 +1030,22 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
                              "不得把所有维度重新总结成一个数字",
         },
         "summary": {
-            "lines": _summary_lines(dimensions),
-            "text": "\n".join(_summary_lines(dimensions)),
+            "lines": summary_lines,
+            "text": "\n".join(summary_lines),
         },
         "limitations": limitations,
         "capability_gaps": [
             "话题开启 / 连续追问 / 跨日重提 / 邀约推进 / reciprocity / "
             "拒绝后反应属于 #20 Interaction dynamics，当前版本不计算。",
-            "高信息事件的聚合方式（baseline / salient events）属于 #19，"
-            "当前版本不做任何 salience 聚合。",
+            "显著 / 相反证据以分类事件保留（salient_events / counter_events），"
+            "不做数值聚合、不产生综合分；legacy overall 不参与事件方向判断。",
         ],
         "reserved": {
             "evidence_source_types": list(EVIDENCE_SOURCE_TYPES),
-            "salient_events": list(salient_events or []),
-            "counter_events": list(counter_events or []),
+            "salient_events": [e for key in DIMENSION_ORDER
+                               for e in dimensions[key]["salient_events"]],
+            "counter_events": [e for key in DIMENSION_ORDER
+                               for e in dimensions[key]["counter_events"]],
             "interaction_events": list(interaction_events or []),
         },
     }
