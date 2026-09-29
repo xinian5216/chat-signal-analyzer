@@ -48,7 +48,15 @@
    用户可见结论只能是“未发现明确证据 / 存在弱信号（不构成结论）/ 发现明确信号”
    三档；**保留弱信息 ≠ 把弱信息解释成结论**。
 4. **insufficient ≠ neutral**：有效证据 < 2 条（锚 `LOW_EVIDENCE_MIN_EFFECTIVE`）
-   → status `insufficient`、结论“数据不足，无法判断”，**禁止**给中位等级。
+   且无明确档证据 → status `insufficient`、结论“数据不足，无法判断”，
+   **禁止**给中位等级。
+4b. **coverage 低 ≠ evidence 不存在（语义审计修复）**：单条**明确档**证据
+   （Score 明显档 ≥ 3.0 / Noul 明确档 ≥ 0.70 / 严格负向档 < 1.0）→ status
+   `evidence_limited`：“当前样本发现明确信号；覆盖有限，需更多样本确认整体
+   模式”，reliability 被覆盖封顶（不高于“中等”，单条时“较低”），summary
+   强制附“单条明确证据只代表当前样本，不能外推为长期关系模式”。**弱观察**
+   （如 engagement 1.8 敷衍档、warmth 1.x 纯事务）不解锁该状态——单条普通
+   消息仍是 `insufficient`，minimum sample protection 不被取消。
 5. **unsupported ≠ low**：边界压力没有通道时显示
    “当前 schema 不支持可靠判断”，**禁止**显示“边界压力：低”。
 6. **不跨维度比较强度**：Score 0~4、Noul 0~1、intent 概率 0~1 各用原生刻度与
@@ -67,7 +75,7 @@
   "dimensions": {
     "<key>": {
       "key", "label",
-      "status": "sufficient | insufficient | unsupported",
+      "status": "sufficient | insufficient | evidence_limited | unsupported",
       "conclusion": str,                          # 确定性模板短句（用户可见）
       "strength":   {"level": str, "value": float|None, "scale": str, "basis": [str]},
       "coverage":   {"eligible_messages", "supporting_messages",
@@ -190,6 +198,20 @@ variance 0 vs 4、entropy 0 vs 1 bit——Profile 的 `uncertainty` 必须区分
 | G | 普通关心不得升级 special / romantic | `rb_neg_health_polite` |
 | H | D5 施压不得被 legacy 高分写成正向 | `rb_dis_pressure_after_refusal`（boundary `unsupported` + 无正向措辞） |
 | I | 低覆盖必须 `insufficient` 而非中位 | `rb_fam_smalltalk`、`rb_dis_low_investment` |
+
+## 8.1 语义审计记录（PR 前置审计，2026-09-29）
+
+- **insufficient 硬门槛**：审计确认原实现存在“coverage 低抹掉明确证据”问题
+  （单条 romantic raw 0.92 / 单条“以后别联系我了”distancing 0.95 都被压成
+  “数据不足，无法判断”）。修复为三态（§2 规则 4b）：明确档证据 →
+  `evidence_limited`（明确信号 + 覆盖有限 + 可靠性封顶 + 禁止外推）；
+  单条普通 / 弱观察仍 `insufficient`。新增 5 条单条证据回归测试
+  （明确浪漫 / 明确疏离 + 不与自然收尾混淆 / 单条普通 / 弱负向不解锁 /
+  严格负向档解锁）。
+- **raw Noul 展示**：主卡正文无 raw；折叠「查看详细指标」中的
+  `暧昧 raw：40%` 百分比呈现有概率错觉风险 → 改为 `raw：0.40（…；Jev
+  decision probability，非心理概率）`（仅措辞，无行为变化）；Debug 折叠区
+  与 profile JSON / 研究报告继续保留 raw（明确标注，允许）。
 
 ## 9. 架构与回滚
 

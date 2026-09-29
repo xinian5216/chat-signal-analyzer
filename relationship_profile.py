@@ -93,7 +93,14 @@ DIMENSION_LABELS = {
 # status / direction / reliability 枚举（字符串常量，便于测试锚定）
 STATUS_SUFFICIENT = "sufficient"
 STATUS_INSUFFICIENT = "insufficient"
+# 审计修复（#18 语义审计）：明确证据存在但覆盖有限 ≠ 数据不足
+STATUS_EVIDENCE_LIMITED = "evidence_limited"
 STATUS_UNSUPPORTED = "unsupported"
+
+# 明确档门槛（复用量表第 0 档边界）：用于区分“单条强证据”与“单条普通证据”。
+# 只有量表明确档（Score 明显档 ≥ 3.0 / Noul 明确档 ≥ 0.70 / 严格负向档 < 1.0）
+# 才能解锁 evidence_limited；第 1 档弱观察（如 engagement 1.8）不算明确证据。
+EXPLICIT_NEG_BELOW = 1.0
 
 DIR_SUPPORTING = "supporting"
 DIR_COUNTER = "counter"
@@ -231,7 +238,7 @@ def _coverage(effective: list[dict], supporting_count: int,
 
 def _direction(supporting_count: int, counter_count: int,
                counter_available: bool, status: str) -> str:
-    if status != STATUS_SUFFICIENT:
+    if status not in (STATUS_SUFFICIENT, STATUS_EVIDENCE_LIMITED):
         return DIR_UNKNOWN
     if supporting_count and counter_count:
         return DIR_MIXED
@@ -242,9 +249,30 @@ def _direction(supporting_count: int, counter_count: int,
     return DIR_NONE
 
 
+def _explicit_count(supporting: list[dict], counter: list[dict]) -> int:
+    """明确档证据条数：supporting（明显档 / Noul 明确档）+ 严格负向档 counter。
+
+    只用于区分“单条非常明确的 observable signal”与“单条普通 / 弱观察”：
+    第 1 档弱观察（如 engagement 1.8 敷衍档）不解锁 evidence_limited，
+    minimum sample protection 不被取消，只是不再抹掉明确证据。
+    """
+    strict_counter = sum(1 for item in counter
+                         if item.get("value") is not None
+                         and item["value"] < EXPLICIT_NEG_BELOW)
+    return len(supporting) + strict_counter
+
+
+def _mark_limited_reliability(reliability: dict) -> dict:
+    if reliability["level"] == CONF_LEVEL_HIGH:
+        reliability["level"] = CONF_LEVEL_MID
+    reliability["basis"].append("覆盖有限，需更多样本确认整体模式")
+    return reliability
+
+
 def _reliability_from_confidence(eligible: int, coverage: dict,
                                  confidences: list[float],
-                                 missing_conf: int) -> dict:
+                                 missing_conf: int,
+                                 status: str | None = None) -> dict:
     """置信度 + 覆盖封顶的可靠性（绝不简单相乘隐藏两者）。"""
     basis: list[str] = []
     confidence = _mean(confidences)
@@ -276,11 +304,15 @@ def _reliability_from_confidence(eligible: int, coverage: dict,
                 and level == CONF_LEVEL_HIGH:
             level = CONF_LEVEL_MID
             basis.append("证据覆盖率低于 50%，可靠性不高于“中等”")
-    return {"level": level, "confidence": _round(confidence), "proxy": False,
-            "basis": basis}
+    reliability = {"level": level, "confidence": _round(confidence),
+                   "proxy": False, "basis": basis}
+    if status == STATUS_EVIDENCE_LIMITED:
+        _mark_limited_reliability(reliability)
+    return reliability
 
 
-def _reliability_proxy(eligible: int, coverage: dict, note: str) -> dict:
+def _reliability_proxy(eligible: int, coverage: dict, note: str,
+                       status: str | None = None) -> dict:
     """Noul 维度可靠性代理：官方无 confidence 字段，只按覆盖，最高“中等”。"""
     basis = [note,
              f"有效证据 {eligible} 条"
@@ -291,7 +323,11 @@ def _reliability_proxy(eligible: int, coverage: dict, note: str) -> dict:
     else:
         level = CONF_LEVEL_MID if eligible >= RELIABILITY_HIGH_MIN_MESSAGES \
             else CONF_LEVEL_LOW
-    return {"level": level, "confidence": None, "proxy": True, "basis": basis}
+    reliability = {"level": level, "confidence": None, "proxy": True,
+                   "basis": basis}
+    if status == STATUS_EVIDENCE_LIMITED:
+        _mark_limited_reliability(reliability)
+    return reliability
 
 
 def _uncertainty_from_scores(items: list[dict], dim: str) -> dict:
@@ -338,9 +374,19 @@ def _uncertainty_from_noul(items: list[dict], raw_key: str) -> dict:
     }
 
 
-def _status(eligible: int) -> str:
-    return STATUS_SUFFICIENT if eligible >= RELIABILITY_MIN_EFFECTIVE \
-        else STATUS_INSUFFICIENT
+def _status(eligible: int, explicit_count: int = 0) -> str:
+    """三态：证据充分 / 明确证据但覆盖有限 / 真正信息不足。
+
+    coverage 低 ≠ evidence 不存在：单条明确档证据（如 romantic raw ≥ 0.90、
+    “以后别联系我了”的 distancing 高信号）必须表达为
+    ``evidence_limited``（当前样本存在明确信号，覆盖有限），而不是抹成
+    “数据不足，无法判断”；普通 / 弱观察单条仍为 ``insufficient``。
+    """
+    if eligible >= RELIABILITY_MIN_EFFECTIVE:
+        return STATUS_SUFFICIENT
+    if explicit_count >= 1:
+        return STATUS_EVIDENCE_LIMITED
+    return STATUS_INSUFFICIENT
 
 
 def _strength_score_dim(items: list[dict], stats: dict, avg_key: str,
@@ -394,7 +440,7 @@ def _build_initiative(effective: list[dict], items: list[dict], stats: dict) -> 
                 item, "engagement", value, conf, ROLE_COUNTER, "jev_metric",
                 f"engagement {value:.2f} < {INITIATIVE_COUNTER_BELOW:g}：观察到"
                 "最低限度 / 敷衍式回应或明确拒绝继续（低投入的直接观察，非推测）"))
-    status = _status(len(effective))
+    status = _status(len(effective), _explicit_count(supporting, counter))
     coverage = _coverage(effective, len(supporting), len(items))
     confidences = [_dim_confidence(item["result"], "engagement")
                    for item in effective]
@@ -407,6 +453,11 @@ def _build_initiative(effective: list[dict], items: list[dict], stats: dict) -> 
                                         share_personal) if v is not None])
     if status == STATUS_INSUFFICIENT:
         conclusion = "数据不足，无法判断（有效证据不足 2 条）"
+    elif status == STATUS_EVIDENCE_LIMITED:
+        role_word = ("发现明确证据" if supporting else "存在明确反向证据")
+        conclusion = (f"当前样本{role_word}"
+                      f"（{len(supporting) + len(counter)} 条）；"
+                      "覆盖有限，需更多样本确认整体模式")
     elif stats.get("engagement_avg") is None:
         conclusion = "投入程度：有效关系信息不足，暂不评级"
     else:
@@ -425,7 +476,7 @@ def _build_initiative(effective: list[dict], items: list[dict], stats: dict) -> 
         "direction": _direction(len(supporting), len(counter), True, status),
         "reliability": _reliability_from_confidence(
             len(effective), coverage, [c for c in confidences if c is not None],
-            missing),
+            missing, status),
         "supporting_count": len(supporting),
         "counter_count": len(counter),
         "counter_evidence_available": True,
@@ -482,7 +533,7 @@ def _build_care(effective: list[dict], items: list[dict], stats: dict) -> dict:
                 item, "warmth", warmth, conf, ROLE_COUNTER, "jev_metric",
                 f"warmth {warmth:.2f} < {CARE_COUNTER_BELOW:g}：观察到明显冷淡、"
                 "疏离或拒绝（注意：纯事务性 / 中性回应只是缺证据，不计反证）"))
-    status = _status(len(effective))
+    status = _status(len(effective), _explicit_count(supporting, counter))
     coverage = _coverage(effective, len(supporting), len(items))
     confidences = [_dim_confidence(item["result"], "warmth")
                    for item in effective]
@@ -491,6 +542,11 @@ def _build_care(effective: list[dict], items: list[dict], stats: dict) -> dict:
     caring_mass = _emotion_mass(effective, "caring")
     if status == STATUS_INSUFFICIENT:
         conclusion = "数据不足，无法判断（有效证据不足 2 条）"
+    elif status == STATUS_EVIDENCE_LIMITED:
+        role_word = "发现明确证据" if supporting else "存在明确反向证据"
+        conclusion = (f"当前样本{role_word}"
+                      f"（{len(supporting) + len(counter)} 条）；"
+                      "覆盖有限，需更多样本确认整体模式")
     elif stats.get("warmth_avg") is None:
         conclusion = "温暖程度：有效关系信息不足，暂不评级"
     else:
@@ -509,7 +565,7 @@ def _build_care(effective: list[dict], items: list[dict], stats: dict) -> dict:
         "direction": _direction(len(supporting), len(counter), True, status),
         "reliability": _reliability_from_confidence(
             len(effective), coverage, [c for c in confidences if c is not None],
-            missing),
+            missing, status),
         "supporting_count": len(supporting),
         "counter_count": len(counter),
         "counter_evidence_available": True,
@@ -552,13 +608,18 @@ def _build_familiarity(effective: list[dict], items: list[dict], stats: dict) ->
                 item, "relational_ease", ease, conf, ROLE_COUNTER, "jev_metric",
                 f"relational_ease {ease:.2f} < {FAMILIARITY_COUNTER_BELOW:g}："
                 "观察到明显陌生、拘谨或不自然互动（正式 / 礼貌只是缺证据，不计反证）"))
-    status = _status(len(effective))
+    status = _status(len(effective), _explicit_count(supporting, counter))
     coverage = _coverage(effective, len(supporting), len(items))
     confidences = [_dim_confidence(item["result"], "relational_ease")
                    for item in effective]
     missing = sum(1 for c in confidences if c is None)
     if status == STATUS_INSUFFICIENT:
         conclusion = "数据不足，无法判断（有效证据不足 2 条）"
+    elif status == STATUS_EVIDENCE_LIMITED:
+        role_word = "发现明确证据" if supporting else "存在明确反向证据"
+        conclusion = (f"当前样本{role_word}"
+                      f"（{len(supporting) + len(counter)} 条）；"
+                      "覆盖有限，需更多样本确认整体模式")
     elif stats.get("relational_ease_avg") is None:
         conclusion = "互动熟悉度：有效关系信息不足，暂不评级"
     else:
@@ -576,7 +637,7 @@ def _build_familiarity(effective: list[dict], items: list[dict], stats: dict) ->
         "direction": _direction(len(supporting), len(counter), True, status),
         "reliability": _reliability_from_confidence(
             len(effective), coverage, [c for c in confidences if c is not None],
-            missing),
+            missing, status),
         "supporting_count": len(supporting),
         "counter_count": len(counter),
         "counter_evidence_available": True,
@@ -607,13 +668,17 @@ def _build_special(effective: list[dict], items: list[dict], stats: dict) -> dic
                 ROLE_SUPPORTING, "jev_metric",
                 f"special_attention {value:.2f} ≥ {SUPPORT_MIN:g}：明显超出"
                 "普通社交的特别关注（量表第 4 档起）"))
-    status = _status(len(effective))
+    status = _status(len(effective), _explicit_count(supporting, []))
     coverage = _coverage(effective, len(supporting), len(items))
     confidences = [_dim_confidence(item["result"], "special_attention")
                    for item in effective]
     missing = sum(1 for c in confidences if c is None)
     if status == STATUS_INSUFFICIENT:
         conclusion = "数据不足，无法判断（有效证据不足 2 条）"
+    elif status == STATUS_EVIDENCE_LIMITED:
+        conclusion = (f"当前样本发现明确的特别关注证据"
+                      f"（{len(supporting)} 条消息超出普通社交水平）；"
+                      "覆盖有限，需更多样本确认整体模式")
     elif supporting:
         conclusion = ("发现明确的特别关注证据"
                       f"（{len(supporting)} 条消息超出普通社交水平）；"
@@ -632,7 +697,7 @@ def _build_special(effective: list[dict], items: list[dict], stats: dict) -> dic
         "direction": _direction(len(supporting), 0, False, status),
         "reliability": _reliability_from_confidence(
             len(effective), coverage, [c for c in confidences if c is not None],
-            missing),
+            missing, status),
         "supporting_count": len(supporting),
         "counter_count": 0,
         "counter_evidence_available": False,
@@ -684,7 +749,7 @@ def _noul_dimension(key: str, raw_key: str, ev_avg_key: str,
                 item, raw_key, raw, None, ROLE_WEAK_TRACE, "jev_metric",
                 f"{raw_key} {raw:.2f} 属弱信号区间（{ROMANTIC_WEAK_MIN:g}~"
                 f"{ROMANTIC_CLEAR_MIN:g}）：只保留痕迹，不构成结论依据"))
-    status = _status(len(effective))
+    status = _status(len(effective), _explicit_count(clear, []))
     coverage = _coverage(effective, len(clear), len(items_all))
     avg_ev = stats.get(ev_avg_key)
     strength = {"level": scoring.evidence_level_label(avg_ev),
@@ -695,6 +760,10 @@ def _noul_dimension(key: str, raw_key: str, ev_avg_key: str,
                           f"弱信号痕迹（>{ROMANTIC_WEAK_MIN:g}）{len(weak)} 条"]}
     if status == STATUS_INSUFFICIENT:
         conclusion = "数据不足，无法判断（有效证据不足 2 条）"
+    elif status == STATUS_EVIDENCE_LIMITED:
+        conclusion = (f"当前样本发现明确{signal_noun}证据"
+                      f"（{len(clear)} 条消息，raw ≥ {ROMANTIC_CLEAR_MIN:g}）；"
+                      "覆盖有限，需更多样本确认整体模式")
     elif clear:
         conclusion = (f"发现明确{signal_noun}证据（{len(clear)} 条消息达到明确档）；"
                       f"整体证据：{scoring.evidence_level_label(avg_ev)}")
@@ -713,7 +782,7 @@ def _noul_dimension(key: str, raw_key: str, ev_avg_key: str,
         "direction": _direction(len(clear), 0, False, status),
         "reliability": _reliability_proxy(
             len(effective), coverage,
-            "Noul 无 confidence 字段（官方设计），可靠性为覆盖代理"),
+            "Noul 无 confidence 字段（官方设计），可靠性为覆盖代理", status),
         "supporting_count": len(clear),
         "counter_count": 0,
         "counter_evidence_available": False,
@@ -837,6 +906,9 @@ def _summary_lines(dimensions: dict) -> list[str]:
         lines.append("主动投入不自动等于浪漫信号。")
     if any(dimensions[key]["direction"] == DIR_MIXED for key in DIMENSION_ORDER):
         lines.append("存在支持与相反两方向的证据并存，请以逐维证据为准，不要平均成单一结论。")
+    if any(dimensions[key]["status"] == STATUS_EVIDENCE_LIMITED
+           for key in DIMENSION_ORDER):
+        lines.append("单条明确证据只代表当前样本，不能外推为长期关系模式。")
     return lines
 
 

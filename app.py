@@ -1165,14 +1165,16 @@ def show_message_card(entry: dict) -> None:
             with c1:
                 st.progress(
                     float(r["romantic_signal"]),
-                    text=f"暧昧 raw：{r['romantic_signal'] * 100:.0f}%"
-                         f"（{noul_label(r['romantic_signal'])}）",
+                    text=f"暧昧 raw：{r['romantic_signal']:.2f}"
+                         f"（{noul_label(r['romantic_signal'])}；"
+                         "Jev decision probability，非心理概率）",
                 )
             with c2:
                 st.progress(
                     float(r["distancing_signal"]),
-                    text=f"疏离 raw：{r['distancing_signal'] * 100:.0f}%"
-                         f"（{noul_label(r['distancing_signal'])}）",
+                    text=f"疏离 raw：{r['distancing_signal']:.2f}"
+                         f"（{noul_label(r['distancing_signal'])}；"
+                         "Jev decision probability，非心理概率）",
                 )
             if m is not None:
                 st.caption(
@@ -1570,6 +1572,8 @@ def _show_profile_card(dim: dict) -> None:
             st.caption("当前 schema 没有直接指标，本维度不给等级。")
         elif dim["status"] == "insufficient":
             st.caption("有效证据不足，本维度不给中间等级。")
+        elif dim["status"] == "evidence_limited":
+            st.caption("明确证据存在，但覆盖有限；不外推为长期关系模式。")
         if dim["evidence"] or dim["limitations"]:
             with st.expander("证据与依据"):
                 if dim["evidence"]:

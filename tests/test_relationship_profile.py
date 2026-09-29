@@ -103,6 +103,7 @@ def test_profile_schema_shape():
                       "limitations"):
             assert field in dim, f"{key} 缺少 {field}"
         assert dim["status"] in (rp.STATUS_SUFFICIENT, rp.STATUS_INSUFFICIENT,
+                                 rp.STATUS_EVIDENCE_LIMITED,
                                  rp.STATUS_UNSUPPORTED)
         assert dim["direction"] in (rp.DIR_SUPPORTING, rp.DIR_COUNTER,
                                     rp.DIR_MIXED, rp.DIR_NONE, rp.DIR_UNKNOWN)
@@ -249,8 +250,9 @@ def test_mixed_direction_is_reported():
 
 
 def test_insufficient_is_not_mid_level():
-    entries = make_entries([{"warmth": 3.5, "engagement": 3.5,
-                             "evidence": 3.0}])  # 仅 1 条有效证据
+    # 单条**普通**消息（无任何明确档证据）→ 真正信息不足，禁止给中位等级
+    entries = make_entries([{"warmth": 2.0, "engagement": 2.0,
+                             "evidence": 2.5}])
     profile = build_profile(entries)
     for key in rp.DIMENSION_ORDER:
         if key == "boundary_pressure":
@@ -261,6 +263,97 @@ def test_insufficient_is_not_mid_level():
         assert dim["direction"] == rp.DIR_UNKNOWN, key
         for mid in ("一般", "较强", "强", "自然熟悉", "中等偏强"):
             assert mid not in dim["conclusion"], key
+
+
+# ---------------------------------------------------------------------------
+# 审计回归：单条强证据 vs 单条普通证据（coverage 低 ≠ evidence 不存在）
+# ---------------------------------------------------------------------------
+
+
+class TestSingleExplicitEvidence:
+    def test_single_explicit_romantic_evidence(self):
+        entries = make_entries([
+            {"romantic": 0.92, "evidence": 3.8, "warmth": 3.4, "conf": 0.9},
+        ])
+        profile = build_profile(entries)
+        dim = profile["dimensions"]["romantic"]
+        # 明确保留明确浪漫 evidence，不因覆盖低被抹成“数据不足”
+        assert dim["status"] == rp.STATUS_EVIDENCE_LIMITED
+        assert dim["supporting_count"] == 1
+        assert "发现明确浪漫证据" in dim["conclusion"]
+        assert "数据不足，无法判断" not in dim["conclusion"]
+        # coverage 明确低；reliability 不允许高
+        assert dim["coverage"]["eligible_messages"] == 1
+        assert dim["coverage"]["analyzed_messages"] == 1
+        assert dim["reliability"]["level"] != rp.CONF_LEVEL_HIGH
+        assert any("覆盖有限" in b for b in dim["reliability"]["basis"])
+        # 不外推为长期关系结论；不出现“喜欢概率”式表述
+        assert "需更多样本确认整体模式" in dim["conclusion"]
+        text = profile["summary"]["text"]
+        assert "不能外推为长期关系模式" in text
+        for banned in ("喜欢概率", "喜欢你的概率", "恋爱可能性", "长期关系就是",
+                       "整体关系就是"):
+            assert banned not in text, banned
+
+    def test_single_explicit_withdrawal_evidence(self):
+        # 虚构消息“以后别联系我了。” → distancing raw 明确高
+        entries = make_entries([
+            {"romantic": 0.05, "distancing": 0.95, "evidence": 3.8,
+             "warmth": 0.6, "engagement": 1.0, "conf": 0.9},
+        ])
+        profile = build_profile(entries)
+        dim = profile["dimensions"]["withdrawal"]
+        assert dim["status"] == rp.STATUS_EVIDENCE_LIMITED
+        assert dim["supporting_count"] == 1
+        assert "发现明确疏离证据" in dim["conclusion"]
+        assert dim["coverage"]["eligible_messages"] == 1
+        assert dim["reliability"]["level"] != rp.CONF_LEVEL_HIGH
+        assert "需更多样本确认整体模式" in dim["conclusion"]
+        # 与自然结束话题不混淆：单条普通收尾不产生 withdrawal 明确证据
+        close = build_profile(make_entries([
+            {"romantic": 0.05, "distancing": 0.15, "evidence": 2.0,
+             "warmth": 2.2, "engagement": 1.8},
+        ]))["dimensions"]["withdrawal"]
+        assert close["supporting_count"] == 0
+        assert "发现明确疏离证据" not in close["conclusion"]
+        assert close["status"] in (rp.STATUS_INSUFFICIENT,
+                                   rp.STATUS_EVIDENCE_LIMITED)
+        if close["status"] == rp.STATUS_INSUFFICIENT:
+            assert "数据不足" in close["conclusion"]
+
+    def test_single_ordinary_message_stays_insufficient(self):
+        entries = make_entries([{"warmth": 2.0, "engagement": 2.0,
+                                 "special": 1.2, "evidence": 2.4}])
+        profile = build_profile(entries)
+        for key in rp.DIMENSION_ORDER:
+            if key == "boundary_pressure":
+                continue
+            assert profile["dimensions"][key]["status"] \
+                == rp.STATUS_INSUFFICIENT, key
+        assert all("数据不足" in profile["dimensions"][key]["conclusion"]
+                   for key in rp.DIMENSION_ORDER
+                   if key != "boundary_pressure")
+
+    def test_single_weak_low_engagement_is_not_explicit(self):
+        """弱负向观察（engagement 1.8 敷衍档）不解锁 evidence_limited：
+        minimum sample protection 不被取消。"""
+        entries = make_entries([
+            {"warmth": 1.8, "engagement": 1.8, "special": 1.0, "evidence": 2.2},
+        ])
+        dim = build_profile(entries)["dimensions"]["initiative_engagement"]
+        assert dim["status"] == rp.STATUS_INSUFFICIENT
+        assert "数据不足" in dim["conclusion"]
+
+    def test_strict_negative_band_still_unlocks_limited(self):
+        """单条明确负向观察（warmth 0.4，明显冷淡档）可表达为明确反向证据。"""
+        entries = make_entries([
+            {"warmth": 0.4, "engagement": 2.0, "special": 1.0, "evidence": 2.5},
+        ])
+        dim = build_profile(entries)["dimensions"]["care_responsiveness"]
+        assert dim["status"] == rp.STATUS_EVIDENCE_LIMITED
+        assert dim["counter_count"] == 1
+        assert "明确反向证据" in dim["conclusion"]
+        assert "需更多样本确认整体模式" in dim["conclusion"]
 
 
 def test_unsupported_boundary_pressure():
