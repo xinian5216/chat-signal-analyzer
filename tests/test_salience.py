@@ -132,9 +132,17 @@ class TestDirectionRules:
             [e["event_class"] for e in e_high]
         assert [e["direction"] for e in e_low] == \
             [e["direction"] for e in e_high]
-        # evidence 只是 eligibility / 信息量上下文：低于 1.0 不产生事件
-        assert sal.build_salience(
-            make_entries([dict(SPECIAL_EVENT, evidence=0.5)]))["events"] == []
+        # evidence < 1.0 不再被吞掉（pre-PR 审计修复）：明确档事件保留，
+        # 只标注证据一致性冲突；方向 / 事件类 / 分级完全不变
+        low = sal.build_salience(
+            make_entries([dict(SPECIAL_EVENT, evidence=0.5)]))["events"]
+        assert [e["event_class"] for e in low] == \
+            [e["event_class"] for e in e_high]
+        assert [e["direction"] for e in low] == [e["direction"] for e in e_high]
+        assert [e["salience_level"] for e in low] == \
+            [e["salience_level"] for e in e_high]
+        assert low[0]["evidence_consistency"]["level"] == \
+            sal.CONSISTENCY_CONFLICTED
 
     def test_message_weight_and_confidence_not_direction(self):
         weak_conf = dict(SPECIAL_EVENT, conf=0.3)
@@ -396,6 +404,83 @@ class TestD5Safety:
         case = next(c for c in _SCENARIO_DOC["cases"] if c["scenario"] == "S14")
         report = sdiag.evaluate_scenario(case)
         assert report["passed"], [c for c in report["checks"] if not c["passed"]]
+
+
+# ---------------------------------------------------------------------------
+# pre-PR 语义审计（§6）：explicit signal + 低 relationship_evidence_strength
+# ---------------------------------------------------------------------------
+
+
+class TestExplicitSignalLowEvidence:
+    def test_explicit_romantic_low_evidence_retained(self):
+        spec = dict(ORDINARY, romantic=0.95, evidence=0.5)
+        sal_out, profile = build(make_entries([spec]))
+        assert [e["event_class"] for e in sal_out["events"]] == \
+            ["explicit_romantic_signal"]
+        e = sal_out["events"][0]
+        assert e["evidence_consistency"]["level"] == sal.CONSISTENCY_CONFLICTED
+        assert "可靠性需谨慎解释" in e["evidence_consistency"]["reason"]
+        # 不外推心理概率 / 人际负面结论
+        text = sal_out["baseline_summary"] + profile["summary"]["text"]
+        for banned in ("95%", "喜欢概率", "恋爱可能性"):
+            assert banned not in text
+        # 冲突提示进入用户可见短语
+        assert "可靠性需谨慎解释" in \
+            sal_out["dimensions"]["romantic"]["salient_phrase"]
+
+    def test_explicit_withdrawal_low_evidence_retained(self):
+        spec = dict(ORDINARY, distancing=0.95, evidence=0.5)
+        sal_out, _ = build(make_entries([spec]))
+        assert [e["event_class"] for e in sal_out["events"]] == \
+            ["explicit_relationship_withdrawal"]
+        assert sal_out["events"][0]["evidence_consistency"]["level"] == \
+            sal.CONSISTENCY_CONFLICTED
+
+    def test_explicit_special_low_evidence_retained(self):
+        spec = dict(ORDINARY, special=3.5, evidence=0.5)
+        sal_out, _ = build(make_entries([spec]))
+        assert [e["event_class"] for e in sal_out["events"]] == \
+            ["explicit_special_attention"]
+        e = sal_out["events"][0]
+        assert e["evidence_consistency"]["level"] == sal.CONSISTENCY_CONFLICTED
+        assert "不一致" in e["evidence_consistency"]["reason"]
+        assert any("可靠性需谨慎解释" in note for note in e["limitations"])
+
+    def test_weak_signal_low_evidence_stays_gated(self):
+        # 弱信号（romantic 0.40 / engagement 1.8 敷衍档）+ 低 evidence → 仍无事件
+        weak = dict(ORDINARY, romantic=0.40, evidence=0.5)
+        perfunctory = dict(ORDINARY, engagement=1.8, evidence=0.5)
+        assert sal.build_salience(make_entries([weak]))["events"] == []
+        assert sal.build_salience(make_entries([perfunctory]))["events"] == []
+
+    def test_counter_low_evidence_retained_with_conflict(self):
+        # 反方向明确档信号同样不被吞（对称修复），并标注一致性冲突
+        spec = dict(ORDINARY, warmth=0.4, engagement=0.5, evidence=0.5)
+        sal_out, _ = build(make_entries([spec]))
+        classes = sorted(e["event_class"] for e in sal_out["events"])
+        assert classes == ["cold_or_rejecting_response", "low_investment_or_refusal"]
+        for e in sal_out["events"]:
+            assert e["direction"] == sal.DIRECTION_COUNTER
+            assert e["evidence_consistency"]["level"] == \
+                sal.CONSISTENCY_CONFLICTED
+
+    def test_d5_wording_no_positive_semantics_anywhere(self):
+        # §6.5：special_attention 事件存在时，任何可见文本不得出现正向语义
+        spec = {"warmth": 2.4, "engagement": 3.4, "special": 3.2, "evidence": 3.4,
+                "ease": 2.2, "romantic": 0.55, "distancing": 0.1, "conf": 0.8}
+        sal_out, profile = build(make_entries([ORDINARY, spec]))
+        assert sal_out["events"]  # special 事件存在
+        chunks = [sal_out["baseline_summary"], profile["summary"]["text"]]
+        chunks += [d["conclusion"] for d in profile["dimensions"].values()]
+        chunks += list(profile["summary"]["lines"])
+        chunks += sal_out["dimensions"]["special_attention"]["salient_phrase"]
+        chunks += [e["reason"] for e in sal_out["events"]]
+        chunks += sal_out["diagnostics"]["notes"]
+        text = "\n".join(chunks)
+        for banned in ("正向事件", "positive relationship", "好感增加", "关系变好",
+                       "更亲近", "closeness increased", "关系健康", "尊重边界",
+                       "positive event"):
+            assert banned not in text, banned
 
 
 # ---------------------------------------------------------------------------

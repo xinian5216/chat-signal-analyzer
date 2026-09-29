@@ -17,8 +17,11 @@
   维度自身构念（如 distancing 高 = withdrawal 维度的 supporting evidence），
   不存在“全局正向 +20 / 负向 −20”；legacy overall / base_score **不参与**
   任何事件的方向判断；
-- **evidence ≠ direction**：`relationship_evidence_strength` 只作 eligibility
-  （≥ 1.0 才可产生事件）与信息量上下文，绝不决定方向；
+- **evidence ≠ direction**：`relationship_evidence_strength` **不决定方向**，
+  也不再是事件 veto：明确档维度信号（Score 明显档 / Noul 明确档 / 严格负向档）
+  恒产生事件，`relationship_evidence_strength < 1.0` 只把事件标注为
+  `evidence_consistency = conflicted`（可靠性需谨慎解释）；明确档之外的弱信号
+  仍不产生事件（保守门槛不取消）；
 - **message_weight 不决定方向**：本模块不使用 message_weight（如需参考只在
   diagnostics 中作为 reliability 上下文）；
 - **absence ≠ counter**：counter 事件只在量表**明确负向档**（< 1.0，第 0 档：
@@ -61,6 +64,12 @@ SUPPORT_MIN = rp.SUPPORT_MIN                      # 3.0
 NOUL_CLEAR_MIN = rp.ROMANTIC_CLEAR_MIN            # 0.70
 STRICT_NEG_BELOW = rp.EXPLICIT_NEG_BELOW           # 1.0
 ELIGIBLE_MIN_EVIDENCE = scoring.EFFECTIVE_MESSAGE_MIN_EVIDENCE   # 1.0
+# pre-PR 语义审计修复：evidence 只作一致性上下文，不是事件 veto。
+# 明确档维度信号即使 relationship_evidence_strength 低于门槛也保留事件，
+# 以 CONSISTENCY_CONFLICTED 明示“两项指标冲突、可靠性需谨慎解释”；
+# 明确档之外仍无事件（保守门槛不取消：弱信号 / 非明确档不升级）。
+CONSISTENCY_OK = "consistent"
+CONSISTENCY_CONFLICTED = "conflicted"
 HIGH_INFORMATION_EVIDENCE = 3.0   # D5：高关系信息量消息的诊断标记门槛
 
 # salience_level 分级（只分档，不打连续分）：
@@ -224,6 +233,28 @@ def _tier_counter(value: float) -> str:
         else SALIENCE_LEVEL_STRONG
 
 
+def _evidence_consistency(ev: float) -> dict:
+    """relationship_evidence_strength 的一致性上下文（不决定方向、不是事件 veto）。
+
+    明确档维度信号 + 低 evidence = 两项指标冲突：保留事件并如实标注
+    “信息量判断偏低、可靠性需谨慎解释”，绝不静默抹除、绝不自动提高可靠性。
+    """
+    if ev >= ELIGIBLE_MIN_EVIDENCE:
+        return {
+            "level": CONSISTENCY_OK,
+            "reason": f"relationship_evidence_strength {ev:.2f} ≥ "
+                      f"{ELIGIBLE_MIN_EVIDENCE:g}（有效消息），"
+                      "与该维度明确信号不冲突。",
+        }
+    return {
+        "level": CONSISTENCY_CONFLICTED,
+        "reason": f"该维度出现明确结构化信号，但 relationship_evidence_strength "
+                  f"{ev:.2f} < {ELIGIBLE_MIN_EVIDENCE:g}（模型对该消息整体"
+                  "关系信息量判断偏低），两项指标存在不一致；事件可靠性需谨慎"
+                  "解释，不得据此提高或降低可靠性。",
+    }
+
+
 def _event(event_class: str, item: dict, value: float, confidence: float | None,
            salience_level: str, reason: str) -> dict:
     meta = EVENT_CLASS_META[event_class]
@@ -231,6 +262,10 @@ def _event(event_class: str, item: dict, value: float, confidence: float | None,
     limitations = list(_COMMON_EVENT_LIMITS)
     if ev >= HIGH_INFORMATION_EVIDENCE:
         limitations.append(_HIGH_INFORMATION_LIMIT.format(ev=ev))
+    consistency = _evidence_consistency(ev)
+    if consistency["level"] == CONSISTENCY_CONFLICTED:
+        limitations.append("关系信息量与维度信号不一致（evidence 低于有效门槛），"
+                           "可靠性需谨慎解释。")
     return {
         "event_id": (f"{SOURCE_JEV_METRIC}:{item['index']}:{meta['dimension']}:"
                      f"{event_class}:{meta['metric']}"),
@@ -243,8 +278,9 @@ def _event(event_class: str, item: dict, value: float, confidence: float | None,
         "value": _round(value),
         "scale": meta["scale"],
         "confidence": _round(confidence),
-        # 信息量上下文（eligibility / 诊断用），绝不决定方向
+        # 信息量上下文（一致性 / 诊断用），绝不决定方向
         "relationship_evidence_strength": _round(ev),
+        "evidence_consistency": consistency,
         "salience_level": salience_level,
         "reason": reason,
         "alternative_explanation": _ALTERNATIVE_EXPLANATIONS[event_class],
@@ -356,6 +392,9 @@ def describe_events(events: list[dict], direction: str) -> list[str]:
         head = (f"多次出现明确{noun}信号（{count} 条不同消息）；"
                 "多次出现不代表统计独立性")
     lines = [head]
+    if any(e["evidence_consistency"]["level"] == CONSISTENCY_CONFLICTED
+           for e in events):
+        lines[0] += "（其中消息的关系信息量判断偏低，可靠性需谨慎解释）"
     for e in sorted(events, key=lambda e: e["message_index"]):
         lines.append(f"消息 #{e['message_index'] + 1}：{e['reason']}")
     return lines
@@ -444,7 +483,9 @@ def build_salience(results: list[dict], *, stats: dict | None = None) -> dict:
     events: list[dict] = []
     seen_ids: set[str] = set()
     duplicate_suppressed = 0
-    for item in effective:
+    # 明确档维度信号从全部可分析消息产生事件：evidence < 1.0 不抹除，
+    # 只以 evidence_consistency=conflicted 标注；明确档之外仍无事件。
+    for item in items:
         for event in _detect_events(item):
             if event["event_id"] in seen_ids:
                 duplicate_suppressed += 1
@@ -522,11 +563,16 @@ def build_salience(results: list[dict], *, stats: dict | None = None) -> dict:
             },
             "event_message_count": len(event_message_indices),
             "ordinary_message_count": len(ordinary),
+            "conflicted_event_count": sum(
+                1 for e in events
+                if e["evidence_consistency"]["level"] == CONSISTENCY_CONFLICTED),
             "duplicate_suppressed": duplicate_suppressed,
             "unclassified_high_information": unclassified,
             "notes": [
                 "diagnostics 仅供研究 / 排查，不是用户结论。",
                 "message_weight 与 legacy overall 不参与任何事件方向判断。",
+                "relationship_evidence_strength 低于有效门槛的事件不会被静默"
+                "抹除，而是标注 evidence_consistency=conflicted（可靠性需谨慎解释）。",
                 "本层不写 behavior DB；behavior 事件仍须人工确认后长期保存。",
             ],
         },

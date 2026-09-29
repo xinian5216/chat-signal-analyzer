@@ -249,6 +249,8 @@ def _profile_markdown_section(profile: dict) -> list[str]:
                     f"：{e['reason']}"
                 )
                 lines.append(f"      - 其他可能：{e['alternative_explanation']}")
+                if e.get("evidence_consistency", {}).get("level") == "conflicted":
+                    lines.append(f"      - 注意：{e['evidence_consistency']['reason']}")
             if title == "显著证据":
                 lines.append("      - 显著事件单独保留，不并入基线、不外推为长期关系模式。")
             else:

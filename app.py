@@ -1598,6 +1598,10 @@ def _show_profile_card(dim: dict) -> None:
                         f"：{e['reason']}"
                     )
                     st.caption(f"其他可能：{e['alternative_explanation']}")
+                    if e.get("evidence_consistency", {}).get("level") == "conflicted":
+                        st.caption(f"注意：{e['evidence_consistency']['reason']}可靠性需谨慎解释。")
+                    for note in e["limitations"]:
+                        st.caption(f"限制：{note}")
                 if title == "显著证据":
                     st.caption("显著事件单独保留，不并入基线、不外推为长期关系模式。")
                 else:

@@ -202,8 +202,10 @@ special / care / romantic 各一条（不同维度，S15）。
    - 高 romantic raw → `romantic.supporting`（不自动抬 special / closeness）；
    - 高 distancing raw → `withdrawal.supporting`（疏离维度的明确证据，
      **不是**“关系证据减分项”）。
-2. `relationship_evidence_strength` 只作 eligibility（≥ 1.0）与信息量上下文；
-   禁止 `direction = sign(evidence)`、禁止 `positive_salience += evidence`。
+2. `relationship_evidence_strength` **不是事件 veto**：明确档维度信号（Score
+   明显档 / Noul 明确档 / 严格负向档）恒产生事件；`relationship_evidence_strength
+   < 1.0` 只把事件标注为 `evidence_consistency = conflicted`（“两项指标存在
+   不一致；可靠性需谨慎解释”，用户层可见），弱信号仍不产生事件。
 3. `message_weight` 不进入本模块（direction-blind，仅 legacy 用）。
 4. legacy overall / base_score 不参与任何方向判断。
 5. 输出无 valence / global_direction / boost / net 字段（测试强制）。
@@ -305,6 +307,26 @@ tier 的**措辞档位**，不影响任何方向、资格阈值或数值聚合�
 5. D5 special 事件保留依据是“Jev 确实给了 3.2”；其语境（施压 vs 真诚关注）
    **当前 schema 无法区分**——这正是 #20 需要补的 boundary response 通道。
 6. capped tier 是定性结构（single/multiple/repeated），不是统计显著性。
+7. 低 `relationship_evidence_strength` 的明确档事件与维度状态可能并存：维度
+   status 仍由 #18 规则决定（如“数据不足”），事件侧以
+   `evidence_consistency=conflicted` 标注冲突——消息级可观察信号与会话级覆盖
+   判断是同一事实的两面，不得互相吞掉。
+
+### 17.1 pre-PR 语义审计记录（2026-09-29）
+
+- **evidence hard eligibility**：审计确认原实现把
+  `evidence ≥ 1.0` 当作事件 veto，导致**明确档维度信号被静默吞掉**
+  （实证：romantic 0.95 / distancing 0.95 / special 3.5 在
+  evidence 0.5 时全部无事件）。修复：明确档信号恒产生
+  事件，`evidence < 1.0` 时以 `evidence_consistency=conflicted`
+  标注（含 reason；短语追加"可靠性需谨慎解释"），弱信号仍不升级为事件。
+  新增 6 条回归测试（A/B/C 三向明确信号保留 + 弱信号仍 gate
+  + 反方向对称 + D5 措辞）。
+- **D5 措辞复查**：special_attention 事件的用户层称法为
+  "显著证据 / 特殊关注维度的显著信号"，无"正向事件 / 好感增加 /
+  关系变好 / closeness increased / 关系健康 / 尊重边界"
+  语义；被持续施压也可能体现为"特别关注"，因此事件永远
+  不携带正向结论（测试强制）。
 
 ## 18. 测试与复现（全部离线、确定性）
 
