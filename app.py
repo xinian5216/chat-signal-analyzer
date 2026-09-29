@@ -71,6 +71,9 @@ from report import (
     report_filename,
 )
 
+# 关系画像（Issue #18：纯业务层多维画像，只读现有结果，0 API）
+from relationship_profile import build_profile
+
 # 展示层辅助（短标签 / 徽章 / 过滤 / 排版数据，不含业务逻辑）
 from ui_helpers import (
     BEHAVIOR_MIN_DISPLAY,
@@ -1162,14 +1165,16 @@ def show_message_card(entry: dict) -> None:
             with c1:
                 st.progress(
                     float(r["romantic_signal"]),
-                    text=f"暧昧 raw：{r['romantic_signal'] * 100:.0f}%"
-                         f"（{noul_label(r['romantic_signal'])}）",
+                    text=f"暧昧 raw：{r['romantic_signal']:.2f}"
+                         f"（{noul_label(r['romantic_signal'])}；"
+                         "Jev decision probability，非心理概率）",
                 )
             with c2:
                 st.progress(
                     float(r["distancing_signal"]),
-                    text=f"疏离 raw：{r['distancing_signal'] * 100:.0f}%"
-                         f"（{noul_label(r['distancing_signal'])}）",
+                    text=f"疏离 raw：{r['distancing_signal']:.2f}"
+                         f"（{noul_label(r['distancing_signal'])}；"
+                         "Jev decision probability，非心理概率）",
                 )
             if m is not None:
                 st.caption(
@@ -1545,7 +1550,76 @@ def _signal_row(stats: dict) -> None:
     c2.metric("疏离信号", dis)
 
 
+# ---------------------------------------------------------------------------
+# 关系画像（Relationship Profile v2，Issue #18）——结果页主要解释层
+# ---------------------------------------------------------------------------
+
+
+def _show_profile_card(dim: dict) -> None:
+    """单个维度卡片：结论 + 覆盖 + 可靠性 + 可追溯证据（无任何合成分数）。"""
+    with st.container(border=True):
+        st.markdown(f"**{dim['label']}**　{dim['conclusion']}")
+        coverage = dim["coverage"]
+        rel = dim["reliability"]
+        proxy_note = "（覆盖代理）" if rel.get("proxy") else ""
+        st.caption(
+            f"证据覆盖：{coverage['eligible_messages']} / "
+            f"{coverage['analyzed_messages']} 条"
+            f"（支持 {dim['supporting_count']} · 相反 {dim['counter_count']}）"
+            f"　可靠性：{rel['level']}{proxy_note}"
+        )
+        if dim["status"] == "unsupported":
+            st.caption("当前 schema 没有直接指标，本维度不给等级。")
+        elif dim["status"] == "insufficient":
+            st.caption("有效证据不足，本维度不给中间等级。")
+        elif dim["status"] == "evidence_limited":
+            st.caption("明确证据存在，但覆盖有限；不外推为长期关系模式。")
+        if dim["evidence"] or dim["limitations"]:
+            with st.expander("证据与依据"):
+                if dim["evidence"]:
+                    for item in dim["evidence"]:
+                        conf = (f"，置信 {item['confidence']}"
+                                if item["confidence"] is not None else "")
+                        st.markdown(
+                            f"- 消息 #{item['message_index'] + 1} "
+                            f"{item['metric']}={item['value']}{conf}"
+                            f"（{item['role']}）：{item['reason']}"
+                        )
+                else:
+                    st.markdown("- 没有可追溯的单条证据（数据不足或无直接指标）")
+                for note in dim["limitations"]:
+                    st.caption(f"限制：{note}")
+
+
+def show_profile_section(results: list[dict], stats: dict) -> None:
+    """「关系画像」：六维 + 边界压力卡；overall 降级为辅助参考。"""
+    profile = build_profile(results, stats=stats)
+    st.markdown("### 关系画像")
+    st.caption(
+        "多维关系画像是主要解释层：每个维度分别给出证据强度、覆盖、方向与可靠性，"
+        "并明确区分“未发现证据”“数据不足”“当前 schema 不支持”。"
+    )
+    for dim in profile["dimensions"].values():
+        _show_profile_card(dim)
+    st.markdown("**画像摘要**")
+    for line in profile["summary"]["lines"]:
+        st.markdown(f"- {line}")
+    with st.expander("画像说明与限制"):
+        for note in profile["limitations"]:
+            st.caption(note)
+        for gap in profile["capability_gaps"]:
+            st.caption(f"能力边界：{gap}")
+    st.caption(
+        "画像与“互动亲近信号指数”（辅助参考）冲突时，以维度与证据为准，"
+        "不要把维度重新总结成一个数字。"
+    )
+
+
 def show_overview_tab(results: list[dict], stats: dict) -> None:
+    # ---- 关系画像（主要解释层，置顶）----
+    show_profile_section(results, stats)
+
+    # ---- Legacy 互动亲近信号指数（降级为辅助参考）----
     if overview_mode(stats) == "reference":
         # ---- 低信息量：不大字号展示总分 ----
         st.warning("⚠ 当前样本关系信息不足")
@@ -1563,8 +1637,10 @@ def show_overview_tab(results: list[dict], stats: dict) -> None:
         c3.metric("趋势", trend_short(stats["trend"]))
     else:
         with st.container(border=True):
-            st.caption("互动亲近信号指数")
-            st.markdown(f"### {fmt(stats['overall'])} / 100")
+            st.caption("互动亲近信号指数（Legacy 辅助参考，非关系结论）")
+            st.metric("辅助指数",
+                      f"{fmt(stats['overall'])} / 100"
+                      if stats["overall"] is not None else "—")
             c1, c2, c3 = st.columns(3)
             c1.metric("关系信息量", total_evidence_label(stats["total_weight"]))
             c2.metric("有效关系消息", f"{stats['effective_messages']} / {stats['analyzed']}")
@@ -3698,8 +3774,14 @@ def show_sidebar() -> None:
             )
         with st.expander("▶ 关于指标"):
             st.caption(
-                "互动亲近信号指数 = 按 message_weight 加权的关系信号聚合，"
+                "「关系画像」是主要解释层：各维度分别展示证据强度 / 覆盖 / 方向 / "
+                "可靠性，并明确区分“未发现证据”“数据不足”“当前 schema 不支持”；"
+                "不生成任何综合分数或“喜欢概率”。"
+            )
+            st.caption(
+                "互动亲近信号指数（辅助参考）= 按 message_weight 加权的关系信号聚合，"
                 "权重 = 关系信息量 × Jev 置信度；低信息量短回复不会稀释结论。"
+                "与画像冲突时以维度与证据为准。"
             )
             st.caption(
                 "互动熟悉度（relational_ease）衡量互动的自然与默契程度，"
