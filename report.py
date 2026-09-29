@@ -308,11 +308,20 @@ def _profile_markdown_section(profile: dict) -> list[str]:
                 continue
             lines.append(f"- {title}：{phrase or '存在明确事件'}")
             for e in events:
-                lines.append(
-                    f"    - 消息 #{e['message_index'] + 1} "
-                    f"{e['metric']}={e['value']}（{e['salience_level']}）"
-                    f"：{e['reason']}"
-                )
+                if e.get("source") == "interaction_event":
+                    window = e.get("window") or {}
+                    lines.append(
+                        f"    - 消息 #{window.get('start_index', 0) + 1}"
+                        f" ~ #{window.get('end_index', 0) + 1}"
+                        f"（{e.get('salience_level', '-')}）"
+                        f"：{e['reason']}"
+                    )
+                else:
+                    lines.append(
+                        f"    - 消息 #{e['message_index'] + 1} "
+                        f"{e['metric']}={e['value']}（{e['salience_level']}）"
+                        f"：{e['reason']}"
+                    )
                 lines.append(f"      - 其他可能：{e['alternative_explanation']}")
                 if (e.get("evidence_consistency") or {}).get("level") == "conflicted":
                     lines.append(f"      - 注意：{e['evidence_consistency']['reason']}")

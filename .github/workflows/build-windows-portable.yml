@@ -28,6 +28,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # release blocker guard (#26): tag vX.Y.Z must equal repo VERSION X.Y.Z,
+      # otherwise ZIP name / bundled VERSION / Release version disagree. Fails
+      # before any build or publish step - a wrong tag can never produce a release.
+      - name: Verify tag matches VERSION (tags only)
+        shell: pwsh
+        run: |
+          $repoVersion = (Get-Content VERSION).Trim()
+          if (-not ($repoVersion -match '^\d+\.\d+\.\d+$')) {
+            throw "VERSION is not semver x.y.z: '$repoVersion'"
+          }
+          if ("${{ github.ref }}" -like 'refs/tags/v*') {
+            $tagVersion = "${{ github.ref }}".Substring("refs/tags/v".Length)
+            if ($tagVersion -ne $repoVersion) {
+              throw "tag version '$tagVersion' != VERSION '$repoVersion': refusing to build/publish"
+            }
+          }
+          Write-Host "version guard ok: VERSION=$repoVersion ref=${{ github.ref }}"
+
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:

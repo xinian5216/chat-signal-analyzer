@@ -1004,12 +1004,30 @@ def interaction_behavior_candidates(interaction: dict,
 # ---------------------------------------------------------------------------
 
 
+def _strip_chat_excerpt(event: dict) -> dict:
+    """report 视图去掉 TA 回应片段（默认报告不写聊天正文）。
+
+    片段仍留在内存事件里（UI / 审核革板本地可看），但导出报告
+    只保留分类与结构描述。
+    """
+    event = dict(event)
+    trigger = dict(event.get("trigger") or {})
+    if trigger.get("observations"):
+        kept = [o for o in trigger["observations"]
+                if not str(o).startswith("TA 后续回应")]
+        trigger["observations"] = kept or [
+            f"规则分类见事件类型 {event.get('event_type')}"]
+    event["trigger"] = trigger
+    return event
+
+
 def report_view(interaction: dict) -> dict:
-    """可导出视图：去掉 fingerprints / identity 等本地字段（§58）。"""
+    """可导出视图：剥离 identity / fingerprints 与 TA 回应片段。"""
     events = []
     for e in interaction.get("events", []):
-        events.append({k: v for k, v in e.items()
-                       if k not in ("fingerprints", "identity")})
+        events.append(_strip_chat_excerpt(
+            {k: v for k, v in e.items()
+             if k not in ("fingerprints", "identity")}))
     return {
         "version": interaction.get("version", INTERACTION_VERSION),
         "engine_available": interaction.get("engine_available", False),
