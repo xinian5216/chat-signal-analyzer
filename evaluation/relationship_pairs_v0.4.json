@@ -1,0 +1,505 @@
+{
+  "meta": {
+    "purpose": "Issue #17 relationship-signal benchmark 的成对 / 对照元数据",
+    "issue": "xinian5216/chat-signal-analyzer#17",
+    "case_set": "evaluation/cases_relationship_v0.4.json",
+    "synthetic_notice": "本 benchmark 的聊天文本全部虚构；配套 Jev structured results 是人工合成（synthetic），绝不是真实 Jev 输出。"
+  },
+  "families": {
+    "initiative": {
+      "label": "主动性",
+      "issue_section": "Benchmark 设计 / 主动性"
+    },
+    "care": {
+      "label": "关心与回应",
+      "issue_section": "Benchmark 设计 / 关心与回应"
+    },
+    "familiarity": {
+      "label": "熟悉与友情",
+      "issue_section": "Benchmark 设计 / 熟悉与亲密友情"
+    },
+    "special": {
+      "label": "特殊关注",
+      "issue_section": "Benchmark 设计 / 特殊关注"
+    },
+    "romantic": {
+      "label": "浪漫",
+      "issue_section": "Benchmark 设计 / 浪漫"
+    },
+    "boundary": {
+      "label": "疏离 / 边界",
+      "issue_section": "Benchmark 设计 / 疏离 / 边界"
+    },
+    "negatives": {
+      "label": "反直觉负例",
+      "issue_section": "Benchmark 设计 / 反直觉负例"
+    }
+  },
+  "pairs": [
+    {
+      "pair_id": "P1_topic_start",
+      "family": "initiative",
+      "baseline": "rb_init_reply",
+      "contrast": "rb_init_topic",
+      "issue_bullet": "主动性：普通回复 vs 主动开启话题",
+      "factor": "共享上下文完全一致，只把目标消息从普通应答换成主动开启新话题（记住对方提过的事）",
+      "expected_distinguishers": [
+        "engagement：contrast 明显更高（主动开启话题属 3~4 级）",
+        "special_attention：contrast 更高（记得对方提过的事）",
+        "relationship_evidence_strength：contrast 更高"
+      ]
+    },
+    {
+      "pair_id": "P2_probe",
+      "family": "initiative",
+      "baseline": "rb_init_passive",
+      "contrast": "rb_init_probe",
+      "issue_bullet": "主动性：被动回应 vs 连续主动追问",
+      "factor": "只把目标消息从顺从收束换成一条消息内连续三个具体追问",
+      "expected_distinguishers": [
+        "engagement：contrast 明显更高",
+        "relationship_evidence_strength：contrast 更高",
+        "warmth：contrast 略高（可解释性差异不应过大）"
+      ]
+    },
+    {
+      "pair_id": "P3_concrete_plan",
+      "family": "initiative",
+      "baseline": "rb_init_vague_later",
+      "contrast": "rb_init_concrete_plan",
+      "issue_bullet": "主动性：模糊“有空再说” vs 主动提出具体后续安排",
+      "factor": "只把目标消息从模糊推迟换成带具体时间与动作的后续安排",
+      "expected_distinguishers": [
+        "engagement：contrast 明显更高",
+        "romantic_signal：contrast 允许略高（具体邀约）但不必然高",
+        "distancing_signal：两边都不应高（一次推迟 ≠ 疏离）"
+      ]
+    },
+    {
+      "pair_id": "C1_care_specific",
+      "family": "care",
+      "baseline": "rb_care_polite",
+      "contrast": "rb_care_followup",
+      "issue_bullet": "关心与回应：礼貌性“注意身体” vs 针对具体事情持续追问",
+      "factor": "只把目标消息从套话式关心换成记得具体处境的连续追问",
+      "expected_distinguishers": [
+        "warmth：contrast 更高（针对困境的回应性关心）",
+        "special_attention：contrast 更高",
+        "relationship_evidence_strength：contrast 更高"
+      ]
+    },
+    {
+      "pair_id": "C2_care_recall",
+      "family": "care",
+      "baseline": "rb_care_immediate",
+      "contrast": "rb_care_recall",
+      "issue_bullet": "关心与回应：当场关心 vs 錧几天主动重新提起此前事情",
+      "factor": "共享 5 条消息一致，只把三天后的目标消息换成主动重提前次面试",
+      "expected_distinguishers": [
+        "special_attention：contrast 明显更高（跨时间的持续关注）",
+        "engagement：contrast 更高",
+        "relationship_evidence_strength：contrast 更高"
+      ]
+    },
+    {
+      "pair_id": "C3_care_substantive",
+      "family": "care",
+      "baseline": "rb_care_echo",
+      "contrast": "rb_care_substantive",
+      "issue_bullet": "关心与回应：普通附和 vs 对个人困难进行实质回应",
+      "factor": "只把目标消息从泛化安慰换成追问细节 + 具体帮助",
+      "expected_distinguishers": [
+        "warmth：contrast 明显更高",
+        "engagement：contrast 明显更高",
+        "special_attention：contrast 更高"
+      ]
+    },
+    {
+      "pair_id": "S1_for_you",
+      "family": "special",
+      "baseline": "rb_special_friendly",
+      "contrast": "rb_special_for_you",
+      "issue_bullet": "特殊关注：普通友好 vs “特意给你”",
+      "factor": "只把目标消息换成“特意给你留 + 别人没有”的选择性表述",
+      "expected_distinguishers": [
+        "special_attention：contrast 明显更高（3 级以上）",
+        "relationship_evidence_strength：contrast 更高",
+        "romantic_signal：contrast 允许更高但不必然（特殊关注 ≠ 浪漫）"
+      ]
+    },
+    {
+      "pair_id": "S2_only_you",
+      "family": "special",
+      "baseline": "rb_special_share",
+      "contrast": "rb_special_only_you",
+      "issue_bullet": "特殊关注：普通分享 vs “只告诉你”",
+      "factor": "只把目标消息换成“只告诉你”的排他性披露",
+      "expected_distinguishers": [
+        "special_attention：contrast 明显更高",
+        "relationship_evidence_strength：contrast 更高"
+      ]
+    },
+    {
+      "pair_id": "S3_distinct",
+      "family": "special",
+      "baseline": "rb_special_equal",
+      "contrast": "rb_special_distinct",
+      "issue_bullet": "特殊关注：普通一致对待 vs 明确区别对待",
+      "factor": "只把目标消息换成明确“你 vs 其他人”的区别对待表述（warmth 随之上升是语义相关，不是独立因素）",
+      "expected_distinguishers": [
+        "special_attention：contrast 明显更高",
+        "warmth：contrast 更高（与区别对待语义共变，报告需注明）",
+        "romantic_signal：contrast 允许更高但不得默认"
+      ]
+    },
+    {
+      "pair_id": "R1_romance_expression",
+      "family": "romantic",
+      "baseline": "rb_rom_close_friend",
+      "contrast": "rb_rom_expression",
+      "issue_bullet": "浪漫：亲密友情 vs 浪漫表达",
+      "factor": "只把目标消息从亲密友情表达换成明确“不是朋友那种”的表白",
+      "expected_distinguishers": [
+        "romantic_signal：contrast 显著更高（≥0.7）",
+        "warmth / special_attention / evidence：contrast 均更高",
+        "distancing_signal：两边都低"
+      ]
+    },
+    {
+      "pair_id": "R2_date_context",
+      "family": "romantic",
+      "baseline": "rb_rom_plain_invite",
+      "contrast": "rb_rom_date_context",
+      "issue_bullet": "浪漫：普通邀约 vs 明确双人约会语境",
+      "factor": "只把目标消息从群体邀约换成“就我们两个人”的约会语境",
+      "expected_distinguishers": [
+        "romantic_signal：contrast 明显更高",
+        "special_attention：contrast 明显更高"
+      ]
+    },
+    {
+      "pair_id": "R3_explicit_like",
+      "family": "romantic",
+      "baseline": "rb_rom_teasing_flirt",
+      "contrast": "rb_rom_explicit_like",
+      "issue_bullet": "浪漫：调侃式暧昧 vs 明确表达喜欢",
+      "factor": "只把目标消息从玩笑话风换成明确排除玩笑解读的表白",
+      "expected_distinguishers": [
+        "romantic_signal：contrast 明显更高",
+        "relationship_evidence_strength：contrast 更高"
+      ]
+    },
+    {
+      "pair_id": "D5_boundary_pressure",
+      "family": "boundary",
+      "baseline": "rb_dis_respect_boundary",
+      "contrast": "rb_dis_pressure_after_refusal",
+      "issue_bullet": "疏离/边界：拒绝后尊重边界 vs 拒绝后继续施压",
+      "factor": "共享同一段“我方拒绝”上下文，只把目标消息从接受边界换成继续施压",
+      "expected_distinguishers": [
+        "relationship_evidence_strength：两边都高（方向相反）",
+        "engagement / special_attention：施压侧可能反而更高——base_score 的方向语义问题，报告必须如实记录",
+        "distancing_signal：尊重边界侧不应判高（浪漫边界 ≠ 疏离）"
+      ]
+    }
+  ],
+  "singletons": [
+    {
+      "case_id": "rb_fam_smalltalk",
+      "family": "familiarity",
+      "issue_bullet": "熟悉与友情：普通熟人寒暄",
+      "expected_distinguishing_points": [
+        "各维度全部落在中间偏低区间",
+        "ease ~2"
+      ]
+    },
+    {
+      "case_id": "rb_fam_rapid_banter",
+      "family": "familiarity",
+      "issue_bullet": "熟悉与友情：自然高频接话",
+      "expected_distinguishing_points": [
+        "ease / engagement 高",
+        "special_attention 低"
+      ]
+    },
+    {
+      "case_id": "rb_fam_mutual_teasing",
+      "family": "familiarity",
+      "issue_bullet": "熟悉与友情：互相调侃",
+      "expected_distinguishing_points": [
+        "ease 高",
+        "romantic 不得因调侃升高"
+      ]
+    },
+    {
+      "case_id": "rb_fam_bro_terms",
+      "family": "familiarity",
+      "issue_bullet": "熟悉与友情：明确“哥们 / 兄弟”等友情称呼",
+      "expected_distinguishing_points": [
+        "ease 高",
+        "romantic 低"
+      ]
+    },
+    {
+      "case_id": "rb_fam_close_no_special",
+      "family": "familiarity",
+      "issue_bullet": "熟悉与友情：高度熟悉但没有特殊关注",
+      "expected_distinguishing_points": [
+        "ease 最高档",
+        "special_attention ≤ 2",
+        "romantic 低"
+      ]
+    },
+    {
+      "case_id": "rb_special_single_weak",
+      "family": "special",
+      "issue_bullet": "特殊关注：只有单条弱线索、其它上下文普通",
+      "expected_distinguishing_points": [
+        "单条弱特殊关注不得概括整体",
+        "evidence ≤ 3"
+      ]
+    },
+    {
+      "case_id": "rb_rom_familiar_no_romance",
+      "family": "romantic",
+      "issue_bullet": "浪漫：强熟悉但无浪漫证据",
+      "expected_distinguishing_points": [
+        "ease / engagement 高",
+        "romantic ≤ 0.35"
+      ]
+    },
+    {
+      "case_id": "rb_dis_topic_close",
+      "family": "boundary",
+      "issue_bullet": "疏离/边界：自然结束话题",
+      "expected_distinguishing_points": [
+        "distancing 低（会话层结束 ≠ 关系疏离）"
+      ]
+    },
+    {
+      "case_id": "rb_dis_low_investment",
+      "family": "boundary",
+      "issue_bullet": "疏离/边界：低投入但非疏离",
+      "expected_distinguishing_points": [
+        "engagement 低",
+        "distancing 不高"
+      ]
+    },
+    {
+      "case_id": "rb_dis_explicit_refusal",
+      "family": "boundary",
+      "issue_bullet": "疏离/边界：明确拒绝",
+      "expected_distinguishing_points": [
+        "evidence 高",
+        "warmth 低",
+        "distancing 中等（拒绝对象是这件事）"
+      ]
+    },
+    {
+      "case_id": "rb_dis_persistent_avoid",
+      "family": "boundary",
+      "issue_bullet": "疏离/边界：持续回避",
+      "expected_distinguishing_points": [
+        "distancing 高（反复回避互动）",
+        "engagement 低"
+      ]
+    },
+    {
+      "case_id": "rb_neg_warm_to_all",
+      "family": "negatives",
+      "issue_bullet": "反直觉负例：很热情，但对所有人都可能如此",
+      "expected_distinguishing_points": [
+        "warmth 高",
+        "special_attention ≤ 2"
+      ]
+    },
+    {
+      "case_id": "rb_neg_familiar_no_special",
+      "family": "negatives",
+      "issue_bullet": "反直觉负例：很熟悉，但没有特殊关注",
+      "expected_distinguishing_points": [
+        "ease 较高",
+        "special_attention ≤ 2",
+        "romantic 低"
+      ]
+    },
+    {
+      "case_id": "rb_neg_group_invite",
+      "family": "negatives",
+      "issue_bullet": "反直觉负例：主动邀约，但属于群体活动",
+      "expected_distinguishing_points": [
+        "engagement 高",
+        "romantic 低",
+        "special_attention ≤ 2"
+      ]
+    },
+    {
+      "case_id": "rb_neg_health_polite",
+      "family": "negatives",
+      "issue_bullet": "反直觉负例：关心健康，但属于普通朋友关心",
+      "expected_distinguishing_points": [
+        "warmth 中等",
+        "romantic 低",
+        "special_attention ≤ 2"
+      ]
+    },
+    {
+      "case_id": "rb_neg_bro_insufficient",
+      "family": "negatives",
+      "issue_bullet": "反直觉负例：“哥们”出现，但上下文不足以证明亲密友情",
+      "expected_distinguishing_points": [
+        "称呼出现但证据不足",
+        "special_attention ≤ 2",
+        "romantic 低"
+      ]
+    },
+    {
+      "case_id": "rb_neg_miss_you_joke",
+      "family": "negatives",
+      "issue_bullet": "反直觉负例：单条“想你了”出现在明显玩笑上下文",
+      "expected_distinguishing_points": [
+        "“想你了”字面出现但玩笑语境",
+        "romantic ≤ 0.5"
+      ]
+    }
+  ],
+  "coverage_map": {
+    "主动性：普通回复 vs 主动开启话题": "P1_topic_start",
+    "主动性：被动回应 vs 连续主动追问": "P2_probe",
+    "主动性：模糊“有空再说” vs 主动提出具体后续安排": "P3_concrete_plan",
+    "关心与回应：礼貌性“注意身体” vs 针对具体事情持续追问": "C1_care_specific",
+    "关心与回应：当场关心 vs 錧几天主动重新提起此前事情": "C2_care_recall",
+    "关心与回应：普通附和 vs 对个人困难进行实质回应": "C3_care_substantive",
+    "熟悉与友情：普通熟人寒暄": "rb_fam_smalltalk",
+    "熟悉与友情：自然高频接话": "rb_fam_rapid_banter",
+    "熟悉与友情：互相调侃": "rb_fam_mutual_teasing",
+    "熟悉与友情：明确“哥们 / 兄弟”等友情称呼": "rb_fam_bro_terms",
+    "熟悉与友情：高度熟悉但没有特殊关注": "rb_fam_close_no_special",
+    "特殊关注：普通友好": "S1_for_you",
+    "特殊关注：“特意给你”": "S1_for_you",
+    "特殊关注：“只告诉你”": "S2_only_you",
+    "特殊关注：明确区别对待": "S3_distinct",
+    "特殊关注：只有单条弱线索、其它上下文普通": "rb_special_single_weak",
+    "浪漫：亲密友情 vs 浪漫表达": "R1_romance_expression",
+    "浪漫：普通邀约 vs 明确双人约会语境": "R2_date_context",
+    "浪漫：调侃式暧昧 vs 明确表达喜欢": "R3_explicit_like",
+    "浪漫：强熟悉但无浪漫证据": "rb_rom_familiar_no_romance",
+    "疏离/边界：自然结束话题": "rb_dis_topic_close",
+    "疏离/边界：低投入但非疏离": "rb_dis_low_investment",
+    "疏离/边界：明确拒绝": "rb_dis_explicit_refusal",
+    "疏离/边界：持续回避": "rb_dis_persistent_avoid",
+    "疏离/边界：拒绝后尊重边界 vs 继续施压": "D5_boundary_pressure",
+    "反直觉负例：很热情，但对所有人都可能如此": "rb_neg_warm_to_all",
+    "反直觉负例：很熟悉，但没有特殊关注": "rb_neg_familiar_no_special",
+    "反直觉负例：主动邀约，但属于群体活动": "rb_neg_group_invite",
+    "反直觉负例：关心健康，但属于普通朋友关心": "rb_neg_health_polite",
+    "反直觉负例：“哥们”出现，但上下文不足以证明亲密友情": "rb_neg_bro_insufficient",
+    "反直觉负例：单条“想你了”出现在明显玩笑上下文": "rb_neg_miss_you_joke"
+  },
+  "frozen_real_pairs": [
+    {
+      "pair_id": "FRR_close_vs_refuse",
+      "case_set": "evaluation/cases_contrast_v3.2.json",
+      "baseline": "cs_conversation_close_plan",
+      "contrast": "cs_true_contact_refusal",
+      "factor": "礼貌收尾+明确后续计划 ↔ 明确拒绝保持联系",
+      "issue_bullet": "疏离/边界：自然结束话题 vs 明确拒绝"
+    },
+    {
+      "pair_id": "FRR_busy_vs_withdraw",
+      "case_set": "evaluation/cases_contrast_v3.2.json",
+      "baseline": "cs_explicit_busy_with_plan",
+      "contrast": "cs_explicit_withdrawal",
+      "factor": "临时忙碌+具体计划 ↔ 关系级后撤",
+      "issue_bullet": "疏离/边界：低投入但非疏离 vs 持续回避"
+    },
+    {
+      "pair_id": "FRR_tease_cues",
+      "case_set": "evaluation/cases_contrast_v3.2.json",
+      "baseline": "cs_teasing_no_cues",
+      "contrast": "cs_teasing_rich_cues",
+      "factor": "同一句调侃：无线索 ↔ 有充分玩笑线索",
+      "issue_bullet": "浪漫：调侃式暧昧（歧义方向）"
+    },
+    {
+      "pair_id": "FRR_care_polite_vs_help",
+      "case_set": "evaluation/cases_contrast_v3.2.json",
+      "baseline": "cs_care_polite_daily",
+      "contrast": "cs_care_understanding_help",
+      "factor": "日常礼貌关心 ↔ 理解处境+提供帮助",
+      "issue_bullet": "关心与回应：礼貌关心 vs 实质回应"
+    },
+    {
+      "pair_id": "FRR_care_validation_vs_help",
+      "case_set": "evaluation/cases_contrast_v3.2.json",
+      "baseline": "cs_care_validation",
+      "contrast": "cs_care_understanding_help",
+      "factor": "情绪认可 ↔ 理解处境+提供帮助",
+      "issue_bullet": "关心与回应：附和 vs 实质回应"
+    },
+    {
+      "pair_id": "FRR_same_sentence",
+      "case_set": "evaluation/cases_contrast_v3.2.json",
+      "baseline": "cs_same_sentence_agree",
+      "contrast": "cs_same_sentence_reluctant",
+      "factor": "同一句“行吧”：商定后 ↔ 争执后",
+      "issue_bullet": "上下文依赖（schema 表达能力探针）"
+    },
+    {
+      "pair_id": "FRR_tease_vs_flirt",
+      "case_set": "evaluation/cases.json",
+      "baseline": "d_tease_no_flirt",
+      "contrast": "e_flirt_miss_you",
+      "factor": "调侃无暧昧 ↔ 明显暧昧表达想念并邀约",
+      "issue_bullet": "浪漫：调侃式暧昧 vs 明确表达"
+    },
+    {
+      "pair_id": "FRR_ease_vs_romance",
+      "case_set": "evaluation/cases.json",
+      "baseline": "p_ease_high_romantic_low",
+      "contrast": "e_flirt_miss_you",
+      "factor": "高 ease 低 romantic ↔ 明显浪漫",
+      "issue_bullet": "浪漫：强熟悉但无浪漫证据 vs 浪漫表达"
+    },
+    {
+      "pair_id": "FRR_plain_vs_selective",
+      "case_set": "evaluation/cases.json",
+      "baseline": "a_polite_ack",
+      "contrast": "g_remembers_detail",
+      "factor": "普通礼貌 ↔ 记得对方提过的小细节",
+      "issue_bullet": "特殊关注：普通友好 vs 特殊关注"
+    },
+    {
+      "pair_id": "FRR_invite_vs_date",
+      "case_set": "evaluation/cases.json",
+      "baseline": "f_invite_movie",
+      "contrast": "e_flirt_miss_you",
+      "factor": "普通邀约 ↔ 明显暧昧邀约",
+      "issue_bullet": "浪漫：普通邀约 vs 明确约会语境"
+    },
+    {
+      "pair_id": "FRR_close_vs_stop",
+      "case_set": "evaluation/cases_distancing.json",
+      "baseline": "dis_polite_close",
+      "contrast": "dis_true_stop_contact",
+      "factor": "礼貌收尾 ↔ 明确拒绝保持联系",
+      "issue_bullet": "疏离/边界：自然结束话题 vs 明确拒绝"
+    },
+    {
+      "pair_id": "FRR_busy_vs_avoid",
+      "case_set": "evaluation/cases_distancing.json",
+      "baseline": "dis_temporary_busy",
+      "contrast": "dis_repeated_avoidance",
+      "factor": "临时忙碌 ↔ 反复回避后明确拒联",
+      "issue_bullet": "疏离/边界：低投入但非疏离 vs 持续回避"
+    },
+    {
+      "pair_id": "FRR_boundary_vs_stop",
+      "case_set": "evaluation/cases_distancing.json",
+      "baseline": "dis_romantic_boundary_soft",
+      "contrast": "dis_true_stop_contact",
+      "factor": "浪漫边界+明确继续来往 ↔ 拒绝保持联系",
+      "issue_bullet": "疏离/边界：尊重边界 vs 拒联"
+    }
+  ]
+}

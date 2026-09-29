@@ -26,11 +26,15 @@
 | `cases_distancing_v3.1.json` | v3.1 **修订**疏离案例集（仅应用 `reviews/distancing_v31_revisions.md` 记录的 6 处经复核确认的修订；原始案例集不动） |
 | `cases_phase2.json` | **全新 Phase 2 案例集**（10 个，从未用于真实 Jev 评估，预期已冻结） |
 | `cases_contrast_v3.2.json` | **全新对照案例集**（13 个：同句不同前文、拒绝话题+转向、收尾 vs 拒联、忙碌 vs 后撤、调侃有/无线索、关心分层、浪漫边界；从未用于真实评估，预期已冻结） |
+| `cases_relationship_v0.4.json` | **v0.4 relationship-signal benchmark**（Issue #17，43 个全虚构案例：13 组成对对照 + 17 个单例，覆盖主动性 / 关心回应 / 熟悉友情 / 特殊关注 / 浪漫 / 疏离边界 / 6 个反直觉负例；预期已冻结） |
+| `relationship_pairs_v0.4.json` | v0.4 benchmark 的成对元数据（pair_id / family / 单因素 factor / expected_distinguishers / Issue 清单 coverage_map / 既有案例集的 frozen_real_pairs） |
 | `fixtures/baseline_v2.2.json` | **合成** baseline 结果（CI / 框架自测用；不代表真实 Jev 输出） |
 | `fixtures/baseline_v3_distancing.json` | 疏离案例集的合成结果（CI 冒烟） |
 | `fixtures/baseline_v3.1_distancing.json` | v3.1 修订疏离案例集的合成结果 |
 | `fixtures/baseline_v3.1_phase2.json` | Phase 2 新案例集的合成结果 |
 | `fixtures/baseline_v3.2_contrast.json` | 对照案例集的合成结果 |
+| `fixtures/baseline_v0.4_relationship.json` | v0.4 benchmark 的**合成** target 级结果（可直接喂本 harness） |
+| `fixtures/relationship_conversations_v0.4_synthetic.json` | v0.4 benchmark 的**合成** conversation 级 structured results（每条 TA 消息一条，含完整 probabilities / confidence；`meta.provenance = synthetic`，**绝不是真实 Jev 输出**） |
 | `reviews/` | 人工复核记录（`distancing_v3.md`、`phase2_design_review.md`、`phase2_design.md`、`distancing_v31_revisions.md`、`main34_v31_revisions.md`、`v32_design.md`） |
 
 不同案例集的通过率**不得直接比较**（`--compare` 会按 `meta.benchmark_sha256`
@@ -145,6 +149,27 @@ schema 版本使用不同合成结果）。真实模式的请求语义：
 
 真实模式的结果可保存为匿名 JSON，作为后续 v3 的 baseline / candidate
 对比输入。
+
+## v0.4 relationship-signal benchmark 与分数压缩诊断（Issue #17）
+
+`cases_relationship_v0.4.json` + `relationship_pairs_v0.4.json` 是 Issue #17
+的**关系信号 benchmark**：成对 / 对照设计（一个 pair 只改一个关键因素），
+配 `fixtures/relationship_conversations_v0.4_synthetic.json` 的合成
+structured results（每条 TA 消息保留完整 probabilities / confidence）。
+配套诊断工具 `score_diagnostics.py` + `scripts/run_score_diagnostics.py`
+把分析链拆成三层（Jev structured → `message_metrics()` → conversation
+aggregation）分别测量 paired delta、分布重叠与 4 组确定性压力测试
+（weighted-mean dilution / message_weight 敏感性 / Noul transform 曲线 /
+同 score 不同分布）。要点：
+
+- **完全离线、确定性**：诊断只 import 生产 `scoring` 函数，0 Jev、0 网络；
+  输出无时间戳，重复运行逐字节一致；产物写 gitignored 的
+  `evaluation/reports/issue17/`。
+- **合成 ≠ 真实**：synthetic fixtures 只能证明“若 Jev 给出这些原始信号，
+  本地算法会发生什么”；校验器强制 `provenance=synthetic` 与
+  `model=synthetic-*`，合成数据混入真实层结论会被拒绝。
+- 研究结论见 `docs/issue17-score-compression-research.md`；benchmark 指标
+  不是科学准确率。
 
 ## v3.0：distancing 语义修正（Psychological Evidence v3 Phase 1）
 

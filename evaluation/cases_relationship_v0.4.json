@@ -1,0 +1,2591 @@
+[
+  {
+    "id": "rb_init_reply",
+    "category": "INIT",
+    "title": "主动性对照 A：普通应答",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月10日 20:15\n上周那家川菜还挺地道，回头可以再去\n\nTA\n2026年05月10日 20:16\n嗯嗯，是挺好的\n\n我\n2026年05月10日 20:18\n你最近好像挺忙？\n\nTA\n2026年05月10日 20:19\n还行，公司项目快收尾了\n\n我\n2026年05月10日 20:21\n怪不得，看你回消息都慢了\n\nTA\n2026年05月10日 20:22\n哈哈还好吧",
+    "target": "哈哈还好吧",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "confirm_understanding",
+          "perfunctory",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_politeness"
+    ],
+    "notes": "普通应答，无开启话题行为；romantic 不得因友好推断",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_init_topic",
+    "category": "INIT",
+    "title": "主动性对照 B：主动开启话题",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月10日 20:15\n上周那家川菜还挺地道，回头可以再去\n\nTA\n2026年05月10日 20:16\n嗯嗯，是挺好的\n\n我\n2026年05月10日 20:18\n你最近好像挺忙？\n\nTA\n2026年05月10日 20:19\n还行，公司项目快收尾了\n\n我\n2026年05月10日 20:21\n怪不得，看你回消息都慢了\n\nTA\n2026年05月10日 20:22\n哈哈还好。对了你上次说的那个展览我搜了一下，这周末好像有特展",
+    "target": "哈哈还好。对了你上次说的那个展览我搜了一下，这周末好像有特展",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "curious",
+          "happy",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "continue_topic",
+          "ask_information"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 3,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 1,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.6
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_init_reply 仅差一条：主动开启话题并记住对方提过的事",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_init_passive",
+    "category": "INIT",
+    "title": "主动性对照 A：被动回应",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月11日 21:03\n今天组里评审被问了好多问题，出来脑子都是懵的\n\nTA\n2026年05月11日 21:05\n辛苦了\n\n我\n2026年05月11日 21:06\n主要是那个新方案，评委意见还挺多\n\nTA\n2026年05月11日 21:07\n嗯\n\n我\n2026年05月11日 21:09\n回头再跟你细说\n\nTA\n2026年05月11日 21:10\n好，回头再说",
+    "target": "好，回头再说",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "confirm_understanding",
+          "end_topic",
+          "perfunctory"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_short_reply"
+    ],
+    "notes": "被动应答不等于疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_init_probe",
+    "category": "INIT",
+    "title": "主动性对照 B：连续主动追问",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月11日 21:03\n今天组里评审被问了好多问题，出来脑子都是懵的\n\nTA\n2026年05月11日 21:05\n辛苦了\n\n我\n2026年05月11日 21:06\n主要是那个新方案，评委意见还挺多\n\nTA\n2026年05月11日 21:07\n嗯\n\n我\n2026年05月11日 21:09\n回头再跟你细说\n\nTA\n2026年05月11日 21:10\n好。那评委具体都问了哪几点？新方案是哪个方向的？后来你们怎么回应的？",
+    "target": "好。那评委具体都问了哪几点？新方案是哪个方向的？后来你们怎么回应的？",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "curious",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "ask_information",
+          "continue_topic"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 3,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 1,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_init_passive 仅差一条：连续主动追问对方的事情",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_init_vague_later",
+    "category": "INIT",
+    "title": "主动性对照 A：模糊推迟（“有空再说”）",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月12日 19:40\n最近有部新上映的科幻片，评价不错\n\nTA\n2026年05月12日 19:42\n我也看到了，预告还挺酷\n\n我\n2026年05月12日 19:43\n找个时间一起去看？\n\nTA\n2026年05月12日 19:45\n最近有点忙，有空再说吧",
+    "target": "最近有点忙，有空再说吧",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "awkward"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "perfunctory",
+          "end_topic",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.5
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_slow_reply"
+    ],
+    "notes": "模糊推迟未给具体安排；但一次推迟也不是关系疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_init_concrete_plan",
+    "category": "INIT",
+    "title": "主动性对照 B：主动提出具体后续安排",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月12日 19:40\n最近有部新上映的科幻片，评价不错\n\nTA\n2026年05月12日 19:42\n我也看到了，预告还挺酷\n\n我\n2026年05月12日 19:43\n找个时间一起去看？\n\nTA\n2026年05月12日 19:45\n这周确实排满了，下周六下午两点那场怎么样？我可以先把票订了",
+    "target": "这周确实排满了，下周六下午两点那场怎么样？我可以先把票订了",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "invite",
+          "continue_topic"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 3,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 1,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "min_probability": 0.05,
+        "max_probability": 0.7
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_invitation"
+    ],
+    "notes": "与 rb_init_vague_later 仅差一条：给出具体时间与安排；邀约仍不自动等于浪漫",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_care_polite",
+    "category": "CARE",
+    "title": "关心对照 A：礼貌性关心",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月13日 22:30\n这周加班好多，今天又是九点多才下班\n\nTA\n2026年05月13日 22:32\n还没睡呢？都这个点了\n\n我\n2026年05月13日 22:33\n嗯，明天还有一场硬仗\n\nTA\n2026年05月13日 22:35\n辛苦啦，注意身体",
+    "target": "辛苦啦，注意身体",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "caring",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "show_care",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_care_alone",
+      "special_attention_overclaim"
+    ],
+    "notes": "礼貌性“注意身体”：关心可以温暖，但不证明亲密或浪漫",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_care_followup",
+    "category": "CARE",
+    "title": "关心对照 B：针对具体事情持续追问",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月13日 22:30\n这周加班好多，今天又是九点多才下班\n\nTA\n2026年05月13日 22:32\n还没睡呢？都这个点了\n\n我\n2026年05月13日 22:33\n嗯，明天还有一场硬仗\n\nTA\n2026年05月13日 22:35\n又是连续第三天了吧？你们上线那个问题还没解决？明天还得熬到几点",
+    "target": "又是连续第三天了吧？你们上线那个问题还没解决？明天还得熬到几点",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "caring",
+          "curious"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "show_care",
+          "ask_information"
+        ]
+      },
+      "warmth": {
+        "min": 3,
+        "max": 4
+      },
+      "engagement": {
+        "min": 3,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 2,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.6
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_care_polite 仅差一条：记得具体事情并连续追问",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_care_immediate",
+    "category": "CARE",
+    "title": "关心对照 A：只在当场关心",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月06日 20:10\n下周三那个面试准备得差不多了，还是有点紧张\n\nTA\n2026年05月06日 20:12\n你肯定没问题的，今晚早点睡，养足精神\n\n我\n2026年05月06日 20:13\n哈哈借你吉言\n\nTA\n2026年05月09日 12:30\n中午吃了吗\n\n我\n2026年05月09日 12:32\n吃了，刚忙完\n\nTA\n2026年05月09日 12:33\n行，那我不打扰你了",
+    "target": "行，那我不打扰你了",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "end_topic",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.4
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_short_reply"
+    ],
+    "notes": "三天前有当场关心，但此后未再提起；结尾是礼貌收束而非疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_care_recall",
+    "category": "CARE",
+    "title": "关心对照 B：錧几天主动重新提起",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月06日 20:10\n下周三那个面试准备得差不多了，还是有点紧张\n\nTA\n2026年05月06日 20:12\n你肯定没问题的，今晚早点睡，养足精神\n\n我\n2026年05月06日 20:13\n哈哈借你吉言\n\nTA\n2026年05月09日 12:30\n中午吃了吗\n\n我\n2026年05月09日 12:32\n吃了，刚忙完\n\nTA\n2026年05月09日 12:33\n对了，上次你说的那个面试，结果出来了吗？后来怎么样",
+    "target": "对了，上次你说的那个面试，结果出来了吗？后来怎么样",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "curious",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "ask_information",
+          "show_care"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 3,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 2,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_care_immediate 仅差一条：三天后主动重提此前具体事情",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_care_echo",
+    "category": "CARE",
+    "title": "关心对照 A：普通附和",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月14日 21:45\n在吗，跟你说个事\n\nTA\n2026年05月14日 21:46\n在的，怎么了\n\n我\n2026年05月14日 21:50\n房东说下个月要涨房租，压力有点大\n\nTA\n2026年05月14日 21:52\n啊这，现在都不便宜\n\n我\n2026年05月14日 21:53\n是啊，还得再看看别的房子\n\nTA\n2026年05月14日 21:54\n唉都不容易",
+    "target": "唉都不容易",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "caring",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_care_alone"
+    ],
+    "notes": "情绪附和，未提供实质回应",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_care_substantive",
+    "category": "CARE",
+    "title": "关心对照 B：对个人困难的实质回应",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月14日 21:45\n在吗，跟你说个事\n\nTA\n2026年05月14日 21:46\n在的，怎么了\n\n我\n2026年05月14日 21:50\n房东说下个月要涨房租，压力有点大\n\nTA\n2026年05月14日 21:52\n啊这，现在都不便宜\n\n我\n2026年05月14日 21:53\n是啊，还得再看看别的房子\n\nTA\n2026年05月14日 21:54\n涨了多少？要是差得不多可以再谈谈。我之前租房认识个中介还算靠谱，需要的话推给你，也可以帮你一起看看合同",
+    "target": "涨了多少？要是差得不多可以再谈谈。我之前租房认识个中介还算靠谱，需要的话推给你，也可以帮你一起看看合同",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "caring",
+          "curious"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "show_care",
+          "ask_information"
+        ]
+      },
+      "warmth": {
+        "min": 3,
+        "max": 4
+      },
+      "engagement": {
+        "min": 3,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 2,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_care_echo 仅差一条：针对个人困难提供具体帮助",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_fam_smalltalk",
+    "category": "FAM",
+    "title": "熟悉度：普通熟人寒暄",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月15日 09:12\n早，今天降温了\n\nTA\n2026年05月15日 09:13\n早，是挺冷的\n\n我\n2026年05月15日 09:15\n你今天出门早？\n\nTA\n2026年05月15日 09:16\n嗯，去趟单位\n\n我\n2026年05月15日 09:17\n行，回头聊\n\nTA\n2026年05月15日 09:18\n好",
+    "target": "早，是挺冷的",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "confirm_understanding",
+          "explain",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.35
+      },
+      "distancing_signal": {
+        "max_probability": 0.35
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_politeness"
+    ],
+    "notes": "熟人寒暄基线：什么都普通",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_fam_rapid_banter",
+    "category": "FAM",
+    "title": "熟悉度：自然高频接话",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月15日 22:01\n明天球赛你去不去\n\nTA\n2026年05月15日 22:01\n去啊，我票都买好了\n\n我\n2026年05月15日 22:02\n行啊你，动作够快\n\nTA\n2026年05月15日 22:02\n那必须的\n\n我\n2026年05月15日 22:03\n到时候别迟到\n\nTA\n2026年05月15日 22:03\n你先管好你自己吧哈哈",
+    "target": "你先管好你自己吧哈哈",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "teasing",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "tease",
+          "share_opinion",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_teasing"
+    ],
+    "notes": "高频接话体现 ease / engagement，不体现特殊关注",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_fam_mutual_teasing",
+    "category": "FAM",
+    "title": "熟悉度：互相调侃",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月16日 21:40\n又是你最早走啊，今天没加班？\n\nTA\n2026年05月16日 21:42\n咋的，羡慕啊\n\n我\n2026年05月16日 21:43\n羡慕不来，我命苦\n\nTA\n2026年05月16日 21:44\n哈哈哈认命吧你，回头请你喝奶茶安慰一下",
+    "target": "哈哈哈认命吧你，回头请你喝奶茶安慰一下",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "teasing",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "tease",
+          "show_care",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_teasing"
+    ],
+    "notes": "调侃 + 小善意（请奶茶）仍可完全由友情解释",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_fam_bro_terms",
+    "category": "FAM",
+    "title": "熟悉度：明确“哥们 / 兄弟”友情称呼",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月16日 19:20\n到车站了，你人呢\n\nTA\n2026年05月16日 19:22\n哥们别急，我马上到，给你带了水\n\n我\n2026年05月16日 19:23\n还是你想得周到\n\nTA\n2026年05月16日 19:24\n那当然，谁让你是我兄弟",
+    "target": "那当然，谁让你是我兄弟",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "teasing",
+          "happy",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "tease",
+          "show_care"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 1,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 3,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_familiarity"
+    ],
+    "notes": "“哥们 / 兄弟”是友情称呼，不证明浪漫或高度亲密",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_fam_close_no_special",
+    "category": "FAM",
+    "title": "熟悉度：高度熟悉但没有特殊关注",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月17日 23:10\n这个 bug 改了一晚上\n\nTA\n2026年05月17日 23:11\n哈哈菜\n\n我\n2026年05月17日 23:12\n你来你来\n\nTA\n2026年05月17日 23:13\n来就来，明天我看看\n\n我\n2026年05月17日 23:14\n说定了啊\n\nTA\n2026年05月17日 23:15\n我什么时候骗过你",
+    "target": "我什么时候骗过你",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "teasing",
+          "happy",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "tease",
+          "continue_topic",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 3,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_familiarity",
+      "special_attention_overclaim"
+    ],
+    "notes": "ease 很高但特殊关注 / 暧昧都低：熟悉度 ≠ 特殊关注",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_special_friendly",
+    "category": "SPEC",
+    "title": "特殊关注对照 A：普通友好",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月18日 16:20\n明天开会的材料我这边差不多了\n\nTA\n2026年05月18日 16:22\n行，我也整理了点\n\n我\n2026年05月18日 16:23\n你还带了别的？\n\nTA\n2026年05月18日 16:25\n嗯，顺手整理的，明天带过去",
+    "target": "嗯，顺手整理的，明天带过去",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "explain",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_politeness",
+      "special_attention_overclaim"
+    ],
+    "notes": "友好但无“特意 / 只对你”表述",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_special_for_you",
+    "category": "SPEC",
+    "title": "特殊关注对照 B：“特意给你”",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月18日 16:20\n明天开会的材料我这边差不多了\n\nTA\n2026年05月18日 16:22\n行，我也整理了点\n\n我\n2026年05月18日 16:23\n你还带了别的？\n\nTA\n2026年05月18日 16:25\n嗯，我特意给你留了一份手写的重点清单，别人可没有，明天带过去",
+    "target": "嗯，我特意给你留了一份手写的重点清单，别人可没有，明天带过去",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_personal",
+          "show_care"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 3,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "min_probability": 0.0,
+        "max_probability": 0.7
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_special_friendly 仅差一条：“特意给你 / 别人没有”",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_special_share",
+    "category": "SPEC",
+    "title": "特殊关注对照 A：普通分享",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月19日 22:55\n今天进度还顺利吗\n\nTA\n2026年05月19日 22:56\n还行，就是有点多\n\n我\n2026年05月19日 23:00\n还没睡？\n\nTA\n2026年05月19日 23:02\n没呢，看明天要用的资料\n\n我\n2026年05月19日 23:03\n我也是，最近事多\n\nTA\n2026年05月19日 23:05\n嗯嗯，早点弄完就睡吧",
+    "target": "嗯嗯，早点弄完就睡吧",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "caring",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "show_care",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_care_alone",
+      "special_attention_overclaim"
+    ],
+    "notes": "普通寒暄收尾",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_special_only_you",
+    "category": "SPEC",
+    "title": "特殊关注对照 B：“只告诉你”",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月19日 22:55\n今天进度还顺利吗\n\nTA\n2026年05月19日 22:56\n还行，就是有点多\n\n我\n2026年05月19日 23:00\n还没睡？\n\nTA\n2026年05月19日 23:02\n没呢，看明天要用的资料\n\n我\n2026年05月19日 23:03\n我也是，最近事多\n\nTA\n2026年05月19日 23:05\n嗯。跟你说个事，我准备明年去南方那个项目，这件事我只跟你说了，还没告诉其他人",
+    "target": "嗯。跟你说个事，我准备明年去南方那个项目，这件事我只跟你说了，还没告诉其他人",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_personal",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 2,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.65
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_special_share 仅差一条：“只告诉你”的选择性披露",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_special_equal",
+    "category": "SPEC",
+    "title": "特殊关注对照 A：一致对待",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月20日 19:55\n周末的照片我导出来了\n\nTA\n2026年05月20日 19:57\n辛苦，回头我也存一份\n\n我\n2026年05月20日 20:00\n聚会照片发群里了哈\n\nTA\n2026年05月20日 20:04\n收到，那天拍得还挺清楚\n\n我\n2026年05月20日 20:05\n是啊，大家都玩得开心\n\nTA\n2026年05月20日 20:07\n嗯嗯，下次有机会再聚",
+    "target": "嗯嗯，下次有机会再聚",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "continue_topic",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_politeness",
+      "special_attention_overclaim"
+    ],
+    "notes": "对所有人一致的友好",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_special_distinct",
+    "category": "SPEC",
+    "title": "特殊关注对照 B：明确区别对待",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月20日 19:55\n周末的照片我导出来了\n\nTA\n2026年05月20日 19:57\n辛苦，回头我也存一份\n\n我\n2026年05月20日 20:00\n聚会照片发群里了哈\n\nTA\n2026年05月20日 20:04\n收到，那天拍得还挺清楚\n\n我\n2026年05月20日 20:05\n是啊，大家都玩得开心\n\nTA\n2026年05月20日 20:07\n嗯。不过说实话，那天你提前走了我总觉得少了点什么，跟其他人聊都没那么起劲",
+    "target": "嗯。不过说实话，那天你提前走了我总觉得少了点什么，跟其他人聊都没那么起劲",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "sad",
+          "caring",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_personal",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 2,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.7
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_special_equal 仅差一条：明说“你和别人不一样”",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_special_single_weak",
+    "category": "SPEC",
+    "title": "特殊关注：单条弱线索 + 普通上下文",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月21日 18:30\n你上次说那家店在哪来着\n\nTA\n2026年05月21日 18:32\n在地铁口旁边，挺好找的\n\n我\n2026年05月21日 18:33\n哦哦想起来了\n\nTA\n2026年05月21日 18:35\n嗯，我特意记得这家你好像喜欢\n\n我\n2026年05月21日 18:36\n哈哈是吗\n\nTA\n2026年05月21日 18:37\n可能吧，随口一说",
+    "target": "嗯，我特意记得这家你好像喜欢",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "caring",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_personal",
+          "show_care",
+          "other"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 4
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 1,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.55
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "single_incident_overgeneralization"
+    ],
+    "notes": "单条弱“特意”线索（且自带含糊退让），其它上下文普通：不得据此概括整体",
+    "tags": [
+      "anti_overclaim",
+      "ambiguity_tolerant"
+    ]
+  },
+  {
+    "id": "rb_rom_close_friend",
+    "category": "ROM",
+    "title": "浪漫对照 A：亲密友情",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月22日 22:36\n到家啦，今天真的谢谢你\n\nTA\n2026年05月22日 22:38\n跟我还客气啥\n\n我\n2026年05月22日 22:40\n今天生日谢谢你的礼物，真的有心了\n\nTA\n2026年05月22日 22:43\n咱们谁跟谁啊，你喜欢就好",
+    "target": "咱们谁跟谁啊，你喜欢就好",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "teasing",
+          "happy",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "tease",
+          "show_care"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_familiarity",
+      "romantic_from_care_alone"
+    ],
+    "notes": "亲密友情（谁跟谁啊）：高 ease / 高 warmth，不等于浪漫",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_rom_expression",
+    "category": "ROM",
+    "title": "浪漫对照 B：明确浪漫表达",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月22日 22:36\n到家啦，今天真的谢谢你\n\nTA\n2026年05月22日 22:38\n跟我还客气啥\n\n我\n2026年05月22日 22:40\n今天生日谢谢你的礼物，真的有心了\n\nTA\n2026年05月22日 22:43\n你喜欢就好。其实准备礼物的时候我就想说了，我喜欢你，不是朋友那种",
+    "target": "你喜欢就好。其实准备礼物的时候我就想说了，我喜欢你，不是朋友那种",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_personal",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 3,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 3,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 3,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "min_probability": 0.7,
+        "max_probability": 1.0
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_rom_close_friend 仅差一条：明确“不是朋友那种”的浪漫表白",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_rom_plain_invite",
+    "category": "ROM",
+    "title": "浪漫对照 A：普通（群体）邀约",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月23日 17:58\n这周终于忙完了\n\nTA\n2026年05月23日 18:00\n是啊，我也松了口气\n\n我\n2026年05月23日 18:10\n周末干嘛呢\n\nTA\n2026年05月23日 18:12\n可能跟大伙去打球，你要不要一起",
+    "target": "可能跟大伙去打球，你要不要一起",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "invite",
+          "continue_topic"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_invitation"
+    ],
+    "notes": "“跟大伙”群体邀约：不构成双人约会语境",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_rom_date_context",
+    "category": "ROM",
+    "title": "浪漫对照 B：明确双人约会语境",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月23日 17:58\n这周终于忙完了\n\nTA\n2026年05月23日 18:00\n是啊，我也松了口气\n\n我\n2026年05月23日 18:10\n周末干嘛呢\n\nTA\n2026年05月23日 18:12\n想约你。就我们两个人，周五晚上那家意大利餐厅，我订了位子",
+    "target": "想约你。就我们两个人，周五晚上那家意大利餐厅，我订了位子",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "invite",
+          "share_personal"
+        ]
+      },
+      "warmth": {
+        "min": 3,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 3,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 3,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "min_probability": 0.5,
+        "max_probability": 1.0
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_rom_plain_invite 仅差一条：“就我们两个人”的约会语境",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_rom_teasing_flirt",
+    "category": "ROM",
+    "title": "浪漫对照 A：调侃式暧昧",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月24日 23:15\n周末那家店也是你推荐的，最近好事都想找你\n\nTA\n2026年05月24日 23:17\n那必须的，随叫随到\n\n我\n2026年05月24日 23:20\n感觉你最近对我挺上心啊\n\nTA\n2026年05月24日 23:22\n哈哈想我了就直说",
+    "target": "哈哈想我了就直说",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "teasing",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "tease",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 1,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.6
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_teasing"
+    ],
+    "notes": "调侃式暧昧：可能只是玩笑话风，不等于明确表达",
+    "tags": [
+      "anti_overclaim",
+      "ambiguity_tolerant"
+    ]
+  },
+  {
+    "id": "rb_rom_explicit_like",
+    "category": "ROM",
+    "title": "浪漫对照 B：明确表达喜欢",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月24日 23:15\n周末那家店也是你推荐的，最近好事都想找你\n\nTA\n2026年05月24日 23:17\n那必须的，随叫随到\n\n我\n2026年05月24日 23:20\n感觉你最近对我挺上心啊\n\nTA\n2026年05月24日 23:22\n不是开玩笑。这段时间相处下来，我是真的喜欢你",
+    "target": "不是开玩笑。这段时间相处下来，我是真的喜欢你",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "share_personal"
+        ]
+      },
+      "warmth": {
+        "min": 3,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 2,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 3,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "min_probability": 0.7,
+        "max_probability": 1.0
+      },
+      "distancing_signal": {
+        "max_probability": 0.2
+      }
+    },
+    "notes": "与 rb_rom_teasing_flirt 仅差一条：明确“不是开玩笑”的表白",
+    "tags": [
+      "true_positive"
+    ]
+  },
+  {
+    "id": "rb_rom_familiar_no_romance",
+    "category": "ROM",
+    "title": "浪漫对照：强熟悉但无浪漫证据",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月25日 21:30\n这周末剧本杀缺个人\n\nTA\n2026年05月25日 21:32\n我来我来，这种局怎么少得了我\n\n我\n2026年05月25日 21:33\n哈哈就知道你\n\nTA\n2026年05月25日 21:35\n把你那几个朋友都叫上，人多热闹",
+    "target": "把你那几个朋友都叫上，人多热闹",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "teasing"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "continue_topic",
+          "invite"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 3,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.35
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_familiarity",
+      "romantic_from_invitation"
+    ],
+    "notes": "高 ease / 高 engagement，但主动叫上更多人（群体语境），浪漫证据弱",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_dis_topic_close",
+    "category": "DIS",
+    "title": "疏离/边界：自然结束话题",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月26日 00:18\n你还没睡？\n\nTA\n2026年05月26日 00:19\n快了，手头这点弄完就睡\n\n我\n2026年05月26日 00:20\n明天的会材料我再改改\n\nTA\n2026年05月26日 00:22\n行，那今天先这样，明天还要早起，晚安",
+    "target": "行，那今天先这样，明天还要早起，晚安",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "caring"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "end_topic",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.35
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_short_reply"
+    ],
+    "notes": "礼貌收尾 + 明天还要早起 = 会话层结束，不是关系疏离",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_dis_low_investment",
+    "category": "DIS",
+    "title": "疏离/边界：低投入但非疏离",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月26日 20:50\n今天好累，开了三个会\n\nTA\n2026年05月26日 20:52\n嗯\n\n我\n2026年05月26日 20:53\n你呢，今天干嘛了\n\nTA\n2026年05月26日 20:55\n项目赶得紧，就一直做表\n\n我\n2026年05月26日 20:56\n哦哦，那你先忙\n\nTA\n2026年05月26日 20:58\n嗯嗯",
+    "target": "嗯嗯",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "confirm_understanding",
+          "explain",
+          "perfunctory"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 2
+      },
+      "engagement": {
+        "min": 1,
+        "max": 2
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "max_probability": 0.35
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_short_reply",
+      "perfunctory_from_short_reply"
+    ],
+    "notes": "短回复 + 项目赶工的现实解释 = 低投入但不是关系疏离",
+    "tags": [
+      "anti_overclaim",
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "rb_dis_explicit_refusal",
+    "category": "DIS",
+    "title": "疏离/边界：明确拒绝",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月27日 14:00\n那个事还是想请你帮个忙，就帮我签个字\n\nTA\n2026年05月27日 14:25\n这个忙我真帮不了，之前说过原则问题\n\n我\n2026年05月27日 14:27\n就这一次\n\nTA\n2026年05月27日 14:30\n不行，这个我不能答应你，以后也别再提了",
+    "target": "不行，这个我不能答应你，以后也别再提了",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "annoyed",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "distance",
+          "explain"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 0,
+        "max": 3
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "min_probability": 0.1,
+        "max_probability": 0.6
+      }
+    },
+    "notes": "明确拒绝（含“以后也别再提了”）信息量高但方向负面；拒绝针对的是这件事",
+    "tags": [
+      "true_positive",
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "rb_dis_persistent_avoid",
+    "category": "DIS",
+    "title": "疏离/边界：持续回避",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月28日 12:10\n上次说的那件事，你考虑得怎么样\n\nTA\n2026年05月28日 12:40\n再说吧\n\n我\n2026年05月28日 15:20\n那这周末有空当面聊下？\n\nTA\n2026年05月28日 18:03\n最近都没空\n\n我\n2026年05月28日 21:00\n好吧，那你什么时候方便\n\nTA\n2026年05月28日 21:30\n到时候再说吧",
+    "target": "到时候再说吧",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "annoyed"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "distance",
+          "end_topic",
+          "perfunctory"
+        ]
+      },
+      "warmth": {
+        "min": 0,
+        "max": 2
+      },
+      "engagement": {
+        "min": 0,
+        "max": 2
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 0,
+        "max": 2
+      },
+      "romantic_signal": {
+        "max_probability": 0.3
+      },
+      "distancing_signal": {
+        "min_probability": 0.35,
+        "max_probability": 0.8
+      }
+    },
+    "notes": "跨多个时段反复回避见面与沟通 = 反复回避互动（真疏离方向）",
+    "tags": [
+      "true_positive",
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "rb_dis_respect_boundary",
+    "category": "DIS",
+    "title": "边界对照 A：拒绝后尊重边界",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月29日 22:15\n你昨天说的话我想了很久，我们可能不太合适，先别往那个方向发展了\n\nTA\n2026年05月29日 22:40\n明白，是我唐突了。咱们还像以前一样做朋友就好",
+    "target": "明白，是我唐突了。咱们还像以前一样做朋友就好",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "awkward"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "end_topic",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 3
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.35
+      }
+    },
+    "must_not_infer": [
+      "distancing_from_short_reply"
+    ],
+    "notes": "接受对方的拒绝并明确继续做朋友：浪漫边界 ≠ 疏离（v3.0 语义）",
+    "tags": [
+      "anti_overclaim",
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "rb_dis_pressure_after_refusal",
+    "category": "DIS",
+    "title": "边界对照 B：拒绝后继续施压",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月29日 22:15\n你昨天说的话我想了很久，我们可能不太合适，先别往那个方向发展了\n\nTA\n2026年05月29日 22:40\n你再考虑考虑嘛，我哪里不好我可以改。明天我再问你一次",
+    "target": "你再考虑考虑嘛，我哪里不好我可以改。明天我再问你一次",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "sad",
+          "caring",
+          "other"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "share_opinion",
+          "continue_topic"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 2,
+        "max": 4
+      },
+      "relationship_evidence_strength": {
+        "min": 2,
+        "max": 4
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "min_probability": 0.2,
+        "max_probability": 0.75
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "notes": "与 rb_dis_respect_boundary 仅差一条：拒绝后不退反进、预告继续施压",
+    "tags": [
+      "true_positive",
+      "negative_direction"
+    ]
+  },
+  {
+    "id": "rb_neg_warm_to_all",
+    "category": "NEG",
+    "title": "反直觉负例：热情但对所有人都这样",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月30日 19:00\n群里发的聚会安排看到了哈\n\nTA\n2026年05月30日 19:05\n来了来了！我也正想说呢，这次大家都必须到啊，谁不来我跟谁急哈哈\n\n我\n2026年05月30日 19:06\n哈哈你对谁都这么热情\n\nTA\n2026年05月30日 19:07\n那是，我这个人对朋友都这样",
+    "target": "来了来了！我也正想说呢，这次大家都必须到啊，谁不来我跟谁急哈哈",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "teasing"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "invite",
+          "continue_topic",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.4
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "special_attention_overclaim",
+      "romantic_from_politeness"
+    ],
+    "notes": "热情高但对象是“大家”，且自述“对朋友都这样”：不得读成特殊关注",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_neg_familiar_no_special",
+    "category": "NEG",
+    "title": "反直觉负例：熟悉但无特殊关注",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月30日 20:30\n老同学，好久不见，最近怎么样\n\nTA\n2026年05月30日 20:33\n还不是老样子，你呢\n\n我\n2026年05月30日 20:34\n也还行，就是忙\n\nTA\n2026年05月30日 20:36\n都一样，有空出来坐坐",
+    "target": "都一样，有空出来坐坐",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "continue_topic",
+          "ask_information",
+          "invite"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.35
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_familiarity",
+      "special_attention_overclaim"
+    ],
+    "notes": "老相识的自然熟络：熟悉度高不代表特殊关注或浪漫",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_neg_group_invite",
+    "category": "NEG",
+    "title": "反直觉负例：主动邀约但是群体活动",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月31日 16:35\n最近天气不错\n\nTA\n2026年05月31日 16:38\n是啊，适合出门\n\n我\n2026年05月31日 16:40\n周六有安排没\n\nTA\n2026年05月31日 16:42\n周六烧烤，好几个朋友都来，你也来呗，人多热闹",
+    "target": "周六烧烤，好几个朋友都来，你也来呗，人多热闹",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "happy",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "invite",
+          "continue_topic"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 2,
+        "max": 4
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 1,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.45
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_invitation"
+    ],
+    "notes": "主动邀约但“好几个朋友都来”：群体活动不构成双人约会语境",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_neg_health_polite",
+    "category": "NEG",
+    "title": "反直觉负例：关心健康但是普通朋友关心",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月31日 21:12\n今天开始降温了\n\nTA\n2026年05月31日 21:14\n是啊，早晚温差大\n\n我\n2026年05月31日 21:15\n最近换季，办公室一半人都感冒了\n\nTA\n2026年05月31日 21:17\n你也注意点，多喝水，早点休息",
+    "target": "你也注意点，多喝水，早点休息",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "caring",
+          "calm"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "show_care",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 2,
+        "max": 4
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.45
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_care_alone",
+      "special_attention_overclaim"
+    ],
+    "notes": "健康关心是普通朋友也会说的话",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_neg_bro_insufficient",
+    "category": "NEG",
+    "title": "反直觉负例：“哥们”但不足以证明高度亲密",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月31日 11:00\n有个快递麻烦帮拿一下，我今天过不去\n\nTA\n2026年05月31日 11:20\n哥们，帮个忙倒是行，不过我五点才到那边\n\n我\n2026年05月31日 11:22\n没事，我改天请你吃饭\n\nTA\n2026年05月31日 11:25\n哈哈那行，回头把取件码发我",
+    "target": "哥们，帮个忙倒是行，不过我五点才到那边",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "calm",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "other",
+          "show_care",
+          "confirm_understanding"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 2
+      },
+      "relational_ease": {
+        "min": 1,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.35
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_familiarity",
+      "special_attention_overclaim"
+    ],
+    "notes": "称呼上的“哥们” + 顺手小忙，不足以证明高度亲密或特殊关注",
+    "tags": [
+      "anti_overclaim"
+    ]
+  },
+  {
+    "id": "rb_neg_miss_you_joke",
+    "category": "NEG",
+    "title": "反直觉负例：“想你了”出现在明显玩笑上下文",
+    "me": [
+      "我"
+    ],
+    "them": [
+      "TA"
+    ],
+    "chat": "我\n2026年05月31日 20:00\n群里的大冒险你输了啊，该发的发了没\n\nTA\n2026年05月31日 20:03\n愿赌服输：想你了想你了～（群里要求发的）\n\n我\n2026年05月31日 20:04\n哈哈哈哈\n\nTA\n2026年05月31日 20:05\n行了行了，别截图啊",
+    "target": "愿赌服输：想你了想你了～（群里要求发的）",
+    "expectations": {
+      "emotion": {
+        "allowed": [
+          "teasing",
+          "happy"
+        ]
+      },
+      "intent": {
+        "allowed": [
+          "tease",
+          "share_opinion"
+        ]
+      },
+      "warmth": {
+        "min": 1,
+        "max": 3
+      },
+      "engagement": {
+        "min": 1,
+        "max": 3
+      },
+      "special_attention": {
+        "min": 0,
+        "max": 2
+      },
+      "relationship_evidence_strength": {
+        "min": 0,
+        "max": 3
+      },
+      "relational_ease": {
+        "min": 2,
+        "max": 4
+      },
+      "romantic_signal": {
+        "max_probability": 0.5
+      },
+      "distancing_signal": {
+        "max_probability": 0.3
+      }
+    },
+    "must_not_infer": [
+      "romantic_from_teasing"
+    ],
+    "notes": "大冒险游戏语境里的“想你了”是玩笑，不能当浪漫证据",
+    "tags": [
+      "anti_overclaim",
+      "ambiguity_tolerant"
+    ]
+  }
+]
