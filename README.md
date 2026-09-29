@@ -543,6 +543,19 @@ salience 87.2”类伪精度。能力边界：话题开启 / 追问 / 邀约推�
 `docs/issue19-salience-aware-aggregation.md`。
 
 ### 低信息量展示模式（LOW_EVIDENCE_DISPLAY_MODE）
+### 互动结构（Interaction Dynamics，v0.4 起）
+
+除了单条消息信号，系统还能描述“**几条连续消息组成了什么互动结构**”（确定性规则，不推心理）：
+
+- **连续追问**：你陈述 → TA 提问 → 你回应 → TA 再提问（连续提问本身 ≠ 关心）；
+- **明显间隔后重启**：需可靠完整时间戳（不猜日期）；你先重启 ≠ TA 主动；
+- **邀约从模糊到具体**：仅结构观察，群体 / 双人结构不明时明说 unknown，不等于浪漫；
+- **个人回忆**：默认只给“待人工核对”线索（严格 distinctive anchor，泛化词拒绝，同义改写暂不实现）；
+- **边界回应**：你明确拒绝 → TA 接受 / 调整 / 继续推进（潜在压力）。默默不说话不算证据（没施压 ≠ 尊重）；含糊回应一律等人工核对。
+
+这些结构事件只描述可观察行为，不推断意图 / 感情 / 人格；事件身份不随消息序号改变（prepend / append 稳定）。设计与能力边界见 `docs/issue20-interaction-dynamics.md`。
+
+
 
 当满足任一条件时（阈值集中在 `scoring.py`）：
 
@@ -718,6 +731,8 @@ Python 3.11 上运行同一套测试，**不需要任何 API Key**。
 ├─ relationship_profile.py  # 关系画像 v2（多维 Profile，纯函数，0 API；Issue #18）
 ├─ salience.py       # 显著/相反证据通道（baseline + 事件分类保留；Issue #19）
 ├─ salience_diagnostics.py  # #19 研究工具（候选算法比较 / dilution，0 生产影响）
+├─ interaction_dynamics.py  # 互动结构事件（turn/sequence 级，pure，Issue #20）
+├─ interaction_diagnostics.py  # #20 研究工具（I1~I24 + prefix invariance，0 生产影响）
 ├─ privacy.py        # 本地脱敏
 ├─ storage.py        # SQLite 缓存（SHA256 key，短连接线程安全）
 ├─ ui_helpers.py     # 纯展示层辅助（短标签 / 徽章 / 过滤）

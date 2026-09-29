@@ -74,6 +74,8 @@ from report import (
 # 关系画像（Issue #18：纯业务层多维画像，只读现有结果，0 API）
 from relationship_profile import build_profile
 from salience import build_salience
+from interaction_dynamics import (build_interaction_events,
+                                interaction_behavior_candidates)
 
 # 展示层辅助（短标签 / 徽章 / 过滤 / 排版数据，不含业务逻辑）
 from ui_helpers import (
@@ -1556,6 +1558,27 @@ def _signal_row(stats: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _show_interaction_window(event: dict) -> None:
+    """互动事件窗口：只显示 index 范围 / 观察 / 其他可能 / 限制。
+
+    默认**不**展示聊天正文（隐私默认）；需要看上下文时用
+    房间内的「查看对话窗口」（行为审核面板）。
+    """
+    window = event.get("window") or {}
+    start, end = window.get("start_index"), window.get("end_index")
+    if start is None:
+        return
+    with st.expander(f"查看互动窗口（消息 #{start + 1}"
+                     f" ~ #{end + 1}）"):
+        st.markdown(f"- 窗口：消息 #{start + 1} ~ #{end + 1}"
+                    f"（时间可信度：{event.get('time_basis', '-')}）")
+        for note in (event.get("trigger") or {}).get("observations") or []:
+            st.markdown(f"- {note}")
+        st.caption(f"其他可能：{event.get('alternative_explanation', '')}")
+        for note in event.get("limitations") or []:
+            st.caption(f"限制：{note}")
+
+
 def _show_profile_card(dim: dict) -> None:
     """单个维度卡片：结论 + 覆盖 + 可靠性 + 显著/相反事件 + 可追溯证据。"""
     with st.container(border=True):
@@ -1592,13 +1615,20 @@ def _show_profile_card(dim: dict) -> None:
             st.markdown(f"- {phrase or '存在明确事件'}")
             with st.expander(f"{title}明细（{len(events)} 条）"):
                 for e in events:
-                    st.markdown(
-                        f"- 消息 #{e['message_index'] + 1} "
-                        f"{e['metric']}={e['value']}（{e['salience_level']}）"
-                        f"：{e['reason']}"
-                    )
+                    if e.get("source") == "interaction_event":
+                        st.markdown(
+                            f"- 消息 #{e['message_index'] + 1}：{e['reason']}"
+                            f"（{e['salience_level']}）"
+                        )
+                        _show_interaction_window(e)
+                    else:
+                        st.markdown(
+                            f"- 消息 #{e['message_index'] + 1} "
+                            f"{e['metric']}={e['value']}（{e['salience_level']}）"
+                            f"：{e['reason']}"
+                        )
                     st.caption(f"其他可能：{e['alternative_explanation']}")
-                    if e.get("evidence_consistency", {}).get("level") == "conflicted":
+                    if (e.get("evidence_consistency") or {}).get("level") == "conflicted":
                         st.caption(f"注意：{e['evidence_consistency']['reason']}可靠性需谨慎解释。")
                     for note in e["limitations"]:
                         st.caption(f"限制：{note}")
@@ -1606,6 +1636,16 @@ def _show_profile_card(dim: dict) -> None:
                     st.caption("显著事件单独保留，不并入基线、不外推为长期关系模式。")
                 else:
                     st.caption("相反证据独立存在，不与显著证据抵消或平均。")
+        if dim.get("interaction_events"):
+            st.markdown("**互动结构**")
+            for e in dim["interaction_events"]:
+                review = e.get("review_status")
+                tag = ("待人工核对"
+                       if review == "review_required" else
+                       ("已推迟（不实现）"
+                        if review == "deferred" else "结构观察"))
+                st.markdown(f"- {e['reason']}（{tag}）")
+                _show_interaction_window(e)
         if dim["evidence"] or dim["limitations"]:
             with st.expander("证据与依据"):
                 if dim["evidence"]:
@@ -1625,8 +1665,11 @@ def _show_profile_card(dim: dict) -> None:
 
 def show_profile_section(results: list[dict], stats: dict) -> None:
     """「关系画像」：六维 + 边界压力卡；overall 降级为辅助参考。"""
-    profile = build_profile(results, stats=stats,
-                            salience=build_salience(results, stats=stats))
+    interaction = build_interaction_events(_behavior_messages(), results)
+    profile = build_profile(
+        results, stats=stats,
+        salience=build_salience(results, stats=stats, interaction=interaction),
+        interaction=interaction)
     st.markdown("### 关系画像")
     st.caption(
         "多维关系画像是主要解释层：每个维度分别给出证据强度、覆盖、方向与可靠性，"
@@ -1896,7 +1939,8 @@ def show_all_messages_tab(results: list[dict], stats: dict) -> None:
     _render_messages_nav(page, pages, "bottom")
 
 
-def report_memo_key(revision: int, include_text: bool) -> tuple:
+def report_memo_key(revision: int, include_text: bool,
+                   order_signature: str = "") -> tuple:
     """报告 memo 的身份：**分析版本号 + 是否包含原文**（纯函数）。
 
     统计量（条数 / analyzed / skipped_media / failed / overall …）不能作为
@@ -1905,7 +1949,7 @@ def report_memo_key(revision: int, include_text: bool) -> tuple:
     因此同一份结果重复进入报告仍命中 memo，新聊天一定重新生成。
     不接触聊天正文，也不影响 Jev cache key / scoring / parser。
     """
-    return (int(revision), bool(include_text))
+    return (int(revision), bool(include_text), str(order_signature or ""))
 
 
 def _build_or_reuse_reports(results: list[dict], stats: dict,
@@ -1916,18 +1960,21 @@ def _build_or_reuse_reports(results: list[dict], stats: dict,
     rerun 时重复拼接 Markdown / JSON。
     """
     skipped = st.session_state.get("skipped_media", 0)
+    messages = _behavior_messages()
+    interaction = build_interaction_events(messages, results)
     cache_key = report_memo_key(
-        st.session_state.get("analysis_revision") or 0, include_text
+        st.session_state.get("analysis_revision") or 0, include_text,
+        st.session_state.get("order_signature") or "",
     )
     cache = st.session_state.get("report_cache") or {}
     if cache.get("key") == cache_key:
         return cache["md"], cache["json"]
 
     md = build_markdown_report(results, stats, include_text=include_text,
-                               skipped_media=skipped)
+                               skipped_media=skipped, interaction=interaction)
     payload_json = json.dumps(
         build_json_report(results, stats, include_text=include_text,
-                          skipped_media=skipped),
+                          skipped_media=skipped, interaction=interaction),
         ensure_ascii=False, indent=2,
     )
     st.session_state["report_cache"] = {"key": cache_key, "md": md,
@@ -2788,6 +2835,12 @@ def _behavior_pending_candidates(store, friend_id: str,
         generated, meta = bv.generate_candidates_with_meta(messages,
                                                            results)
         text_candidates.extend(generated)
+        # #20：互动结构候选并入同一队列（身份走 behavior
+        # event_identity，与规则候选 / 已审核事件天然去重；
+        # 默认不落库，等用户确认 / 排除。
+        interaction = build_interaction_events(messages, results)
+        text_candidates.extend(
+            interaction_behavior_candidates(interaction, messages))
     history_candidates: list[bv.EventCandidate] = []
     for run in store.list_runs(friend_id):
         history_candidates.extend(

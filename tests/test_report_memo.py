@@ -145,18 +145,23 @@ def _stats_of(at):
 
 
 def test_memo_key_uses_revision_not_stats():
-    assert report_memo_key(3, True) == (3, True)
-    assert report_memo_key(3, False) == (3, False)
-    # 相同 revision + 相同 include_text → 命中
+    # #20 起 key 增加 order_signature（报告含互动结构事件，
+    # 依赖消息顺序）；缺省为空字符串。
+    assert report_memo_key(3, True) == (3, True, "")
+    assert report_memo_key(3, False) == (3, False, "")
+    # 相同 revision + 相同 include_text + 相同 order_signature → 命中
     assert report_memo_key(7, False) == report_memo_key(7, False)
+    assert report_memo_key(7, False, "sig-a") == report_memo_key(7, False, "sig-a")
     # revision 不同 → 一定不命中（与统计量无关）
     assert report_memo_key(7, False) != report_memo_key(8, False)
     # include_text 不同 → 不命中
     assert report_memo_key(7, True) != report_memo_key(7, False)
+    # 消息顺序变化（同 revision）→ 不命中
+    assert report_memo_key(7, False, "sig-a") != report_memo_key(7, False, "sig-b")
 
 
 def test_memo_key_ignores_result_contents():
-    """两份统计完全不同的结果，只要 revision 相同就复用同一 key。"""
+    """两份统计完全不同的结果，只要 revision / order 相同就复用同一 key。"""
     assert report_memo_key(1, True) == report_memo_key(1, True)
 
 
@@ -204,7 +209,7 @@ def test_same_result_reentering_report_hits_memo(counting_client):
     at.run()
     memo = at.session_state["report_cache"]
     assert memo is not None
-    assert memo["key"] == (at.session_state["analysis_revision"], False)
+    assert memo["key"] == (at.session_state["analysis_revision"], False, at.session_state.get("order_signature") or "")
     n_api = len(counting_client)
 
     # 离开再进入：同一份结果 → 命中 memo（key 不变、内容不变、0 API）
@@ -224,16 +229,16 @@ def test_include_text_toggle_rebuilds_report(counting_client):
     at.segmented_control[0].set_value("报告")
     at.run()
     assert at.session_state["report_cache"]["key"] == (
-        at.session_state["analysis_revision"], False
-    )
+        at.session_state["analysis_revision"], False,
+        at.session_state.get("order_signature") or "")
     anon = at.session_state["report_cache"]["md"]
     assert "阿尔法第一条" not in anon           # 默认匿名报告不含原文
 
     at.checkbox[0].check()
     at.run()
     assert at.session_state["report_cache"]["key"] == (
-        at.session_state["analysis_revision"], True
-    )
+        at.session_state["analysis_revision"], True,
+        at.session_state.get("order_signature") or "")
     assert at.session_state["report_cache"]["md"] != anon
     # JSON 报呋含毋条结果的原文
     assert "收到，谢谢" in at.session_state["report_cache"]["json"]
@@ -242,8 +247,8 @@ def test_include_text_toggle_rebuilds_report(counting_client):
     at.checkbox[0].uncheck()
     at.run()
     assert at.session_state["report_cache"]["key"] == (
-        at.session_state["analysis_revision"], False
-    )
+        at.session_state["analysis_revision"], False,
+        at.session_state.get("order_signature") or "")
     assert at.session_state["report_cache"]["json"] != anon_json
     assert "收到，谢谢" not in at.session_state["report_cache"]["json"]
 

@@ -1,0 +1,1531 @@
+{
+  "version": "interaction-scenarios-v0.4",
+  "meta": {
+    "provenance": "synthetic",
+    "disclaimer": "人工构造的合成场景：只能证明“若消息与 Jev 信号是这样，本地互动结构引擎会发生什么”，绝不证明真实聊天会如此，也不构成真实准确率。",
+    "case_set": "Issue #20 §45 I1~I24 + 序列语义审计 I25~I32",
+    "materializer": "interaction_diagnostics.materialize_case（确定性：TA 文本消息得到同形 structured result）",
+    "authoring": "每条消息的说话方 / 时间 / 文本按场景语义人工构造；TA 的 result spec 模拟九问输出（分数与概率分布一致，score 等于概率期望）。",
+    "expectation_semantics": "expectation 由 interaction_diagnostics.evaluate_case 做约束检查（确定性），不是模型判分；全部场景默认做 prefix invariance 检查。",
+    "scenario_notes": "I20 同时是 future-leakage 基准（运行 messages[:5] 不得产生完整运行才有的 recall 事件）。"
+  },
+  "cases": [
+    {
+      "id": "I1_plain_qa_no_followup",
+      "scenario": "I1",
+      "title": "普通问答不得产生连续追问",
+      "description": "我问 TA 答两次，是普通问答，不是“对我的事情持续追问”。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "几点开会？"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:01",
+          "text": "三点。",
+          "result": {
+            "intent": "confirm_understanding",
+            "intent_probs": {
+              "confirm_understanding": 0.9,
+              "other": 0.1
+            }
+          }
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:02",
+          "text": "会议室在哪？"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:03",
+          "text": "二楼。",
+          "result": {
+            "intent": "confirm_understanding",
+            "intent_probs": {
+              "confirm_understanding": 0.9,
+              "other": 0.1
+            }
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "followup_sequence": {
+            "min": 0,
+            "max": 0
+          }
+        },
+        "forbidden_event_types": [
+          "followup_sequence",
+          "conversation_reengagement",
+          "personal_recall_candidate",
+          "boundary_pressure",
+          "boundary_accepted",
+          "boundary_adjusted",
+          "boundary_ambiguous"
+        ],
+        "notes": "普通问答不是持续追问。"
+      }
+    },
+    {
+      "id": "I2_followup_sequence",
+      "scenario": "I2",
+      "title": "连续主动追问",
+      "description": "用户陈述 → TA 提问 → 用户回应 → TA 再提问。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "最近胃不舒服"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:01",
+          "text": "怎么了？",
+          "result": {
+            "intent": "ask_information",
+            "intent_probs": {
+              "ask_information": 0.85,
+              "other": 0.15
+            }
+          }
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:02",
+          "text": "可能吃坏了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:03",
+          "text": "现在还疼吗？",
+          "result": {
+            "intent": "ask_information",
+            "intent_probs": {
+              "ask_information": 0.9,
+              "other": 0.1
+            }
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "followup_sequence": {
+            "min": 1,
+            "max": 1,
+            "dimension": "initiative",
+            "review_status": "auto_supported"
+          }
+        },
+        "forbidden_event_types": [
+          "personal_recall_candidate",
+          "boundary_pressure",
+          "conversation_reengagement"
+        ],
+        "mapping": {
+          "initiative_engagement": {
+            "salient_min": 1,
+            "salient_max": 1
+          },
+          "care_responsiveness": {
+            "salient_max": 0
+          }
+        },
+        "notes": "连续追问是结构观察；本场景无 care 结构化信号，不得映射 care。"
+      }
+    },
+    {
+      "id": "I3_ta_after_gap_reengagement",
+      "scenario": "I3",
+      "title": "TA 在明显间隔后恢复互动",
+      "description": "第一天道别后，第三天 TA 先发消息。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 20:00",
+          "text": "今天先聊到这"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-01 20:01",
+          "text": "好，辛苦了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-03 09:00",
+          "text": "早上好，那个文件我带过来了"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "conversation_reengagement": {
+            "min": 1,
+            "max": 1,
+            "actor": "TA"
+          }
+        },
+        "forbidden_event_types": [
+          "personal_recall_candidate",
+          "boundary_pressure",
+          "followup_sequence"
+        ],
+        "mapping": {
+          "initiative_engagement": {
+            "salient_min": 1,
+            "salient_max": 1
+          },
+          "special_attention": {
+            "salient_max": 0
+          },
+          "romantic": {
+            "salient_max": 0
+          }
+        },
+        "notes": "重启是可观察结构；不代表想念或特殊关注。"
+      }
+    },
+    {
+      "id": "I4_user_after_gap_reengagement",
+      "scenario": "I4",
+      "title": "用户在明显间隔后恢复互动",
+      "description": "用户先重启 → 不是 TA 主动。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 20:00",
+          "text": "先这样，拜拜"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-01 20:01",
+          "text": "好"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-03 09:00",
+          "text": "早啊，在忙吗"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "conversation_reengagement": {
+            "min": 1,
+            "max": 1,
+            "actor": "用户",
+            "direction": "observation"
+          }
+        },
+        "forbidden_event_types": [
+          "personal_recall_candidate",
+          "boundary_pressure"
+        ],
+        "mapping": {
+          "initiative_engagement": {
+            "salient_max": 0
+          }
+        },
+        "notes": "用户重启是 observation，不得算 TA 主动。"
+      }
+    },
+    {
+      "id": "I5_ta_restart_transactional",
+      "scenario": "I5",
+      "title": "TA 重启后只是事务",
+      "description": "TA 间隔后发文件通知：允许 restart observation，禁止 special/romantic。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 20:00",
+          "text": "今天先聊到这"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-01 20:01",
+          "text": "好"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-03 09:00",
+          "text": "那个文件发你了，记得查收"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "conversation_reengagement": {
+            "min": 1,
+            "max": 1,
+            "actor": "TA"
+          }
+        },
+        "forbidden_event_types": [
+          "personal_recall_candidate",
+          "boundary_pressure",
+          "explicit_care_behavior",
+          "explicit_special_attention"
+        ],
+        "mapping": {
+          "initiative_engagement": {
+            "salient_min": 1,
+            "salient_max": 1
+          },
+          "special_attention": {
+            "salient_max": 0
+          },
+          "romantic": {
+            "salient_max": 0
+          },
+          "care_responsiveness": {
+            "salient_max": 0
+          }
+        },
+        "notes": "restart 只进 initiative；不得升级 special/romantic。"
+      }
+    },
+    {
+      "id": "I6_invitation_vague_to_concrete",
+      "scenario": "I6",
+      "title": "模糊邀请 → 具体时间地点",
+      "description": "同一行为人邀约从缺少安排走向包含时间与地点。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-05 12:00",
+          "text": "这周忙死了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-05 12:01",
+          "text": "忙完有空一起吃饭",
+          "result": {
+            "intent": "invite",
+            "intent_probs": {
+              "invite": 0.8,
+              "other": 0.2
+            }
+          }
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-05 12:05",
+          "text": "好啊"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-05 12:06",
+          "text": "那周六六点，公司楼下见",
+          "result": {
+            "intent": "invite",
+            "intent_probs": {
+              "invite": 0.85,
+              "other": 0.15
+            }
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "invitation_progression": {
+            "min": 1,
+            "max": 1,
+            "dimension": "initiative"
+          }
+        },
+        "party_structure": "unknown",
+        "forbidden_event_types": [
+          "personal_recall_candidate",
+          "boundary_pressure"
+        ],
+        "mapping": {
+          "initiative_engagement": {
+            "salient_min": 1,
+            "salient_max": 1
+          },
+          "romantic": {
+            "salient_max": 0
+          }
+        },
+        "notes": "文本不足以判定群体/双人结构时按 unknown；邀约推进不进 romantic。"
+      }
+    },
+    {
+      "id": "I7_group_invitation",
+      "scenario": "I7",
+      "title": "群体邀请",
+      "description": "“大家一起吃饭”：群体结构；不得 romantic。",
+      "messages": [
+        {
+          "speaker": "them",
+          "time": "2026-03-05 18:00",
+          "text": "周末大家一起吃饭？",
+          "result": {
+            "intent": "invite",
+            "intent_probs": {
+              "invite": 0.85,
+              "other": 0.15
+            },
+            "warmth": 2.6,
+            "engagement": 3.0
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "invitation_progression",
+          "personal_recall_candidate",
+          "boundary_pressure",
+          "explicit_romantic_signal",
+          "explicit_special_attention"
+        ],
+        "mapping": {
+          "romantic": {
+            "salient_max": 0
+          },
+          "special_attention": {
+            "salient_max": 0
+          }
+        },
+        "notes": "群体结构明确；高 invite/engagement 不得制造 romantic/special。"
+      }
+    },
+    {
+      "id": "I8_dyadic_invitation",
+      "scenario": "I8",
+      "title": "明确双人邀请",
+      "description": "“就咱俩去看电影”：双人结构；仍不得自动 romantic。",
+      "messages": [
+        {
+          "speaker": "them",
+          "time": "2026-03-05 18:00",
+          "text": "就咱俩去看电影？",
+          "result": {
+            "intent": "invite",
+            "intent_probs": {
+              "invite": 0.9,
+              "other": 0.1
+            },
+            "warmth": 2.8
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "invitation_progression",
+          "personal_recall_candidate",
+          "boundary_pressure",
+          "explicit_romantic_signal",
+          "explicit_special_attention"
+        ],
+        "mapping": {
+          "romantic": {
+            "salient_max": 0
+          }
+        },
+        "notes": "双人结构 ≠ romantic；浪漫只能由 romantic Jev 通道自己判断。"
+      }
+    },
+    {
+      "id": "I9_refusal_then_accepted",
+      "scenario": "I9",
+      "title": "明确拒绝 → TA 接受",
+      "description": "边界压力的相反证据（不推断人格）。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "今天不想去"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "好，那不去了"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_accepted": {
+            "min": 1,
+            "max": 1,
+            "review_status": "auto_supported",
+            "direction": "counter"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_continued_request",
+          "personal_recall_candidate"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "counter_min": 1,
+          "pressure_max": 0
+        },
+        "notes": "接受边界是相反证据；不是“TA 尊重你”的人格结论。"
+      }
+    },
+    {
+      "id": "I10_refusal_then_adjusted",
+      "scenario": "I10",
+      "title": "明确拒绝 → TA 正常调整",
+      "description": "“今天不行” → “行，那改周日？”是正常调整。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "今天不行"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "行，那改周日？"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_adjusted": {
+            "min": 1,
+            "max": 1,
+            "review_status": "auto_supported",
+            "direction": "counter"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_ambiguous",
+          "personal_recall_candidate"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "counter_min": 1,
+          "pressure_max": 0
+        },
+        "notes": "调整时间是相反证据（结构观察），不是人格判断。"
+      }
+    },
+    {
+      "id": "I11_refusal_then_pressure",
+      "scenario": "I11",
+      "title": "明确拒绝 → TA 继续施压",
+      "description": "D5 正式通道：拒绝后仍持续推进同一请求。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "我不想去"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "就来嘛"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:02",
+          "text": "真的不去"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:03",
+          "text": "来吧，就一会"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_pressure": {
+            "min": 1,
+            "max": 2,
+            "review_status": "auto_supported",
+            "direction": "supporting"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_accepted",
+          "boundary_adjusted",
+          "personal_recall_candidate"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 2,
+            "max": 2
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "pressure_min": 1,
+          "counter_max": 0
+        },
+        "notes": "这是 boundary_pressure 的 supporting evidence（结构观察），不再依赖 legacy base_score。"
+      }
+    },
+    {
+      "id": "I12_soft_reschedule_not_pressure",
+      "scenario": "I12",
+      "title": "软性改期不得误判施压",
+      "description": "“今天不行，改天吧” + “好的”是接受，不是压力。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "今天不行，改天吧"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "好的"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_accepted": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_continued_request",
+          "personal_recall_candidate"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "notes": "软性改期后的接受不是施压。"
+      }
+    },
+    {
+      "id": "I13_reciprocity_both_sides",
+      "scenario": "I13",
+      "title": "双向提问 / 分享",
+      "description": "互惠结构观察：只数 turn，不给百分比。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "你今天怎么样？"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:01",
+          "text": "挺好的，你呢？",
+          "result": {
+            "intent": "ask_information",
+            "intent_probs": {
+              "ask_information": 0.7,
+              "other": 0.3
+            }
+          }
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:02",
+          "text": "我也不错，周末去爬山了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:03",
+          "text": "我周末去钓鱼了",
+          "result": {
+            "intent": "share_personal",
+            "intent_probs": {
+              "share_personal": 0.8,
+              "other": 0.2
+            }
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "followup_sequence",
+          "personal_recall_candidate",
+          "boundary_pressure"
+        ],
+        "observations": {
+          "reciprocity": {
+            "sufficient": true,
+            "me_question_min": 1,
+            "ta_question_min": 1,
+            "ta_share_min": 1,
+            "me_share_min": 1
+          }
+        },
+        "notes": "互惠只输出结构观察（含“仅描述当前导入样本”免责句）。"
+      }
+    },
+    {
+      "id": "I14_one_sided_questions",
+      "scenario": "I14",
+      "title": "长期单侧提问样本",
+      "description": "只描述当前样本，不人格化。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "今天有空吗"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:01",
+          "text": "有"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:02",
+          "text": "那出来吗"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:03",
+          "text": "可以"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:04",
+          "text": "周六呢"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:05",
+          "text": "行"
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "personal_recall_candidate",
+          "followup_sequence"
+        ],
+        "observations": {
+          "reciprocity": {
+            "sufficient": true,
+            "me_question_min": 2,
+            "ta_question_max": 0
+          }
+        },
+        "notes": "“提问基本由用户侧发起”且必须附“仅描述当前导入样本”。"
+      }
+    },
+    {
+      "id": "I15_strict_personal_recall_candidate",
+      "scenario": "I15",
+      "title": "严格 personal recall 候选",
+      "description": "四天前用户提拔智齿，TA 重新问起：distinctive anchor 候选（review_required）。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 09:00",
+          "text": "周五要去拔智齿"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-04 18:00",
+          "text": "你智齿拔了吗？"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "personal_recall_candidate": {
+            "min": 1,
+            "max": 1,
+            "review_status": "review_required",
+            "direction": "supporting"
+          },
+          "conversation_reengagement": {
+            "min": 1,
+            "max": 1,
+            "actor": "TA"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "followup_sequence"
+        ],
+        "mapping": {
+          "care_responsiveness": {
+            "salient_max": 0
+          }
+        },
+        "notes": "自动层只写“可能关联”；未经人工确认不得升级。"
+      }
+    },
+    {
+      "id": "I16_user_reopened_topic",
+      "scenario": "I16",
+      "title": "用户自己重启旧话题",
+      "description": "用户先重提智齿 → TA 的回复不算 TA 主动 recall。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 09:00",
+          "text": "周五要去拔智齿"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "智齿拔完了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-04 18:00",
+          "text": "恢复得怎么样？"
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "personal_recall_candidate"
+        ],
+        "notes": "用户重提旧话题不算 TA 主动记得。"
+      }
+    },
+    {
+      "id": "I17_generic_keyword_overlap",
+      "scenario": "I17",
+      "title": "泛化关键词重合",
+      "description": "“工作”类高频词不得判 recall。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 09:00",
+          "text": "今天工作好忙"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-04 18:00",
+          "text": "今天工作怎么样？"
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "personal_recall_candidate"
+        ],
+        "notes": "generic 词与仅由 generic 词拼接的子串都被拒绝。"
+      }
+    },
+    {
+      "id": "I18_same_keyword_different_subject",
+      "scenario": "I18",
+      "title": "同关键词不同事项",
+      "description": "“我妈要去医院” vs “我今天路过医院”不是 recall。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 09:00",
+          "text": "我妈要去医院"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-04 18:00",
+          "text": "我今天路过医院"
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "personal_recall_candidate"
+        ],
+        "notes": "同一泛化地点词不构成对旧事项的回忆。"
+      }
+    },
+    {
+      "id": "I19_incomplete_timestamps_no_recall",
+      "scenario": "I19",
+      "title": "时间不完整不得计算跨日 recall",
+      "description": "仅 HH:mm 无法建立可靠日期间隔。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "09:00",
+          "text": "周五要去拔智齿"
+        },
+        {
+          "speaker": "them",
+          "time": "18:00",
+          "text": "你智齿拔了吗？"
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "personal_recall_candidate",
+          "conversation_reengagement"
+        ],
+        "notes": "不猜日期：time_only 不得进入跨日判断。"
+      }
+    },
+    {
+      "id": "I20_future_leakage_trap",
+      "scenario": "I20",
+      "title": "未来泄漏陷阱",
+      "description": "第 10 条的 recall 事件不得在只运行前 5 条时出现。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-01 09:00",
+          "text": "明天去医院做检查"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-01 09:01",
+          "text": "知道了"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-01 09:02",
+          "text": "顺便复查一下"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-01 09:03",
+          "text": "嗯"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-01 09:04",
+          "text": "先睡了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-01 09:05",
+          "text": "晚安"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 09:00",
+          "text": "早"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 09:01",
+          "text": "早"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 09:02",
+          "text": "今天天气不错"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-04 18:00",
+          "text": "你检查怎么样？"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "personal_recall_candidate": {
+            "min": 1,
+            "max": 1,
+            "review_status": "review_required"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure"
+        ],
+        "prefix_check": [
+          5,
+          9
+        ],
+        "notes": "messages[:5] / messages[:9] 运行时不得产生 recall 事件。"
+      }
+    },
+    {
+      "id": "I21_duplicate_reimport_stable_identity",
+      "scenario": "I21",
+      "title": "重复导入身份稳定",
+      "description": "同一聊天重复导入产生相同事件身份（index 不变）。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "最近胃不舒服"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:01",
+          "text": "怎么了？",
+          "result": {
+            "intent": "ask_information",
+            "intent_probs": {
+              "ask_information": 0.85,
+              "other": 0.15
+            }
+          }
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:02",
+          "text": "可能吃坏了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:03",
+          "text": "现在还疼吗？",
+          "result": {
+            "intent": "ask_information",
+            "intent_probs": {
+              "ask_information": 0.9,
+              "other": 0.1
+            }
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "followup_sequence": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "identity_check": {
+          "duplicate_import": true
+        },
+        "notes": "重复导入 → 身份一致，不新增候选。"
+      }
+    },
+    {
+      "id": "I22_prepend_older_chunk_stable_identity",
+      "scenario": "I22",
+      "title": "prepend 更早片段后身份稳定",
+      "description": "prepend 5 条更早消息后，followup 事件的指纹身份不变（index 可变）。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-02-25 08:00",
+          "text": "上次的方案我改完了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-02-25 08:01",
+          "text": "收到"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-02-25 08:02",
+          "text": "下午对一下细节"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-02-25 08:03",
+          "text": "好"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-02-25 08:04",
+          "text": "先忙"
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "最近胃不舒服"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:01",
+          "text": "怎么了？",
+          "result": {
+            "intent": "ask_information",
+            "intent_probs": {
+              "ask_information": 0.85,
+              "other": 0.15
+            }
+          }
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:02",
+          "text": "可能吃坏了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:03",
+          "text": "现在还疼吗？",
+          "result": {
+            "intent": "ask_information",
+            "intent_probs": {
+              "ask_information": 0.9,
+              "other": 0.1
+            }
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "followup_sequence": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "identity_check": {
+          "prepend": 5
+        },
+        "notes": "身份不因 prepend 失效；窗口 index 前移属于预期。"
+      }
+    },
+    {
+      "id": "I23_media_only_turn_no_semantics",
+      "scenario": "I23",
+      "title": "纯媒体 turn 不参与语义",
+      "description": "TA 的图片 turn 不构成追问内容；媒体只证明 turn 存在。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:00",
+          "text": "你看这个"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:01",
+          "text": "[图片]",
+          "content_type": "media",
+          "media_kinds": [
+            "image"
+          ]
+        },
+        {
+          "speaker": "me",
+          "time": "2026-03-02 10:02",
+          "text": "有意思吧"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-02 10:03",
+          "text": "哈哈",
+          "result": {
+            "intent": "tease",
+            "intent_probs": {
+              "tease": 0.8,
+              "other": 0.2
+            }
+          }
+        }
+      ],
+      "expectation": {
+        "event_types": {},
+        "forbidden_event_types": [
+          "followup_sequence",
+          "personal_recall_candidate",
+          "boundary_pressure"
+        ],
+        "observations": {
+          "media_text_unknown_turns": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "notes": "内容未知的媒体不得参与任何语义事件。"
+      }
+    },
+    {
+      "id": "I24_ambiguous_boundary_review_required",
+      "scenario": "I24",
+      "title": "模糊边界回应 → 待核对",
+      "description": "“今天不方便” → “那晚上呢？”含义不明确，必须人工核对。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "今天不方便"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "那晚上呢？"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_ambiguous": {
+            "min": 1,
+            "max": 1,
+            "review_status": "review_required"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_accepted",
+          "boundary_adjusted"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "pressure_max": 0,
+          "counter_max": 0
+        },
+        "notes": "模糊回应不自动升级为 pressure 或 accepted。"
+      }
+    },
+    {
+      "id": "I25_refusal_then_same_request_pressure",
+      "scenario": "I25",
+      "title": "D5 再验证：拒绝 → 回指式继续请求",
+      "description": "“就来嘗”是回指式连续语，构成 boundary pressure。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "我不想去"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "就来嘗"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_pressure": {
+            "min": 1,
+            "max": 1,
+            "review_status": "auto_supported",
+            "direction": "supporting"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_accepted",
+          "boundary_adjusted",
+          "boundary_ambiguous"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "pressure_min": 1,
+          "counter_max": 0
+        },
+        "notes": "D5 正式通道：不依赖 legacy base_score。"
+      }
+    },
+    {
+      "id": "I26_refusal_then_unrelated_request_not_pressure",
+      "scenario": "I26",
+      "title": "拒绝 → 新的旧2f命令式请求（无法绑定同一事项）",
+      "description": "“那个表格你必须今天发给我”不是对“不想去看电影”的施压。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "我不想去看电影"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "那个表格你必须今天发给我"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_continued_request": {
+            "min": 1,
+            "max": 1,
+            "review_status": "review_required"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_accepted",
+          "boundary_adjusted",
+          "boundary_ambiguous"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "pressure_max": 0,
+          "counter_max": 0
+        },
+        "notes": "无法绑定请求对象 → 待人工核对，绝不自动施压。"
+      }
+    },
+    {
+      "id": "I27_refusal_then_unrelated_request_after_acceptance",
+      "scenario": "I27",
+      "title": "拒绝 → 接受 → 无关请求",
+      "description": "第一句接受边界；后面的文件请求不得当作 adjusted / pressure。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "今晚聚餐我不去了"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "好"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:02",
+          "text": "对了，把上次那个文件发我一下"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_accepted": {
+            "min": 1,
+            "max": 1,
+            "review_status": "auto_supported",
+            "direction": "counter"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_adjusted",
+          "boundary_continued_request"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "counter_min": 1,
+          "pressure_max": 0
+        },
+        "notes": "只看 boundary 后的第一个 TA 回应；无关请求不影响分类。"
+      }
+    },
+    {
+      "id": "I28_reschedule_with_user_alternative_adjusted",
+      "scenario": "I28",
+      "title": "改期（用户自己给替代方）→ 正常协调",
+      "description": "“周五不行，周六可以” + “那周六六点？” = adjusted。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "周五不行，周六可以"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "那周六六点？"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_adjusted": {
+            "min": 1,
+            "max": 1,
+            "review_status": "auto_supported",
+            "direction": "counter"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_ambiguous",
+          "boundary_continued_request"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "notes": "推进用户自己允许的替代方是协调，不是施压。"
+      }
+    },
+    {
+      "id": "I29_refusal_then_alternative_time_ambiguous",
+      "scenario": "I29",
+      "title": "明确拒绝 → 新时间提议（未给替代方）",
+      "description": "用户只说“今天不行”，TA 问“那明天呢？” 含糊 → 待核对。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "今天不行"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "那明天呢？"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_ambiguous": {
+            "min": 1,
+            "max": 1,
+            "review_status": "review_required"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_adjusted",
+          "boundary_accepted"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "pressure_max": 0,
+          "counter_max": 0
+        },
+        "notes": "无接受语、用户未给替代方 → 不能自动 adjusted。"
+      }
+    },
+    {
+      "id": "I30_romantic_boundary_then_friend_invite",
+      "scenario": "I30",
+      "title": "浪漫边界 → 旅行友关系邀约（含糊）",
+      "description": "“只想做朋友” + “那作为朋友周末一起吃个饭？” 含糊 → 待核对。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "我只想做朋友"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "那作为朋友周末一起吃个饭？"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_ambiguous": {
+            "min": 1,
+            "max": 1,
+            "review_status": "review_required"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_adjusted",
+          "boundary_accepted"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "boundary": {
+          "status": "evidence_limited",
+          "pressure_max": 0,
+          "counter_max": 0
+        },
+        "notes": "语义可能转换（友谊化），无法确定是否继续挑战浪漫边界。"
+      }
+    },
+    {
+      "id": "I31_pause_then_continued_same_topic",
+      "scenario": "I31",
+      "title": "要求暂停 → 继续听完（回指式）",
+      "description": "“我现在不想聊这个” + “可是你先听我说完” → 待核对候选。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "我现在不想聊这个"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "可是你先听我说完"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_continued_request": {
+            "min": 1,
+            "max": 1,
+            "review_status": "review_required"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_accepted",
+          "boundary_adjusted"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "notes": "pause 类垏界后的继续：候选级（非 explicit_refusal 不自动 pressure）。"
+      }
+    },
+    {
+      "id": "I32_pause_then_accepted",
+      "scenario": "I32",
+      "title": "要求暂停 → 接受",
+      "description": "“我现在不想聊这个” + “好，那先不说了” → accepted。",
+      "messages": [
+        {
+          "speaker": "me",
+          "time": "2026-03-06 19:00",
+          "text": "我现在不想聊这个"
+        },
+        {
+          "speaker": "them",
+          "time": "2026-03-06 19:01",
+          "text": "好，那先不说了"
+        }
+      ],
+      "expectation": {
+        "event_types": {
+          "boundary_accepted": {
+            "min": 1,
+            "max": 1,
+            "review_status": "auto_supported",
+            "direction": "counter"
+          }
+        },
+        "forbidden_event_types": [
+          "boundary_pressure",
+          "boundary_continued_request",
+          "boundary_ambiguous"
+        ],
+        "observations": {
+          "boundary_opportunities": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "notes": "acceptance 是边界压力的相反证据（不推断人格）。"
+      }
+    }
+  ]
+}

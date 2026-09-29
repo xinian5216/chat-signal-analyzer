@@ -269,6 +269,9 @@ class EventCandidate:
     flags: dict = field(default_factory=dict)
     source_run_id: str | None = None
     msg_texts: list[dict] = field(default_factory=list)  # 仅内存展示，绝不入库
+    # #20 Interaction Dynamics：order-aware 原始候选身份（序列事件专用）。
+    # legacy 候选不传该字段 -> 空字符串 -> 行为与身份完全不变。
+    original_candidate_identity: str = ""
 
     @property
     def identity(self) -> str:
@@ -460,7 +463,20 @@ def pending_candidates(candidates: list[EventCandidate],
     消失（Phase 2A.1 修复的真实缺陷）。控件数量由调用方分页控制。
     """
     known = reviewed_identities(events)
-    return [c for c in candidates if c.identity not in known]
+    kept: list[EventCandidate] = []
+    for candidate in candidates:
+        # #20：序列型候选（interaction events）携带 order-aware 原始身份时，
+        # **只**按该身份判定“已审核”——同一指纹集合但因果顺序不同的事件不会
+        # 被误判为已处理；legacy 候选（无该字段）行为完全不变。
+        original = str(getattr(candidate, "original_candidate_identity",
+                               "") or "")
+        if original:
+            if original in known:
+                continue
+        elif candidate.identity in known:
+            continue
+        kept.append(candidate)
+    return kept
 
 
 def parse_review_rule(event: dict) -> str | None:
@@ -686,6 +702,7 @@ def build_event_dict(*, candidate: EventCandidate | None, friend_id: str,
         # 手动创建的事件没有来源候选 → 空串。
         "original_candidate_identity": str(
             original_candidate_identity
+            or getattr(candidate, "original_candidate_identity", "")
             or (candidate.identity if candidate else "")),
         "stance": stance,
         "notes": str(notes or ""),

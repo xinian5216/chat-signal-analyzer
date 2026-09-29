@@ -12,6 +12,7 @@ from streamlit.testing.v1 import AppTest
 
 import analyzer
 import storage
+from interaction_dynamics import build_interaction_events
 from relationship_profile import build_profile
 from report import build_json_report, build_markdown_report
 from scoring import compute_conversation_stats
@@ -40,14 +41,16 @@ class FakeAnswer:
 
 
 def fake_response(evidence=2.4, ease=2.3, warmth=2.0, special=1.5,
-                  distancing=0.2):
+                  distancing=0.2, intent_choice="teasing",
+                  intent_probs=None):
     from types import SimpleNamespace as NS
     return NS(answers={
         "emotion": FakeAnswer(choice="teasing",
                               probabilities={"teasing": 0.93, "calm": 0.07},
                               confidence=0.85),
-        "intent": FakeAnswer(choice="tease",
-                             probabilities={"tease": 0.91, "other": 0.09},
+        "intent": FakeAnswer(choice=intent_choice,
+                             probabilities=intent_probs
+                             or {"tease": 0.91, "other": 0.09},
                              confidence=0.88),
         "warmth": FakeAnswer(score=warmth,
                              probabilities={str(int(warmth)): 1.0},
@@ -381,4 +384,149 @@ def test_ui_profile_card_shows_salient_and_counter_sections(event_client):
     assert "综合抵消" not in body and "抵消后" not in body
     # §27：不暴露伪精度
     for banned in ("salience ", "重要度", "boost", "加分"):
+        assert banned not in body, banned
+
+
+# ---------------------------------------------------------------------------
+# Issue #20\uff1aInteraction Dynamics\uff08JSON additive / Markdown / UI \u4e92\u52a8\u7ed3\u6784\uff09
+# ---------------------------------------------------------------------------
+
+CHAT_FOLLOWUP = """\u6211: \u6700\u8fd1\u80c3\u4e0d\u8212\u670d
+TA: \u600e\u4e48\u4e86\uff1f
+\u6211: \u53ef\u80fd\u5403\u574f\u4e86
+TA: \u73b0\u5728\u8fd8\u75bc\u5417\uff1f"""
+
+
+def _interaction_entries():
+    """\u865a\u6784\u8fde\u7eed\u8ffd\u95ee\uff08TA \u4e24\u95ee\uff0cme \u9648\u8ff0/\u56de\u5e94\uff09\u3002"""
+    return [msg("me", "\u6700\u8fd1\u80c3\u4e0d\u8212\u670d", "2026-03-02 10:00"),
+            msg("them", "\u600e\u4e48\u4e86\uff1f", "2026-03-02 10:01"),
+            msg("me", "\u53ef\u80fd\u5403\u574f\u4e86", "2026-03-02 10:02"),
+            msg("them", "\u73b0\u5728\u8fd8\u75bc\u5417\uff1f", "2026-03-02 10:03")]
+
+
+def msg(speaker, text, time="2026-03-02 10:00", **kw):
+    out = {"speaker": speaker, "text": text, "time": time,
+           "raw_speaker": "我" if speaker == "me" else "TA",
+           "content_type": kw.pop("content_type", "text"),
+           "media_kinds": kw.pop("media_kinds", [])}
+    out.update(kw)
+    return out
+
+
+def _ask_result():
+    r = make_result()
+    r["intent"] = {"choice": "ask_information",
+                   "probabilities": {"ask_information": 0.9, "other": 0.1},
+                   "confidence": 0.88}
+    return r
+
+
+def _followup_results(messages):
+    ta = [m for m in messages if m["speaker"] == "them"]
+    return [{"index": 1, "speaker": "them", "text": ta[0]["text"],
+             "time": ta[0]["time"], "context": [],
+             "result": _ask_result()},
+            {"index": 3, "speaker": "them", "text": ta[1]["text"],
+             "time": ta[1]["time"], "context": [],
+             "result": _ask_result()}]
+
+
+def test_json_report_interaction_key_additive():
+    messages = _interaction_entries()
+    results = _followup_results(messages)
+    stats = compute_conversation_stats(results)
+    interaction = build_interaction_events(messages, results)
+    payload = build_json_report(results, stats, include_text=False,
+                                interaction=interaction)
+    assert payload["interaction_dynamics"]["version"] == "interaction-dynamics-v1"
+    dumped = json.dumps(payload, ensure_ascii=False)
+    assert "fingerprints" not in dumped
+    assert "identity" not in dumped
+    events = payload["interaction_dynamics"]["events"]
+    assert any(e["event_type"] == "followup_sequence" for e in events)
+    for key in ("metadata", "summary", "aggregate", "behavior_stats",
+                "messages", "relationship_profile", "salience"):
+        assert key in payload
+
+
+def test_json_report_interaction_default_empty():
+    results = make_entries()
+    stats = compute_conversation_stats(results)
+    payload = build_json_report(results, stats, include_text=False)
+    entry = payload["interaction_dynamics"]
+    assert entry["version"] == "interaction-dynamics-v1"
+    assert entry["events"] == []
+
+
+def test_markdown_report_interaction_section():
+    messages = _interaction_entries()
+    results = _followup_results(messages)
+    stats = compute_conversation_stats(results)
+    interaction = build_interaction_events(messages, results)
+    md = build_markdown_report(results, stats, include_text=False,
+                               interaction=interaction)
+    assert "\u4e92\u52a8\u7ed3\u6784\u8bc1\u636e" in md
+    assert "followup_sequence" in md
+    assert "\u4ec5\u63cf\u8ff0\u5f53\u524d\u5bfc\u5165\u6837\u672c" in md
+    assert "\u6700\u8fd1\u80c3\u4e0d\u8212\u670d" not in md  # \u9ed8\u8ba4\u4e0d\u5199\u804a\u5929\u6b63\u6587
+
+
+def test_markdown_report_interaction_section_is_deterministic():
+    messages = _interaction_entries()
+    results = _followup_results(messages)
+    stats = compute_conversation_stats(results)
+    interaction = build_interaction_events(messages, results)
+    strip = lambda s: re.sub(r"\\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d", "", s)
+    first = build_markdown_report(results, stats, include_text=False,
+                                  interaction=interaction)
+    second = build_markdown_report(results, stats, include_text=False,
+                                   interaction=interaction)
+    assert strip(first) == strip(second)
+
+
+@pytest.fixture
+def ask_client(monkeypatch, tmp_path):
+    """TA \u4e00\u5f8b\u8fd4\u56de\u8be2\u95ee\u610f\u56fe\u7684\u5047\u5ba2\u6237\u7aef\uff08\u89e6\u53d1\u8fde\u7eed\u8ffd\u95ee\u7ed3\u6784\uff09\u3002"""
+    class AskClient:
+        def system_one(self, state, questions):
+            return fake_response(intent_choice="ask_information",
+                                 intent_probs={"ask_information": 0.9,
+                                               "other": 0.1})
+
+    class TmpCache(Cache):
+        def __init__(self, *a, **k):
+            super().__init__(tmp_path / "cache.db")
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key-not-a-real-secret")
+    import paths
+    monkeypatch.setattr(paths, "friend_history_db_path",
+                        lambda: tmp_path / "friend_history.db")
+    monkeypatch.setattr(analyzer, "create_client",
+                        lambda api_key: AskClient())
+    monkeypatch.setattr(storage, "Cache", TmpCache)
+
+
+def test_ui_profile_shows_interaction_structure(ask_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _run_to_results(at, CHAT_FOLLOWUP)
+    body = _texts(at)
+    assert "\u4e92\u52a8\u7ed3\u6784" in body
+    assert "\u8fde\u7eed\u8ffd\u95ee" in body
+    expander_labels = " ".join(str(e.label) for e in at.expander)
+    assert "\u67e5\u770b\u4e92\u52a8\u7a97\u53e3" in expander_labels
+    assert "\u7ed3\u6784\u89c2\u5bdf" in body
+
+
+def test_ui_interaction_wording_no_psychology(ask_client):
+    at = AppTest.from_file(str(APP_PATH), default_timeout=60)
+    at.run()
+    _run_to_results(at, CHAT_FOLLOWUP)
+    body = _texts(at)
+    # \u5426\u5b9a\u5f0f\u514d\u8d23\u58f0\u660e\uff08\u201c\u66f4\u4e0d\u662f TA \u559c\u6b22\u4f60\u7684\u6982\u738c\u201d\uff09\u7b26\u5408\u4ed3\u5e93\u7ea6\u5b9a\uff0c\u4e0d\u7981\uff1b
+    # \u8fd9\u91cc\u53ea\u7981\u65ad\u8a00\u5f0f\u5fc3\u7406 / \u4eba\u683c\u63a8\u6d4b\u3002
+    for banned in ("\u5728\u4e4e", "\u60f3\u4f60", "\u5f88\u5c0a\u91cd\u4f60",
+                   "\u4eba\u683c\u7c7b\u578b",
+                   "\u597d\u611f\u589e\u52a0", "\u5173\u7cfb\u53d8\u597d"):
         assert banned not in body, banned

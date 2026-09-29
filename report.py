@@ -14,6 +14,7 @@ from datetime import datetime
 from analyzer import DEFAULT_MODEL, EMOTION_LABELS, INTENT_OPTIONS, SCHEMA_VERSION
 from relationship_profile import build_profile
 from salience import build_salience
+import interaction_dynamics as idyn
 from scoring import (
     INTENT_PROFILE_LABELS,
     TREND_LABELS,
@@ -96,8 +97,9 @@ def _data_range(results: list[dict]) -> dict:
 
 def build_json_report(
     results: list[dict], stats: dict, include_text: bool = False,
-    skipped_media: int = 0,
+    skipped_media: int = 0, interaction: dict | None = None,
 ) -> dict:
+    interaction_out = interaction
     messages = []
     for e in sorted(results, key=lambda e: e["index"]):
         if e.get("error"):
@@ -160,6 +162,11 @@ def build_json_report(
                 for k in salience_out["dimensions"]),
             "diagnostics": salience_out["diagnostics"],
         },
+        # Interaction Dynamics（Issue #20）：additive 新键；
+        # 只含报告视图（无 fingerprint / identity / 聊天正文默认）
+        "interaction_dynamics": idyn.report_view(interaction_out)
+        if interaction_out else {"version": idyn.INTERACTION_VERSION,
+                                 "engine_available": False, "events": []},
         "aggregate": {
             "overall": stats["overall"],
             "overall_sufficient": stats["overall_sufficient"],
@@ -192,6 +199,64 @@ def build_json_report(
         },
         "messages": messages,
     }
+
+
+
+
+# ---------------------------------------------------------------------------
+# Interaction Dynamics 章节（Issue #20；确定性模板，additive）
+# ---------------------------------------------------------------------------
+
+_REVIEW_TAGS = {
+    "auto_supported": "结构证据明确",
+    "review_required": "待人工核对",
+    "deferred": "暂不实现",
+}
+
+
+def _interaction_markdown_section(interaction: dict) -> list[str]:
+    lines = ["## 互动结构证据（Interaction Dynamics）", ""]
+    lines += [
+        "> 只描述可观察的互动结构（连续追问 / 间隔后重启 / 邀约推进 / 互惠 /",
+        "> 拒绝后反应），不推断对方意图、感情或人格。",
+        "",
+    ]
+    for line in interaction.get("summary_lines") or []:
+        lines.append(f"- {line}")
+    events = interaction.get("events") or []
+    if events:
+        lines.append("")
+        lines.append("| 事件 | 动作方 | 消息窗口 | 强度 | 审核状态 |")
+        lines.append("|---|---|---|---|---|")
+        for e in events:
+            window = e.get("window") or {}
+            lines.append(
+                f"| {e['event_type']} | {e.get('actor', '-')} | "
+                f"#{window.get('start_index', 0) + 1} ~ "
+                f"#{window.get('end_index', 0) + 1} | "
+                f"{e.get('strength', '-')} | "
+                f"{_REVIEW_TAGS.get(e.get('review_status'), e.get('review_status'))} |")
+        lines.append("")
+        for e in events:
+            lines.append(f"- **{e['event_type']}**：{e.get('reason', '')}")
+            lines.append(f"  - 其他可能：{e.get('alternative_explanation', '')}")
+            for note in e.get("limitations") or []:
+                lines.append(f"  - 限制：{note}")
+    observations = interaction.get("observations") or {}
+    if observations.get("boundary_opportunities") is not None:
+        lines.append("")
+        lines.append(f"- 边界情境（boundary opportunity）出现 "
+                     f"{observations['boundary_opportunities']} 次；"
+                     "未出现时不作任何边界判断（没有机会观察 ≠ 没有压力）。")
+    lines.append("")
+    capabilities = interaction.get("capabilities") or {}
+    for key, value in capabilities.items():
+        lines.append(f"- 能力边界 · {key}：自动={value.get('auto')}；"
+                     f"需人工核对={value.get('review')}；"
+                     f"未实现={value.get('deferred')}；"
+                     f"时间要求={value.get('time_required')}")
+    lines.append("")
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +314,7 @@ def _profile_markdown_section(profile: dict) -> list[str]:
                     f"：{e['reason']}"
                 )
                 lines.append(f"      - 其他可能：{e['alternative_explanation']}")
-                if e.get("evidence_consistency", {}).get("level") == "conflicted":
+                if (e.get("evidence_consistency") or {}).get("level") == "conflicted":
                     lines.append(f"      - 注意：{e['evidence_consistency']['reason']}")
             if title == "显著证据":
                 lines.append("      - 显著事件单独保留，不并入基线、不外推为长期关系模式。")
@@ -309,7 +374,7 @@ def _trend_section(stats: dict) -> str:
 
 def build_markdown_report(
     results: list[dict], stats: dict, include_text: bool = False,
-    skipped_media: int = 0,
+    skipped_media: int = 0, interaction: dict | None = None,
 ) -> str:
     analyzed = stats["analyzed"]
     effective = stats["effective_messages"]
@@ -342,7 +407,13 @@ def build_markdown_report(
 
     # ---- 关系画像（Issue #18：主要解释层，位于 legacy overall 之前）----
     lines += _profile_markdown_section(build_profile(
-        results, stats=stats, salience=build_salience(results, stats=stats)))
+        results, stats=stats, salience=build_salience(results, stats=stats,
+                                                      interaction=interaction),
+        interaction=interaction))
+
+    # ---- 互动结构证据（Issue #20；additive、0 API）----
+    if interaction:
+        lines += _interaction_markdown_section(interaction)
 
     # ---- 总体结果（辅助参考）----
     lines += ["## 总体结果（辅助参考）", ""]

@@ -517,7 +517,8 @@ def test_confirm_notice_keeps_other_same_window_types_pending(
     }
     assert len(siblings) == 2
     before_calls = len(counting_client)
-    assert any("候选 3 条待核对" in line for line in _texts(at).splitlines())
+    # #20 起候选队列含互动结构候选（本场景 TA 在 3h41m 间隔后重启的 conversation_reengagement）。
+    assert any("候选 4 条待核对" in line for line in _texts(at).splitlines())
 
     scope_widget = next(e for e in at.selectbox
                         if str(getattr(e, "key", "")).startswith(
@@ -537,6 +538,7 @@ def test_confirm_notice_keeps_other_same_window_types_pending(
     text = _texts(at)
     assert "已确认事件：好感与关系性质 · 亲密友情" in text
     assert "同一段聊天可能还有其他类型的候选，仍需分别审核" in text
+    # remaining 只统计同窗口的**规则**候选（不含互动结构候选）
     assert "（2 条待核对）。" in text
     assert len(counting_client) == before_calls
 
@@ -547,7 +549,7 @@ def test_confirm_notice_keeps_other_same_window_types_pending(
     assert not (siblings & reviewed)
     pending = bv.pending_candidates(bv.generate_candidates(messages), events)
     assert siblings <= {c.identity for c in pending}
-    assert any("候选 2 条待核对" in line for line in _texts(at).splitlines())
+    assert any("候选 3 条待核对" in line for line in _texts(at).splitlines())
 
 
 @pytest.mark.parametrize(("failure", "category", "stored_rows"), [

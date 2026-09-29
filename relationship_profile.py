@@ -938,6 +938,166 @@ def _salience_summary_lines(salience: dict) -> list[str]:
     return lines
 
 
+
+
+# ---------------------------------------------------------------------------
+# #20 Interaction dynamics 接线（互动结构事件；本地身份字段不进画像）
+# ---------------------------------------------------------------------------
+
+
+def _interaction_dim(event: dict) -> str | None:
+    """interaction dimension → profile dimension key（observation 不映射）。"""
+    import interaction_dynamics as idyn
+    return idyn.DIM_TO_PROFILE.get(event.get("dimension"))
+
+
+def _strip_local(event: dict) -> dict:
+    """剥掉仅本地使用的指纹 / 身份字段（§9：默认报告不得暴露）。"""
+    return {k: v for k, v in event.items()
+            if k not in ("fingerprints", "identity")}
+
+
+def _interaction_summary_lines(interaction: dict) -> list[str]:
+    """互动结构事件的确定性摘要（只描述结构，不推断意图 / 人格）。"""
+    import interaction_dynamics as idyn
+    events = interaction.get("events") or []
+    lines: list[str] = []
+    for line in interaction.get("summary_lines") or []:
+        lines.append(line)
+    ta_restart = [e for e in events
+                  if e["event_type"] == "conversation_reengagement"
+                  and e.get("actor") == "TA"]
+    followups = [e for e in events if e["event_type"] == "followup_sequence"]
+    invitations = [e for e in events
+                   if e["event_type"] == "invitation_progression"]
+    pressure = [e for e in events if e["event_type"] == "boundary_pressure"]
+    accepted = [e for e in events if e["direction"] == idyn.DIRECTION_COUNTER]
+    candidates = [e for e in events
+                  if e.get("review_status") == idyn.REVIEW_CANDIDATE]
+    if ta_restart:
+        lines.append(f"互动结构：TA 在明显间隔后恢复互动 {len(ta_restart)} 次"
+                     "（结构观察，不代表想念或特殊关注）。")
+    if followups:
+        lines.append(f"互动结构：出现 {len(followups)} 次连续追问结构"
+                     "（连续提问本身不等于关心）。")
+    if invitations:
+        lines.append(f"互动结构：出现 {len(invitations)} 次邀约从模糊走向具体"
+                     "（不代表浪漫）。")
+    if pressure:
+        lines.append(f"边界回应：出现 {len(pressure)} 次明确拒绝后的继续推进"
+                     "（结构观察，不评价人格）。")
+    if accepted:
+        lines.append(f"边界回应：出现 {len(accepted)} 次明确边界后的接受 / 调整"
+                     "（边界压力的相反证据；不等于“尊重”）。")
+    if candidates:
+        lines.append(f"另有 {len(candidates)} 条待人工核对的互动线索"
+                     "（不进入正式结论）。")
+    return lines
+
+
+def _apply_interaction_boundary(base: dict, events: list[dict],
+                                observations: dict, analyzed_messages: int,
+                                time_basis: str) -> dict:
+    """boundary_pressure 维度按互动结构证据重写（§31 / §54）。
+
+    - 没有 boundary opportunity → insufficient（没有机会观察 ≠ 没有压力）；
+    - accepted / adjusted（auto_supported）→ evidence_limited + counter 方向；
+    - pressure（auto_supported）→ evidence_limited + supporting 方向；
+    - 只有 review_required 候选 → evidence_limited + unknown 方向；
+    - 引擎不可用（没有消息）→ 保持 unsupported。
+    """
+    import interaction_dynamics as idyn
+    opportunities = int((observations or {}).get("boundary_opportunities") or 0)
+    if opportunities <= 0:
+        dim = dict(base)
+        dim.update({
+            "status": STATUS_INSUFFICIENT,
+            "conclusion": "当前样本没有可用于观察拒绝后反应的明确边界情境"
+                          "（没有机会观察 ≠ 没有边界压力）。",
+            "direction": DIR_UNKNOWN,
+            "capability": {"boundary_pressure": "analyzed_via_interaction",
+                           "boundary_response": "analyzed"},
+            "limitations": base["limitations"] + [
+                "边界压力只在出现明确 boundary opportunity 后才可观察；"
+                "沉默不构成证据（absence ≠ counter）。",
+            ],
+        })
+        return dim
+
+    pressure = [e for e in events if e["event_type"] == "boundary_pressure"
+                and e.get("review_status") == idyn.REVIEW_AUTO]
+    counter = [e for e in events
+               if e.get("direction") == idyn.DIRECTION_COUNTER
+               and e.get("review_status") == idyn.REVIEW_AUTO]
+    candidates = [e for e in events
+                  if e.get("review_status") == idyn.REVIEW_CANDIDATE]
+    window_messages = sorted({j for e in events
+                              for j in range(e["window"]["start_index"],
+                                             e["window"]["end_index"] + 1)})
+    if pressure and counter:
+        direction = DIR_MIXED
+    elif pressure:
+        direction = DIR_SUPPORTING
+    elif counter:
+        direction = DIR_COUNTER
+    else:
+        direction = DIR_UNKNOWN
+
+    if pressure:
+        conclusion = (f"当前样本出现 {len(pressure)} 次明确拒绝后的继续推进"
+                      "（互动结构观察；不推断人格，也不因“没发现”推断没有压力）")
+    elif counter:
+        conclusion = (f"出现 {len(counter)} 次明确边界后的接受 / 调整"
+                      "（边界压力的相反证据；不等于“对方尊重你”）")
+    elif candidates:
+        conclusion = (f"出现 {len(candidates)} 条待人工核对的边界回应线索"
+                      "（未自动定性）")
+    else:
+        conclusion = ("出现边界情境，但 TA 的后续回应未被当前规则分类"
+                      "（结构未决，需人工核对）")
+
+    total = len(pressure) + len(counter)
+    level = CONF_LEVEL_MID if total >= 3 else CONF_LEVEL_LOW
+    dim = dict(base)
+    dim.update({
+        "status": STATUS_EVIDENCE_LIMITED,
+        "conclusion": conclusion,
+        "direction": direction,
+        "strength": {"level": "结构性观察", "value": None, "scale": None,
+                     "basis": ["边界压力由互动结构事件（拒绝后反应）观察，"
+                               "不使用 legacy base_score / engagement 代判"]},
+        "coverage": {
+            "eligible_messages": len(window_messages),
+            "supporting_messages": len(pressure),
+            "analyzed_messages": analyzed_messages,
+            "coverage_ratio": round(len(window_messages) / analyzed_messages, 4)
+            if analyzed_messages else None,
+        },
+        "reliability": {
+            "level": level,
+            "confidence": None,
+            "proxy": True,
+            "basis": ["互动结构事件无 Jev confidence 字段，可靠性为结构代理",
+                      f"明确分类事件 {total} 条；时间可信度：{time_basis}",
+                      f"边界情境共 {opportunities} 次"],
+        },
+        "supporting_count": len(pressure),
+        "counter_count": len(counter),
+        "counter_evidence_available": True,
+        "salient_events": [_strip_local(e) for e in pressure],
+        "counter_events": [_strip_local(e) for e in counter],
+        "capability": {"boundary_pressure": "analyzed_via_interaction",
+                       "boundary_response": "analyzed"},
+        "limitations": base["limitations"] + [
+            "接受 / 调整边界是相反证据，不是人格判断；“尊重”是人格结论，本层不给。",
+            "边界压力证据只覆盖本样本中出现过的边界情境；没有机会观察时不作判断。",
+            "模糊回应（可能是正常协调也可能是继续推进）一律 review_required，"
+            "不自动升级。",
+        ],
+    })
+    return dim
+
+
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
@@ -945,6 +1105,7 @@ def _salience_summary_lines(salience: dict) -> list[str]:
 
 def build_profile(results: list[dict], *, stats: dict | None = None,
                   salience: dict | None = None,
+                  interaction: dict | None = None,
                   interaction_events: list | None = None) -> dict:
     """由现有分析结果派生 Relationship Profile v2（纯函数、确定性）。
 
@@ -955,7 +1116,10 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
         salience: 可选的 ``salience.build_salience(results)`` 输出（#19）；
             提供时按维度填充 ``baseline`` / ``salient_events`` / ``counter_events``
             （#18 预留槽位，schema 不变）。缺省时槽位为空（#18 行为）。
-        interaction_events: **#20 预留**注入接口；本版本不产生 turn-level 事件。
+        interaction: 可选的 ``interaction_dynamics.build_interaction_events``
+            输出（#20）。提供时按维度填充 ``interaction_events``，并按
+            boundary 结构证据重写 ``boundary_pressure``（§31/§54 规则）。
+        interaction_events: 扁平注入接口（兼容保留；#20 事件走 interaction）。
 
     返回:
         ``relationship-profile-v2`` dict（schema 见设计文档 §3）。
@@ -996,6 +1160,18 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
         if entry.get("counter_phrase") is not None:
             dimensions[key]["counter_phrase"] = entry["counter_phrase"]
 
+    interaction = interaction or {}
+    interaction_all = interaction.get("events") or []
+    for key in DIMENSION_ORDER:
+        mapped = [e for e in interaction_all if _interaction_dim(e) == key]
+        dimensions[key]["interaction_events"] = [_strip_local(e)
+                                                 for e in mapped]
+    if interaction.get("engine_available"):
+        dimensions["boundary_pressure"] = _apply_interaction_boundary(
+            dimensions["boundary_pressure"], interaction_all,
+            interaction.get("observations") or {}, len(items),
+            interaction.get("time_basis", "ordered_only"))
+
     limitations = [
         "本画像只描述聊天文本中可观察到的信号，不代表对方真实心理状态。",
         "低分 / 未发现证据 ≠ 反面证据；不确定 ≠ 否定。",
@@ -1016,6 +1192,8 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
     summary_lines = _summary_lines(dimensions)
     if salience:
         summary_lines = _salience_summary_lines(salience) + summary_lines
+    if interaction_all:
+        summary_lines = _interaction_summary_lines(interaction) + summary_lines
 
     return {
         "version": PROFILE_VERSION,
@@ -1035,8 +1213,9 @@ def build_profile(results: list[dict], *, stats: dict | None = None,
         },
         "limitations": limitations,
         "capability_gaps": [
-            "话题开启 / 连续追问 / 跨日重提 / 邀约推进 / reciprocity / "
-            "拒绝后反应属于 #20 Interaction dynamics，当前版本不计算。",
+            "互动结构事件（#20）已启用 re-engagement / follow-up / invitation / "
+            "reciprocity / boundary response；语义级话题开启与 personal recall "
+            "自动识别仍未启用（candidate-only，见 capability matrix）。",
             "显著 / 相反证据以分类事件保留（salient_events / counter_events），"
             "不做数值聚合、不产生综合分；legacy overall 不参与事件方向判断。",
         ],
