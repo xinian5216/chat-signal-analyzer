@@ -109,8 +109,10 @@ def test_json_schema_and_validity():
     # Issue #19：新增 additive 顶层键 salience（事件明细在 relationship_profile
     # 维度内，顶层只留版本 / 基线摘要 / diagnostics，避免重复保存）；
     # 此处是 schema 形状守卫，随有意的 additive 扩展同步，不是 benchmark expectation。
+    # Issue #20：新增 additive 顶层键 interaction_dynamics（报告视图，无 fingerprint / identity）。
     assert set(data) == {"metadata", "summary", "aggregate", "behavior_stats",
-                         "messages", "relationship_profile", "salience"}
+                         "messages", "relationship_profile", "salience",
+                         "interaction_dynamics"}
     m = data["messages"][0]
     for field in ("time", "speaker", "text", "emotion", "intent", "warmth",
                   "engagement", "special_attention", "relationship_evidence_strength",

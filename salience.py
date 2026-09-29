@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import scoring
 from analyzer import SCHEMA_VERSION
+import interaction_dynamics as idyn
 import relationship_profile as rp
 
 SALIENCE_VERSION = "salience-v1"
@@ -377,23 +378,52 @@ def tier_for_count(count: int) -> str:
     return TIER_REPEATED
 
 
+# #20 互动结构事件的名词（describe_events 用）
+INTERACTION_NOUNS = {
+    "conversation_reengagement": "间隔后重启互动",
+    "followup_sequence": "连续追问",
+    "invitation_progression": "邀约推进",
+    "boundary_accepted": "接受边界",
+    "boundary_adjusted": "调整边界",
+    "boundary_pressure": "拒绝后继续推进",
+    "boundary_continued_request": "边界后继续请求",
+    "boundary_ambiguous": "边界回应",
+}
+
+
 def describe_events(events: list[dict], direction: str) -> list[str]:
     """事件列表 → 确定性用户可见短句（无百分比、无 boost、无伪精度）。"""
     if not events:
         return []
-    noun = EVENT_CLASS_META[events[0]["event_class"]]["noun"]
+    meta = EVENT_CLASS_META.get(events[0]["event_class"])
     count = len({e["message_index"] for e in events})
     tier = tier_for_count(count)
-    if tier == TIER_SINGLE:
-        head = f"出现 1 条明确{noun}信号"
-    elif tier == TIER_MULTIPLE:
-        head = f"出现明确{noun}信号（2 条不同消息）"
+    if meta is not None:
+        # Jev 指标事件（#19 原描述，不改）
+        noun = meta["noun"]
+        if tier == TIER_SINGLE:
+            head = f"出现 1 条明确{noun}信号"
+        elif tier == TIER_MULTIPLE:
+            head = f"出现明确{noun}信号（2 条不同消息）"
+        else:
+            head = (f"多次出现明确{noun}信号"
+                    f"（{count} 条不同消息）；"
+                    "多次出现不代表统计独立性")
     else:
-        head = (f"多次出现明确{noun}信号（{count} 条不同消息）；"
-                "多次出现不代表统计独立性")
+        # #20 互动结构事件：用“次”而不是“条消息”
+        noun = INTERACTION_NOUNS.get(events[0]["event_class"],
+                                     "互动结构")
+        if tier == TIER_SINGLE:
+            head = f"出现 1 次明确{noun}结构"
+        elif tier == TIER_MULTIPLE:
+            head = f"出现明确{noun}结构（2 次不同结构）"
+        else:
+            head = (f"多次出现明确{noun}结构"
+                    f"（{count} 次不同结构）；"
+                    "多次出现不代表统计独立性")
     lines = [head]
-    if any(e["evidence_consistency"]["level"] == CONSISTENCY_CONFLICTED
-           for e in events):
+    if any((e.get("evidence_consistency") or {}).get("level")
+           == CONSISTENCY_CONFLICTED for e in events):
         lines[0] += "（其中消息的关系信息量判断偏低，可靠性需谨慎解释）"
     for e in sorted(events, key=lambda e: e["message_index"]):
         lines.append(f"消息 #{e['message_index'] + 1}：{e['reason']}")
@@ -463,8 +493,91 @@ def _baseline_summary(dimensions: dict, ordinary_count: int,
 # ---------------------------------------------------------------------------
 
 
-def build_salience(results: list[dict], *, stats: dict | None = None) -> dict:
+def _window_evidence_mean(results: list[dict],
+                          indices) -> float | None:
+    """窗口内 TA 消息的 evidence 均值（信息量上下文，绝不决定方向）。"""
+    by_index = {e["index"]: e for e in (results or []) if not e.get("error")}
+    values = []
+    for i in indices:
+        entry = by_index.get(i)
+        if not entry or not entry.get("result"):
+            continue
+        score = entry["result"].get("relationship_evidence_strength", {}).get("score")
+        if isinstance(score, (int, float)):
+            values.append(float(score))
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _interaction_salience_events(interaction: dict | None,
+                                 results: list[dict]) -> list[dict]:
+    """#20：auto_supported 互动事件 → salience 事件（source=interaction_event）。
+
+    只放行结构证据明确（auto_supported）且方向非 observation 的事件；
+    review_required 候选绝不进入正式 evidence（§42）。
+    """
+    if not interaction:
+        return []
+    by_index = {e["index"]: e for e in (results or []) if not e.get("error")}
+    out: list[dict] = []
+    for event in interaction.get("events", []):
+        if event.get("review_status") != idyn.REVIEW_AUTO:
+            continue
+        if event.get("direction") == idyn.DIRECTION_OBSERVATION:
+            continue
+        profile_key = idyn.DIM_TO_PROFILE.get(event.get("dimension"))
+        if profile_key is None:
+            continue
+        window = event["window"]
+
+        def _salience_event(dimension_key: str, event_class: str,
+                            reason: str) -> dict:
+            return {
+                "event_id": f"{idyn.SOURCE}:{event['event_type']}:"
+                            f"{event['identity'][:16]}"
+                            + (f":{dimension_key}"
+                               if dimension_key != profile_key else ""),
+                "dimension": dimension_key,
+                "event_class": event_class,
+                "direction": event["direction"],
+                "source": idyn.SOURCE,
+                "message_index": window["start_index"],
+                "window": dict(window),
+                "metric": "interaction_structure",
+                "value": None,
+                "scale": "structure",
+                "confidence": None,
+                "relationship_evidence_strength": _window_evidence_mean(
+                    results,
+                    range(window["start_index"], window["end_index"] + 1)),
+                "evidence_consistency": None,
+                "salience_level": event.get("strength", "observable"),
+                "review_status": idyn.REVIEW_AUTO,
+                "reason": reason,
+                "alternative_explanation": event["alternative_explanation"],
+                "limitations": list(event.get("limitations", [])),
+            }
+
+        out.append(_salience_event(profile_key, event["event_type"],
+                                   event["reason"]))
+        # #20：follow-up + 该窗口内 Jev 结构化 care 信号明确 → 额外映射
+        # care 维度（连续提问本身不等于关心；care 只能来自结构化信号）。
+        if event.get("care_dimension_evidence") \
+                and event["event_type"] == "followup_sequence":
+            out.append(_salience_event(
+                "care_responsiveness", "followup_sequence_with_care_signal",
+                f"{event['reason']}；该窗口内 Jev show_care / caring 信号明确，"
+                "可在关心与回应性维度作为结构性证据（仍不等于特殊关注或浪漫）"))
+    return out
+
+
+def build_salience(results: list[dict], *, stats: dict | None = None,
+                   interaction: dict | None = None) -> dict:
     """派生 salience-v1 证据通道（纯函数、确定性、0 Jev）。
+
+    interaction 参数（#20）：只有 ``review_status == auto_supported`` 且方向非
+    observation 的互动事件才以 ``source = "interaction_event"`` 进入正式
+    salient / counter 事件（§42）；``review_required`` 只走人工审核候选，
+    不进正式 evidence。互动事件不从 baseline 排除（其消息仍是普通互动）。
 
     参数:
         results: ``analyze_messages`` 的结果列表（只读）。
@@ -492,6 +605,12 @@ def build_salience(results: list[dict], *, stats: dict | None = None) -> dict:
                 continue
             seen_ids.add(event["event_id"])
             events.append(event)
+    for event in _interaction_salience_events(interaction, results):
+        if event["event_id"] in seen_ids:
+            duplicate_suppressed += 1
+            continue
+        seen_ids.add(event["event_id"])
+        events.append(event)
     events.sort(key=lambda e: (e["message_index"], e["dimension"],
                                e["event_class"]))
 
@@ -565,7 +684,8 @@ def build_salience(results: list[dict], *, stats: dict | None = None) -> dict:
             "ordinary_message_count": len(ordinary),
             "conflicted_event_count": sum(
                 1 for e in events
-                if e["evidence_consistency"]["level"] == CONSISTENCY_CONFLICTED),
+                if (e.get("evidence_consistency") or {}).get("level")
+                == CONSISTENCY_CONFLICTED),
             "duplicate_suppressed": duplicate_suppressed,
             "unclassified_high_information": unclassified,
             "notes": [
