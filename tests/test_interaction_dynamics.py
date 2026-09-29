@@ -128,7 +128,7 @@ class TestScenarios:
         assert report["passed"], failed
 
     def test_scenario_file_total(self):
-        assert len(_SCENARIOS) == 24
+        assert len(_SCENARIOS) == 32  # I1~I24 + 序列语义审计 I25~I32
 
 
 # ---------------------------------------------------------------------------
@@ -257,19 +257,39 @@ class TestIdentity:
         interaction = build_interaction_events(messages, results)
         candidates = idyn.interaction_behavior_candidates(interaction, messages)
         assert candidates
-        confirmed = bv.EventCandidate(
-            dimension="initiative", behavior_type="topic_continuation",
-            start=candidates[0].start, end=candidates[0].end,
-            fingerprints=list(candidates[0].fingerprints), source_kind="rule",
-            rule="interaction:followup_sequence",
-            event_start_time=None, event_end_time=None,
-            time_confidence="unknown")
-        event = bv.build_event_dict(candidate=confirmed, friend_id="f1",
+        # 从适配器候选本体确认（带 order-aware 原始身份）
+        event = bv.build_event_dict(candidate=candidates[0], friend_id="f1",
                                     dimension="initiative",
                                     behavior_type="topic_continuation",
                                     stance="supporting", status="confirmed")
+        assert event["original_candidate_identity"] == \
+            candidates[0].original_candidate_identity
         pending = bv.pending_candidates(candidates, [event])
         assert pending == []  # 已确认 → 不重复出现
+
+    def test_reordered_sequence_not_treated_as_reviewed(self):
+        """相同指纹雀6合但因果顺序改变：不得被认为已审核。"""
+        messages, results = idiag.materialize_case(
+            next(c for c in _SCENARIOS if c["id"] == "I2_followup_sequence"))
+        interaction = build_interaction_events(messages, results)
+        candidates = idyn.interaction_behavior_candidates(interaction, messages)
+        original = candidates[0]
+        reversed_candidate = bv.EventCandidate(
+            dimension=original.dimension, behavior_type=original.behavior_type,
+            start=original.start, end=original.end,
+            fingerprints=list(reversed(original.fingerprints)),
+            source_kind="rule", rule=original.rule,
+            event_start_time=None, event_end_time=None,
+            time_confidence="unknown",
+            original_candidate_identity=idyn._identity(
+                "followup_sequence", "TA",
+                list(reversed(original.fingerprints))))
+        event = bv.build_event_dict(candidate=original, friend_id="f1",
+                                    dimension="initiative",
+                                    behavior_type="topic_continuation",
+                                    stance="supporting", status="confirmed")
+        pending = bv.pending_candidates([reversed_candidate], [event])
+        assert [c.identity for c in pending] == [reversed_candidate.identity]
 
 
 # ---------------------------------------------------------------------------
@@ -859,3 +879,95 @@ class TestBehaviorAdapter:
 
     def test_empty_interaction_yields_no_candidates(self):
         assert idyn.interaction_behavior_candidates({"events": []}, []) == []
+
+
+# ---------------------------------------------------------------------------
+# #20 pre-PR sequence-semantics audit（§9 身份回归 A~F）
+# ---------------------------------------------------------------------------
+
+
+class TestSequenceIdentityAudit:
+    def _followup_case(self):
+        return idiag.materialize_case(
+            next(c for c in _SCENARIOS if c["id"] == "I2_followup_sequence"))
+
+    def test_a_same_import_stable(self):
+        messages, results = self._followup_case()
+        first = build_interaction_events(messages, results)
+        again = build_interaction_events(messages, results)
+        assert [e["identity"] for e in first["events"]] == \
+            [e["identity"] for e in again["events"]]
+
+    def test_b_prepend_stable(self):
+        messages, results = self._followup_case()
+        older = [msg("me", "上次的方案改完了", "2026-02-20 08:00"),
+                 msg("them", "收到", "2026-02-20 08:01")]
+        base_ids = sorted(e["identity"] for e in
+                          build_interaction_events(messages, results)["events"]
+                          if e["event_type"] == "followup_sequence")
+        shifted_results = [{**e, "index": e["index"] + len(older)}
+                           for e in results]
+        full = build_interaction_events(older + messages, shifted_results)
+        full_ids = sorted(e["identity"] for e in full["events"]
+                          if e["event_type"] == "followup_sequence")
+        assert base_ids == full_ids
+        # prepend 产生的额外 reengagement 事件属于预期（新老片段间隔大）
+        assert any(e["event_type"] == "conversation_reengagement"
+                   for e in full["events"])
+
+    def test_c_append_stable(self):
+        messages, results = self._followup_case()
+        later = [msg("me", "先睡了", "2026-03-02 10:09"),
+                 msg("them", "晚安", "2026-03-02 10:10")]
+        base_ids = sorted(e["identity"] for e in
+                          build_interaction_events(messages, results)["events"])
+        full_ids = sorted(
+            e["identity"] for e in
+            build_interaction_events(messages + later, results)["events"])
+        assert base_ids == full_ids
+
+    def test_d_reordered_anchors_change_identity(self):
+        fps = ["fp-a", "fp-b", "fp-c"]
+        assert idyn._identity("followup_sequence", "TA", fps) != \
+            idyn._identity("followup_sequence", "TA", list(reversed(fps)))
+
+    def test_e_opposite_causal_direction_not_deduped(self):
+        """拒绝 → 继续请求 与其反序不得合并。"""
+        refused_then_pressed = [
+            msg("me", "我不想去", "2026-03-06 19:00"),
+            msg("them", "就来嘗", "2026-03-06 19:01"),
+        ]
+        pressed_then_refused = list(reversed(refused_then_pressed))
+        a = build_interaction_events(refused_then_pressed, [])
+        b = build_interaction_events(pressed_then_refused, [])
+        types_a = {e["event_type"] for e in a["events"]}
+        types_b = {e["event_type"] for e in b["events"]}
+        assert "boundary_pressure" in types_a
+        assert "boundary_pressure" not in types_b
+        ids_a = {e["identity"] for e in a["events"]}
+        ids_b = {e["identity"] for e in b["events"]}
+        assert not (ids_a & ids_b)
+
+    def test_f_confirmed_then_true_reorder_repends(self):
+        """确认后同序列重新导入不再 pending；因果顺序改变重新出现。"""
+        messages, results = self._followup_case()
+        interaction = build_interaction_events(messages, results)
+        candidates = idyn.interaction_behavior_candidates(interaction, messages)
+        event = bv.build_event_dict(candidate=candidates[0], friend_id="f1",
+                                    dimension="initiative",
+                                    behavior_type="topic_continuation",
+                                    stance="supporting", status="confirmed")
+        again = build_interaction_events(messages, results)
+        assert bv.pending_candidates(
+            idyn.interaction_behavior_candidates(again, messages), [event]) == []
+        # 真实改变因果顺序（反转 anchor）后应重新出现
+        reordered = [bv.EventCandidate(
+            dimension=c.dimension, behavior_type=c.behavior_type,
+            start=c.start, end=c.end,
+            fingerprints=list(reversed(c.fingerprints)), source_kind="rule",
+            rule=c.rule, event_start_time=None, event_end_time=None,
+            time_confidence="unknown",
+            original_candidate_identity=idyn._identity(
+                "followup_sequence", "TA", list(reversed(c.fingerprints))))
+            for c in idyn.interaction_behavior_candidates(again, messages)]
+        assert bv.pending_candidates(reordered, [event]) != []

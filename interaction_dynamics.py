@@ -78,21 +78,43 @@ PRESSURE_RE = bv.PRESSURE_RE            # 为什么不行|必须|一定要|…
 # 新增模式（behavior.py 无对应项，故在此定义；命名与语义见设计文档）
 PAUSE_RE = re.compile("我现在不想聊这个|先不聊这个|别聊这个|不想聊这个|暂停一下|"
                       "能不能别说这个|换个话题吧|先别提这个")
-RESCHEDULE_RE = re.compile("今天不行|今天不方便|这几天不行|最近不行|没空|改天|"
-                           "下次吧|另约时间|这两天不方便|今天算了")
+RESCHEDULE_RE = re.compile(
+    "(?:周[0-9一二三四五六日末]|这天|那天|今天|今晚|这两天|这几天|最近|接下来)"
+    "[^。！？]{0,6}(?:不行|不可以|没空|不方便|没时间)"
+    "|改天|下次吧|另约时间|改时间")
 ROMANTIC_BOUNDARY_RE = re.compile("只做朋友|只想做朋友|只把你当|只是朋友|保持距离|"
                                   "别有那种想法|没有那种感觉|界限")
 REFUSAL_MARKERS_RE = re.compile("不想|不去|别去|不用|算了|别再|不要再|别问|"
                                 "别勉强|请别")
 ACCEPT_RE = re.compile(r"(?<![不没])好|(?<![不没])行|嗯+|哦+|好吧|好的|知道了|"
-                       r"听你的|理解了?|尊重|不勉强|那算了|不去就算|都行|可以")
+                       r"听你的|明白|了解|理解了?|尊重|不勉强|那算了|不去就算|都行|可以")
 CONTINUE_REQUEST_RE = re.compile(
-    PRESSURE_RE.pattern + "|就来|来嘛|去嘛|去吧|走吧|真的不行吗|再想想|再考虑|"
-    "别拒绝|试一下|试试看|给个机会|别不给|商量一下|就一次|考虑考虑|"
+    PRESSURE_RE.pattern + "|就来|来嘗|去嘗|去吧|走吧|真的不行吗|再想想|再考虑|"
+    "别拒绍|试一下|试试看|给个机会|别不给|商量一下|就一次|考虑考虑|"
     "你现在过来|出来见一面")
+
+# 继续请求的“回指式”连续语（默认存在一个待处理请求）；#20 pre-PR 序列语义审计修复后，只有回指式连续语才能支撑 boundary pressure；“必须今天发给我”等新的命令式请求不等于对被拒绝事项继续施压。
+# 注：不把 PRESSURE_RE（“必须 / 一定要”）算作回指式连续
+# 语：那是新的命令式请求，无法绑定被拒绝的同一事项（
+# 审计负例：“那个表格你必须今天发给我”不是对“不想
+# 去看电影”继续施压）。
+CONTINUATION_MARKERS_RE = re.compile(
+    "就来|来嘗|来吧|去嘗|去吧|走吧|真的不行吗|去一次|"
+    "再想想|再考虑|别拒绍|给个机会|就一次|考虑考虑|"
+    "商量一下|你现在过来|出来见一面|先听我说|听我说完|"
+    "再约|约一下|改天再约|下次一定|就这么定|听我的")
+# 新的请求语（非回指式）：无法与被拒绝事项绑定时归为待核对。
+UNRELATED_REQUEST_RE = re.compile(
+    INVITATION_RE.pattern + "|发给我|发我|给我|记得|必须|一定要|"
+    "把那个|表格|文件|银行卡|密码|地址|联系方式")
+# 用户自己给出的替代方（reschedule boundary）：此时 TA 推进具体时间属于正常协调，不构成施压。
+USER_ALT_RE = re.compile("改天|改的|下次|之后|明天|后天|周六|周日|"
+                         "下周|星期[0-9一二三四五六日末]?|"
+                         "别的时间|另约|改时间")
+
 TIME_PROPOSE_RE = re.compile(ARRANGEMENT_RE.pattern + "|晚上|下午|中午|明早|周末|"
                              "改天|另约|重新约|改时间|这周|[0-9]{1,2}点")
-# 邀约“具体化”用严格时间（星期 / 処理时间）；“周末 / 晚上”等宽敚时间词不算
+# 邀约“具体化”用严格时间（星期 / 处理时间）；“周末 / 晚上”等宽泛时间词不算
 # 具体安排（否则“周末大家一起吃饭”会被误判为已具体）。
 TIME_CONCRETE_RE = re.compile(ARRANGEMENT_RE.pattern + "|[0-9]{1,2}点")
 GROUP_INVITE_RE = re.compile("大家|我们几个|几个朋友|一起聚餐|同事们|群里|"
@@ -283,7 +305,17 @@ def _evidence_mean(results: dict, indices: list[int]) -> float | None:
 
 
 def _identity(event_type: str, actor: str, fingerprints: list[str]) -> str:
-    fps = sorted({str(f) for f in fingerprints or []})
+    """Sequence-aware 身份：**按因果顺序**的 anchor 指纹序列。
+
+    #20 pre-PR 序列语义审计修复：不对指纹集合排序——
+    “拒绝 → 继续请求”与“继续请求 → 拒绝”虽然包含相同
+    消息集，但序列语义完全不同，必须得到不同身份（否则
+    dedup 会把时间线改变带来的语义反转淹掉）。指纹顺序与
+    事件的因果顺序一致（anchor_indices 升序）；因此：
+    - 重复导入 / prepend / append：anchor 集与相对顺序不变 → 身份稳定；
+    - 真实时间线改变序列：指纹顺序改变 → 身份变化（不静默奔旧）。
+    """
+    fps = [str(f) for f in fingerprints or []]
     payload = "\n".join(["interaction-event-v1", event_type, actor] + fps)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -611,28 +643,42 @@ def _classify_boundary(text: str) -> str | None:
     return None
 
 
-def _classify_response(text: str) -> str:
-    if CONTINUE_REQUEST_RE.search(text):
+def _classify_response(text: str, boundary_kind: str = "",
+                       boundary_text: str = "") -> str:
+    """TA 对 boundary 的回应分类（#20 审计：必须绑定同一事项）。"""
+    if CONTINUATION_MARKERS_RE.search(text):
         return "continued_request"
     has_accept = ACCEPT_RE.search(text) is not None
     has_schedule = bool(ARRANGEMENT_RE.search(text)
                         or TIME_PROPOSE_RE.search(text))
+    user_offered_alt = bool(boundary_kind == "reschedule"
+                            and USER_ALT_RE.search(boundary_text))
     if has_accept and has_schedule:
         return "adjusted"
     if has_accept:
         return "accepted"
+    if has_schedule and user_offered_alt:
+        return "adjusted"
     if has_schedule:
         return "ambiguous"
+    if UNRELATED_REQUEST_RE.search(text):
+        return "unrelated_request_candidate"
     return "unclassified"
 
 
 def _detect_boundary_response(messages: list[dict],
                               results: dict) -> tuple[list[dict], int]:
-    """用户明确边界 → 后续 TA 反应的结构分类（D5 正式通道）。"""
+    """用户明确边界 → 后续 TA 反应的结构分类（D5 正式通道）。
+
+    #20 pre-PR 序列语义审计修复：回应按**消息**（不按 turn）——
+    同一个 TA turn 内的无关请求不得进入边界事件窗口；
+    且只有“回指式”连续语才能支撑 boundary pressure（新的命令
+    式请求无法与被拒绝事项绑定 → review_required）。
+    """
     turns = _turns(messages)
     events: list[dict] = []
     opportunities = 0
-    for k, turn in enumerate(turns):
+    for turn in turns:
         if turn["speaker"] != "me" or not turn["has_text"]:
             continue
         boundary_text = "".join(_text_of(m) for m in turn["messages"])
@@ -640,75 +686,99 @@ def _detect_boundary_response(messages: list[dict],
         if kind is None:
             continue
         opportunities += 1
-        response = None
-        ta_turns_seen = 0
-        for nxt in turns[k + 1:]:
-            if nxt["speaker"] != "them":
+        # boundary 之后的前 BOUNDARY_RESPONSE_TURNS 条 TA 消息中第一条
+        # 有文本的即为回应（空/媒体跳过）。
+        response_index = None
+        ta_messages_seen = 0
+        for j in range(turn["end"] + 1, len(messages)):
+            if str(messages[j].get("speaker")) != "them":
                 continue
-            ta_turns_seen += 1
-            if ta_turns_seen > BOUNDARY_RESPONSE_TURNS:
+            ta_messages_seen += 1
+            if ta_messages_seen > BOUNDARY_RESPONSE_TURNS:
                 break
-            if nxt["has_text"]:
-                response = nxt
+            if _is_text_message(messages[j]):
+                response_index = j
                 break
-        if response is None:
+        if response_index is None:
             continue        # 沉默不构成任何证据（absence ≠ counter）
-        ta_text = "".join(_text_of(m) for m in response["messages"])
-        cls = _classify_response(ta_text)
+        ta_text = _text_of(messages[response_index])
+        cls = _classify_response(ta_text, kind, boundary_text)
+        anchors = sorted(set(range(turn["start"], turn["end"] + 1))
+                         | {response_index})
         observations = [
             f"用户边界（消息 #{turn['start'] + 1}，"
             f"{_BOUNDARY_KIND_LABELS.get(kind, kind)}）",
-            f"TA 后续回应（消息 #{response['start'] + 1}）：{ta_text[:40]}",
+            f"TA 后续回应（消息 #{response_index + 1}）：{ta_text[:40]}",
             f"规则分类：{cls}",
         ]
         if cls == "unclassified":
             continue     # 未分类：只进 observations，不产生事件
+        if cls == "unrelated_request_candidate":
+            # 请求语存在但无法绑定被拒绝的同一事项（#20 审计）
+            events.append(_event(
+                "boundary_continued_request", "boundary_pressure",
+                DIRECTION_OBSERVATION, "TA", messages, turn["start"],
+                response_index, "boundary_then_request_without_binding",
+                observations, "observable", REVIEW_CANDIDATE,
+                "用户表达边界后，TA 出现新的请求 / 强硬表述，"
+                "但无法可靠绑定为同一被拒事项（需人工核对）",
+                extra={"boundary_kind": kind,
+                       "message_window": [turn["start"], response_index]},
+                anchors=anchors,
+            ))
+            continue
         if cls == "ambiguous":
             events.append(_event(
                 "boundary_ambiguous", "boundary_pressure", DIRECTION_OBSERVATION,
-                "TA", messages, turn["start"], response["end"],
+                "TA", messages, turn["start"], response_index,
                 "boundary_then_unclear_response", observations, "observable",
                 REVIEW_CANDIDATE,
                 "用户表达边界后，TA 的回应含义不明确（需人工核对）",
                 extra={"boundary_kind": kind,
-                       "message_window": [turn["start"], response["end"]]},
+                       "message_window": [turn["start"], response_index]},
+                anchors=anchors,
             ))
             continue
         if cls == "continued_request":
-            explicit_pressure = PRESSURE_RE.search(ta_text) is not None
+            explicit_pressure = CONTINUATION_MARKERS_RE.search(ta_text) is not None
             pressure = (kind == "explicit_refusal")
             if pressure:
                 events.append(_event(
                     "boundary_pressure", "boundary_pressure",
                     DIRECTION_SUPPORTING, "TA", messages, turn["start"],
-                    response["end"], "explicit_refusal_then_continued_request",
+                    response_index, "explicit_refusal_then_continued_request",
                     observations, "explicit" if explicit_pressure else "observable",
                     REVIEW_AUTO,
-                    "用户明确拒绝后，TA 仍持续推进同一请求（结构观察）",
+                    "用户明确拒绝后，TA 仍回指式地推进同一请求"
+                    "（结构观察）",
                     extra={"boundary_kind": kind, "explicit_pressure_language":
                            explicit_pressure,
-                           "message_window": [turn["start"], response["end"]]},
+                           "message_window": [turn["start"], response_index]},
+                    anchors=anchors,
                 ))
             else:
                 events.append(_event(
                     "boundary_continued_request", "boundary_pressure",
                     DIRECTION_SUPPORTING, "TA", messages, turn["start"],
-                    response["end"], "non_refusal_boundary_then_continued_request",
+                    response_index,
+                    "non_refusal_boundary_then_continued_request",
                     observations, "observable", REVIEW_CANDIDATE,
                     "用户表达边界后 TA 仍有请求 / 推进表述（需人工核对）",
                     extra={"boundary_kind": kind,
-                           "message_window": [turn["start"], response["end"]]},
+                           "message_window": [turn["start"], response_index]},
+                    anchors=anchors,
                 ))
             continue
         event_type = "boundary_adjusted" if cls == "adjusted" else "boundary_accepted"
         events.append(_event(
             event_type, "boundary_pressure", DIRECTION_COUNTER, "TA", messages,
-            turn["start"], response["end"],
+            turn["start"], response_index,
             "boundary_then_acceptance", observations, "observable", REVIEW_AUTO,
             f"用户明确边界后，TA 的后续行为为{cls}"
             "（边界压力的相反证据；不推断人格）",
             extra={"boundary_kind": kind,
-                   "message_window": [turn["start"], response["end"]]},
+                   "message_window": [turn["start"], response_index]},
+            anchors=anchors,
         ))
     return events, opportunities
 
@@ -916,6 +986,10 @@ def interaction_behavior_candidates(interaction: dict,
                    "context_missing": False,
                    "cross_run_duplicate": False},
             source_run_id=None,
+            # #20：order-aware 原始候选身份（事件的因果顺序身份）。
+            # 审核去重按它判定“该序列候选已审核过”；最终事件
+            # 仍用现有 event_identity（人工定义的最终范围）。
+            original_candidate_identity=event["identity"],
             msg_texts=[{"index": window["start_index"] + offset,
                         "speaker": str(t.get("speaker") or ""),
                         "time": t.get("time"),

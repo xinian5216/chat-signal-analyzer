@@ -97,8 +97,15 @@ interaction_dynamics.build_interaction_events()      # pure / causal-only
 ## 5. 事件身份（与 message index 分离）
 
 - `identity = sha256("interaction-event-v1\n" + event_type + "\n" + actor + "\n"
-  + sorted(unique fingerprints))`：**不用 index**，append / prepend / reorder
-  后保持稳定（I21 / I22 回归测试）；
+  + **ordered anchor fingerprints**)`：**不用 index**，append / prepend 后保持
+  稳定（I21 / I22 + 审计回归 A/B/C）；指纹顺序 = 事件的因果顺序，因此：
+  - 同一 anchor 集合、**真实序列反转**（时间线纠正）→ 身份改变 → 不会把新序列
+    静默认成已审核的旧序列（审计 D / E）；
+  - `interaction_behavior_candidates()` 把该 order-aware 身份写入候选的
+    `original_candidate_identity`（behavior.EventCandidate 的 additive 字段），
+    `pending_candidates` 对**序列型候选只按该身份**判定“已审核”（legacy 候选
+    不传该字段 → 行为与旧身份完全不变）；最终人工事件仍用现有 `event_identity`
+    （用户可改范围）——无 DB migration、不改 legacy 身份语义；
 - `fingerprints` 用 `merge.message_fingerprint`（raw_speaker + time + text +
   media_kinds，与 media 绑定迁移同源）；
 - identity / fingerprints **只本地使用**（去重、behavior 审核）；默认 JSON /
@@ -196,16 +203,23 @@ interaction_dynamics.build_interaction_events()      # pure / causal-only
 模式常量：复用 `behavior.REFUSAL_RE` + 新增 PAUSE / RESCHEDULE /
 ROMANTIC_BOUNDARY（composition，不复制第二份词典）。
 
-### 11.2 TA 反应分类（boundary 后 ≤ `BOUNDARY_RESPONSE_TURNS`=2 个 TA turn 内
-第一个有文本的 TA turn）
+### 11.2 TA 反应分类（boundary 后 ≤ `BOUNDARY_RESPONSE_TURNS`=2 条 **TA 消息**
+内第一条有文本的消息；同一 TA turn 里的无关请求不进入事件窗口）
 
 | 分类 | 判定 | 事件 | review |
 |---|---|---|---|
-| continued_request | CONTINUE_REQUEST_RE（含 PRESSURE_RE 组合）| boundary_pressure（仅 explicit_refusal 时）/ boundary_continued_request | explicit_refusal → auto_supported；其余 review_required |
-| adjusted | 接受词 + 时间/改期提议 | boundary_adjusted | auto_supported |
+| continued_request | **回指式连续语**（就来嘛 / 去嘛 / 来吧 / 再想想 / 别拒绝 / 就一次 / 先听我说 / 再约…）| boundary_pressure（仅 explicit_refusal 时）/ boundary_continued_request | explicit_refusal → auto_supported；其余 review_required |
+| unrelated_request_candidate | 有请求 / 强硬表述但**无回指式连续语**（“表格你必须今天发给我”）| boundary_continued_request | **review_required**（无法绑定同一事项） |
+| adjusted | 接受词 + 时间/改期提议，或 reschedule 且**用户自己给过替代方案** + TA 提具体时间 | boundary_adjusted | auto_supported |
 | accepted | 接受词，无新请求 | boundary_accepted | auto_supported |
-| ambiguous | 有时间提议但无接受词（“那晚上呢？”）| boundary_ambiguous | **review_required** |
+| ambiguous | 有时间提议但无接受词（“那明天呢？”）| boundary_ambiguous | **review_required** |
 | unclassified / 沉默 | 无匹配 / TA 未发言 | 无事件（只进 observations） | — |
+
+**same-object continuity（§10~§16 审计后强制）**：只有“回指式连续语”能支撑
+boundary pressure——“必须 / 一定要”等新的命令式请求无法与被拒事项绑定，一律
+review_required（I26 负例）；沉默仍是“无证据”；模糊语义（浪漫边界后转友谊邀约，
+I30）一律 review_required。reschedule 且用户自己给过替代方案时，TA 推进具体
+时间是**正常协调**（I28），不是施压。
 
 - **absence ≠ counter**：沉默不构成任何证据（§55）；
 - **无 opportunity → 不作判断**：boundary_pressure 维度 status =
@@ -266,7 +280,7 @@ reciprocity 分数 / 百分比、回复速度推断、boundary_pressure 的直�
 - `scripts/run_interaction_diagnostics.py`：端到端（interaction → salience →
   profile）约束检查 + gap 阈值比较 + capability matrix；产物写 gitignored 的
   `evaluation/reports/issue20/`；
-- 通过标准（当前）：**24/24 场景约束通过**（含 I20 future-leakage、
+- 通过标准（当前）：**32/32 场景约束通过**; 24/24序列语义审计 8/24（含 I20 future-leakage、
   I21/I22 身份、I14 单侧观察、I24 模糊 review）；
 - 旧 benchmark（34-case / 43-case）与 #17 / #19 诊断全部继续通过，
   **期望零修改**。
@@ -306,3 +320,29 @@ reciprocity 分数 / 百分比、回复速度推断、boundary_pressure 的直�
 6. followup 的“同一轮内容”未做语义校验：技术上 TA 两问可能换话题——
    结构上仍成立（追问存在），但“针对同一陈述”的强语义留给人工核对。
 7. 纯媒体 turn 只证明存在；混合消息只分析可见文本（parser 语义）。
+
+
+### 16.1 pre-PR sequence-semantics audit 记录（2026-09-29）
+
+- **身份顺序**：审计发现 review 去重链（interaction candidate →
+  pending → original_candidate_identity → dedup）使用 behavior 既有
+  **sorted fingerprint set** 身份，会把“拒绝→继续请求”与反序
+  当成同一已审核事件。修复：interaction 身份改为
+  **ordered anchor fingerprints**；candidate 通过 additive
+  `original_candidate_identity` 字段传递 order-aware 身份，
+  `pending_candidates` 对序列候选只按它判定已审核（legacy
+  候选行为不变，无 DB migration）。回归测试 A~F：
+  同导入稳定 / prepend 稳定 / append 稳定 / 反转 anchor 改变身份 /
+  反向因果不合并 / 确认后真改序列重新出现。
+- **boundary 连续性**：审计发现两个真实缺口：
+  (a) “表格你必须今天发给我”会被评为对“不想去看电影”
+  继续施压（无法绑定同一事项）——现改为只认
+  “回指式连续语”，新的命令式请求→ review_required（I26）；
+  (b) boundary 回应按 **turn** 取窗口，同 turn 内无关请求进入事件
+  窗口 → prefix invariance 破裂；现改为按**消息**取回应（I27）。
+- **opportunity 类型兼容**：reschedule 模式泛化到
+  “周X 不行 / 没空 / 不方便”（I28；用户自己给替代方时
+  TA 推进具体时间 = 协调）；浪漫边界后的友谊化邀约
+  一律 ambiguous / review_required（I30）；pause + “先听我说完”
+  → review_required 候选（I31）。
+- **新墝场景**：I25~I32（56/32 总计 32）。
