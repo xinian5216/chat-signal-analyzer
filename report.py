@@ -13,6 +13,7 @@ from datetime import datetime
 
 from analyzer import DEFAULT_MODEL, EMOTION_LABELS, INTENT_OPTIONS, SCHEMA_VERSION
 from relationship_profile import build_profile
+from salience import build_salience
 from scoring import (
     INTENT_PROFILE_LABELS,
     TREND_LABELS,
@@ -128,6 +129,7 @@ def build_json_report(
             "message_weight": m["weight"],
         })
 
+    salience_out = build_salience(results, stats=stats)
     return {
         "metadata": {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -142,7 +144,22 @@ def build_json_report(
         },
         "summary": {"text": build_summary_text(results, stats)},
         # Relationship Profile v2（Issue #18）：additive 新键，legacy 字段保持不变
-        "relationship_profile": build_profile(results, stats=stats),
+        "relationship_profile": build_profile(
+            results, stats=stats, salience=salience_out),
+        # Salience 通道（Issue #19）：additive 新键；事件明细保存在
+        # relationship_profile.dimensions[*].salient_events / counter_events，
+        # 此处只留版本 / 基线摘要 / diagnostics，避免重复保存
+        "salience": {
+            "version": salience_out["version"],
+            "baseline_summary": salience_out["baseline_summary"],
+            "salient_event_count": sum(
+                len(salience_out["dimensions"][k]["salient_events"])
+                for k in salience_out["dimensions"]),
+            "counter_event_count": sum(
+                len(salience_out["dimensions"][k]["counter_events"])
+                for k in salience_out["dimensions"]),
+            "diagnostics": salience_out["diagnostics"],
+        },
         "aggregate": {
             "overall": stats["overall"],
             "overall_sufficient": stats["overall_sufficient"],
@@ -210,6 +227,32 @@ def _profile_markdown_section(profile: dict) -> list[str]:
     ]
     for dim in profile["dimensions"].values():
         lines.append(f"### {dim['label']}：{dim['conclusion']}")
+        baseline = dim.get("baseline") or {}
+        if "ordinary_messages" in baseline:
+            lines.append(
+                f"- 基线互动（不含显著 / 相反事件消息）：{baseline.get('level', '—')}"
+                f"（普通消息 {baseline.get('ordinary_messages', 0)} 条）"
+            )
+        for title, events, phrase in (
+            ("显著证据", dim.get("salient_events") or [],
+             dim.get("salient_phrase")),
+            ("相反证据", dim.get("counter_events") or [],
+             dim.get("counter_phrase")),
+        ):
+            if not events:
+                continue
+            lines.append(f"- {title}：{phrase or '存在明确事件'}")
+            for e in events:
+                lines.append(
+                    f"    - 消息 #{e['message_index'] + 1} "
+                    f"{e['metric']}={e['value']}（{e['salience_level']}）"
+                    f"：{e['reason']}"
+                )
+                lines.append(f"      - 其他可能：{e['alternative_explanation']}")
+            if title == "显著证据":
+                lines.append("      - 显著事件单独保留，不并入基线、不外推为长期关系模式。")
+            else:
+                lines.append("      - 相反证据独立存在，不与显著证据抵消或平均。")
         coverage = dim["coverage"]
         lines.append(
             f"- 证据覆盖：{coverage['eligible_messages']} / "
@@ -296,7 +339,8 @@ def build_markdown_report(
     ]
 
     # ---- 关系画像（Issue #18：主要解释层，位于 legacy overall 之前）----
-    lines += _profile_markdown_section(build_profile(results, stats=stats))
+    lines += _profile_markdown_section(build_profile(
+        results, stats=stats, salience=build_salience(results, stats=stats)))
 
     # ---- 总体结果（辅助参考）----
     lines += ["## 总体结果（辅助参考）", ""]

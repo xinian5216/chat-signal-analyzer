@@ -73,6 +73,7 @@ from report import (
 
 # 关系画像（Issue #18：纯业务层多维画像，只读现有结果，0 API）
 from relationship_profile import build_profile
+from salience import build_salience
 
 # 展示层辅助（短标签 / 徽章 / 过滤 / 排版数据，不含业务逻辑）
 from ui_helpers import (
@@ -1556,7 +1557,7 @@ def _signal_row(stats: dict) -> None:
 
 
 def _show_profile_card(dim: dict) -> None:
-    """单个维度卡片：结论 + 覆盖 + 可靠性 + 可追溯证据（无任何合成分数）。"""
+    """单个维度卡片：结论 + 覆盖 + 可靠性 + 显著/相反事件 + 可追溯证据。"""
     with st.container(border=True):
         st.markdown(f"**{dim['label']}**　{dim['conclusion']}")
         coverage = dim["coverage"]
@@ -1568,12 +1569,39 @@ def _show_profile_card(dim: dict) -> None:
             f"（支持 {dim['supporting_count']} · 相反 {dim['counter_count']}）"
             f"　可靠性：{rel['level']}{proxy_note}"
         )
+        baseline = dim.get("baseline") or {}
+        if "ordinary_messages" in baseline:
+            st.caption(
+                f"基线互动（不含显著/相反事件消息）：{baseline.get('level', '—')}"
+                f"　普通消息 {baseline.get('ordinary_messages', 0)} 条"
+            )
         if dim["status"] == "unsupported":
             st.caption("当前 schema 没有直接指标，本维度不给等级。")
         elif dim["status"] == "insufficient":
             st.caption("有效证据不足，本维度不给中间等级。")
         elif dim["status"] == "evidence_limited":
             st.caption("明确证据存在，但覆盖有限；不外推为长期关系模式。")
+        # ---- 显著证据 / 相反证据（#19：分区并存，禁止抵消成“中等”）----
+        for title, events, phrase in (
+            ("显著证据", dim.get("salient_events") or [], dim.get("salient_phrase")),
+            ("相反证据", dim.get("counter_events") or [], dim.get("counter_phrase")),
+        ):
+            if not events:
+                continue
+            st.markdown(f"**{title}**")
+            st.markdown(f"- {phrase or '存在明确事件'}")
+            with st.expander(f"{title}明细（{len(events)} 条）"):
+                for e in events:
+                    st.markdown(
+                        f"- 消息 #{e['message_index'] + 1} "
+                        f"{e['metric']}={e['value']}（{e['salience_level']}）"
+                        f"：{e['reason']}"
+                    )
+                    st.caption(f"其他可能：{e['alternative_explanation']}")
+                if title == "显著证据":
+                    st.caption("显著事件单独保留，不并入基线、不外推为长期关系模式。")
+                else:
+                    st.caption("相反证据独立存在，不与显著证据抵消或平均。")
         if dim["evidence"] or dim["limitations"]:
             with st.expander("证据与依据"):
                 if dim["evidence"]:
@@ -1593,7 +1621,8 @@ def _show_profile_card(dim: dict) -> None:
 
 def show_profile_section(results: list[dict], stats: dict) -> None:
     """「关系画像」：六维 + 边界压力卡；overall 降级为辅助参考。"""
-    profile = build_profile(results, stats=stats)
+    profile = build_profile(results, stats=stats,
+                            salience=build_salience(results, stats=stats))
     st.markdown("### 关系画像")
     st.caption(
         "多维关系画像是主要解释层：每个维度分别给出证据强度、覆盖、方向与可靠性，"
