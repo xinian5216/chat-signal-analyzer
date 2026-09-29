@@ -105,7 +105,10 @@ def test_json_schema_and_validity():
     data = build_json_report(results, stats, include_text=False)
     text = json.dumps(data, ensure_ascii=False)  # 必须可序列化
     assert json.loads(text) == data
-    assert set(data) == {"metadata", "summary", "aggregate", "behavior_stats", "messages"}
+    # Issue #18：新增 additive 顶层键 relationship_profile（legacy 键不变）；
+    # 此处是 schema 形状守卫，随有意的 additive 扩展同步，不是 benchmark expectation。
+    assert set(data) == {"metadata", "summary", "aggregate", "behavior_stats",
+                         "messages", "relationship_profile"}
     m = data["messages"][0]
     for field in ("time", "speaker", "text", "emotion", "intent", "warmth",
                   "engagement", "special_attention", "relationship_evidence_strength",

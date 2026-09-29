@@ -499,6 +499,30 @@ relational_ease_avg = Σ(relational_ease × message_weight) / Σ(message_weight)
 - **不进入** base_score / message_weight / overall / recent / trend /
   romantic / distancing 任何总分公式，仅用于单条解释、顶部汇总、报告与未来校准观察。
 
+### 关系画像（Relationship Profile v2，v0.4 起）
+
+结果页的**主要解释层**是「关系画像」：把可观察信号拆成 6 个维度
+（主动性与投入 / 关心与回应性 / 互动熟悉度 / 特殊关注 / 浪漫·暧昧信号 /
+关系疏离·后撤）+ 边界压力卡片，每个维度分别给出：
+
+- **strength**（证据强度，原生刻度 + 文字等级）、**coverage**（有效证据覆盖）、
+  **direction**（支持 / 相反 / 混合 / 无）、**reliability**（可靠性：置信度 + 覆盖封顶）；
+- **supporting / counter evidence** 逐条可追溯（消息编号 → 指标 → 数值 → 理由）；
+- **insufficient（数据不足）**与 **unsupported（当前 schema 不支持）**是一等状态，
+  数据不足绝不给中间等级。
+
+关键语义：熟悉 ≠ 喜欢；普通关心 ≠ 特殊关注；特殊关注 ≠ 浪漫；主动 ≠ 浪漫；
+自然结束话题 ≠ 疏离；**低分 / 未发现证据 ≠ 反面证据**；
+`relationship_evidence_strength` 只衡量关系信息量，不代表方向或好坏。
+**边界压力**当前没有直接指标（九问未覆盖），明确显示“不支持可靠判断”，
+不会用 engagement / evidence 间接拼一个假分数（见 #17 D5 directionality 发现）。
+
+**画像不产生任何新的综合分数**（禁止六个换皮 overall）；浪漫维度同时保留
+raw Noul 概率与 transformed evidence（弱信号痕迹保留但不升格为结论）。
+「互动亲近信号指数」降级为**辅助参考**（Legacy overall）：仍保留、可导出，
+但视觉优先级低于画像，冲突时以维度与证据为准。设计与阈值依据见
+`docs/issue18-relationship-profile-v2.md`。
+
 ### 低信息量展示模式（LOW_EVIDENCE_DISPLAY_MODE）
 
 当满足任一条件时（阈值集中在 `scoring.py`）：
@@ -672,6 +696,7 @@ Python 3.11 上运行同一套测试，**不需要任何 API Key**。
 ├─ vision.py         # 视觉识别接口预留（默认禁用，尚未实现）
 ├─ report.py         # 报告导出（Markdown / JSON / 摘要，纯本地无 API）
 ├─ scoring.py        # 指数公式、聚合统计、置信度标签（阈值集中配置）
+├─ relationship_profile.py  # 关系画像 v2（多维 Profile，纯函数，0 API；Issue #18）
 ├─ privacy.py        # 本地脱敏
 ├─ storage.py        # SQLite 缓存（SHA256 key，短连接线程安全）
 ├─ ui_helpers.py     # 纯展示层辅助（短标签 / 徽章 / 过滤）

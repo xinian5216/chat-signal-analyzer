@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from analyzer import DEFAULT_MODEL, EMOTION_LABELS, INTENT_OPTIONS, SCHEMA_VERSION
+from relationship_profile import build_profile
 from scoring import (
     INTENT_PROFILE_LABELS,
     TREND_LABELS,
@@ -140,6 +141,8 @@ def build_json_report(
             "include_text": include_text,
         },
         "summary": {"text": build_summary_text(results, stats)},
+        # Relationship Profile v2（Issue #18）：additive 新键，legacy 字段保持不变
+        "relationship_profile": build_profile(results, stats=stats),
         "aggregate": {
             "overall": stats["overall"],
             "overall_sufficient": stats["overall_sufficient"],
@@ -192,6 +195,56 @@ def _message_label(e: dict, include_text: bool) -> str:
     return f"TA 消息 #{e['index'] + 1}"
 
 
+# ---------------------------------------------------------------------------
+# Relationship Profile v2 章节（Issue #18；确定性模板，additive）
+# ---------------------------------------------------------------------------
+
+
+def _profile_markdown_section(profile: dict) -> list[str]:
+    lines = ["## 关系画像（Relationship Profile v2）", ""]
+    lines += [
+        "> 多维关系画像是主要解释层：它区分每个维度的证据强度、覆盖、方向与",
+        "> 可靠性，并明确“数据不足”与“当前 schema 不支持”的状态。",
+        "> 下方“互动亲近信号指数”为辅助参考；两者表面冲突时以维度与证据为准。",
+        "",
+    ]
+    for dim in profile["dimensions"].values():
+        lines.append(f"### {dim['label']}：{dim['conclusion']}")
+        coverage = dim["coverage"]
+        lines.append(
+            f"- 证据覆盖：{coverage['eligible_messages']} / "
+            f"{coverage['analyzed_messages']} 条有效证据"
+            f"（支持 {dim['supporting_count']} · 相反 {dim['counter_count']}）"
+        )
+        reliability = dim["reliability"]
+        proxy_note = "（覆盖代理）" if reliability.get("proxy") else ""
+        lines.append(f"- 可靠性：{reliability['level']}{proxy_note}"
+                     f"（依据：{'；'.join(reliability['basis'])}）")
+        lines.append(f"- 方向：{dim['direction']}"
+                     f"（反证通道：{'有' if dim['counter_evidence_available'] else '无——absence ≠ counter'}）")
+        if dim["evidence"]:
+            lines.append("- 证据：")
+            for item in dim["evidence"]:
+                conf = f"，置信 {item['confidence']}" if item["confidence"] is not None else ""
+                lines.append(
+                    f"  - 消息 #{item['message_index'] + 1} "
+                    f"{item['metric']}={item['value']}{conf}"
+                    f"（{item['role']}）：{item['reason']}"
+                )
+        for note in dim["limitations"]:
+            lines.append(f"- 限制：{note}")
+        lines.append("")
+    lines.append("**画像摘要**")
+    lines.append("")
+    for line in profile["summary"]["lines"]:
+        lines.append(f"- {line}")
+    lines.append("")
+    for note in profile["limitations"]:
+        lines.append(f"- {note}")
+    lines.append("")
+    return lines
+
+
 def _trend_section(stats: dict) -> str:
     lines = []
     if stats["trend"] == "insufficient_samples":
@@ -242,8 +295,16 @@ def build_markdown_report(
         "",
     ]
 
-    # ---- 总体结果 ----
-    lines += ["## 总体结果", ""]
+    # ---- 关系画像（Issue #18：主要解释层，位于 legacy overall 之前）----
+    lines += _profile_markdown_section(build_profile(results, stats=stats))
+
+    # ---- 总体结果（辅助参考）----
+    lines += ["## 总体结果（辅助参考）", ""]
+    lines += [
+        "维度画像（上方「关系画像」）优先于单一指数；本节为 Legacy 辅助指标，",
+        "不应单独作为关系判断依据。",
+        "",
+    ]
     low_evidence = is_low_evidence_display(stats)
     if stats["overall"] is not None:
         suffix = "（参考）" if low_evidence else ""
