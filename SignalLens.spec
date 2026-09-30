@@ -64,21 +64,35 @@ PROJECT_ROOT = os.path.abspath(SPECPATH)  # noqa: F821
 # ---- 本项目模块 ------------------------------------------------------------
 # 既作为隐藏模块冻结进 PYZ（保证 import 可用），也作为数据文件放进 bundle
 # （保证 streamlit run <bundle>/app.py 找得到入口脚本）。
+# release hardening (#26)：这里必须列全**运行时**模块——app.py 的整条本地
+# 依赖链（含 v0.4 的 relationship_profile / salience / interaction_dynamics）。
+# 研究工具（score_diagnostics / salience_diagnostics / interaction_diagnostics /
+# evaluation.py / field_study）**故意不进** Portable：它们不是运行时依赖，
+# 打进去只会把 benchmark 数据和诊断代码带进发布包。
 PROJECT_MODULES = [
     "app.py",
     "paths.py",
     "parser.py",
-    "analyzer.py",
     "merge.py",
     "privacy.py",
-    "report.py",
+    "timeline.py",
+    "scroll_anchor.py",
+    "context_builder.py",
+    "analyzer.py",
     "scoring.py",
-    "settings_store.py",
     "storage.py",
+    "settings_store.py",
+    "report.py",
     "ui_helpers.py",
     "media.py",
     "rich_paste.py",
     "vision.py",
+    "friend_history.py",
+    "behavior.py",
+    "longitudinal.py",
+    "relationship_profile.py",
+    "salience.py",
+    "interaction_dynamics.py",
     "portable_launcher.py",
     "tools/clipboard_probe/probe.py",
 ]

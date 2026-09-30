@@ -89,3 +89,5 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+*.sha256
+.release-test/

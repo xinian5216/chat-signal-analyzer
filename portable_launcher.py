@@ -447,7 +447,66 @@ def launcher_main() -> int:
         _remove_runtime(process.pid)
 
 
+MODULE_SMOKE_FLAG = "--module-smoke"
+
+# frozen 运行时必需的本地模块（v0.4 全链路）。
+# 研究工具（diagnostics / evaluation）故意不在其中：
+# 它们不进 Portable 包，这里也不能因为“保险”而引入。
+RUNTIME_MODULES = (
+    "paths",
+    "parser",
+    "merge",
+    "privacy",
+    "timeline",
+    "scroll_anchor",
+    "context_builder",
+    "analyzer",
+    "scoring",
+    "storage",
+    "settings_store",
+    "report",
+    "ui_helpers",
+    "media",
+    "rich_paste",
+    "vision",
+    "friend_history",
+    "behavior",
+    "longitudinal",
+    "relationship_profile",
+    "salience",
+    "interaction_dynamics",
+    "app",
+)
+
+
+def _module_smoke() -> int:
+    """在 frozen 环境里导入全部运行时模块（0 网络 / 0 Jev）。"""
+    import importlib
+    import traceback
+
+    failed = []
+    for name in RUNTIME_MODULES:
+        try:
+            importlib.import_module(name)
+        except Exception:
+            failed.append((name, traceback.format_exc(limit=3)))
+    if failed:
+        for name, tb in failed:
+            print(f"[module-smoke] FAIL {name}: {tb}", file=sys.stderr)
+        return 6
+    import relationship_profile as rp
+    import salience as sal
+    import interaction_dynamics as idyn
+    print("[module-smoke] OK imports=" + ",".join(RUNTIME_MODULES))
+    print("[module-smoke] versions="
+          f"profile={rp.PROFILE_VERSION},salience={sal.SALIENCE_VERSION},"
+          f"interaction={idyn.INTERACTION_VERSION}")
+    return 0
+
+
 def main() -> int:
+    if MODULE_SMOKE_FLAG in sys.argv[1:]:
+        return _module_smoke()
     if os.environ.get(CHILD_ENV_FLAG) == "1":
         return _run_streamlit_in_process()
     return launcher_main()

@@ -193,9 +193,34 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _module_smoke(exe: Path) -> None:
+    """用真正的 SignalLens.exe --module-smoke 验证 frozen 运行时模块。
+
+    覆目标（release hardening #26：§23）：app / Profile v2 / Salience /
+    Interaction Dynamics / Behavior / Report 在冻结环境里均可导入。
+    不启动 Streamlit、不触网、不需 API Key。
+    """
+    result = subprocess.run(
+        [str(exe), "--module-smoke"],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=180,
+    )
+    assert result.returncode == 0, (
+        f"module-smoke 失败（returncode={result.returncode}）："
+        f"{result.stdout[-2000:]}{result.stderr[-2000:]}")
+    for marker in ("[module-smoke] OK",
+                   "profile=relationship-profile-v2",
+                   "salience=salience-v1",
+                   "interaction=interaction-dynamics-v1"):
+        assert marker in result.stdout, f"缺少标记：{marker}"
+    print("[frozen-smoke] OK module-smoke "
+          f"({exe.stat().st_size / 1024 / 1024:.0f} MB exe)")
+
 def main() -> int:
-    _find_exe()
-    print("[frozen-smoke] exe:", _find_exe())
+    exe = _find_exe()
+    print("[frozen-smoke] exe:", exe)
+    # C. frozen 运行时模块可导入性（与进程用例无关，不需 data）
+    _module_smoke(exe)
     with tempfile.TemporaryDirectory(prefix="SignalLens-frozen-") as tmp:
         base = Path(tmp)
         # A. 普通路径：data 在 exe 同级
