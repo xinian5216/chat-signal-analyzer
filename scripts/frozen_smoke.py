@@ -211,7 +211,8 @@ def _module_smoke(exe: Path) -> None:
     for marker in ("[module-smoke] OK",
                    "profile=relationship-profile-v2",
                    "salience=salience-v1",
-                   "interaction=interaction-dynamics-v1"):
+                   "interaction=interaction-dynamics-v1",
+                   "observer=observer-advice-v1"):
         assert marker in result.stdout, f"缺少标记：{marker}"
     print("[frozen-smoke] OK module-smoke "
           f"({exe.stat().st_size / 1024 / 1024:.0f} MB exe)")

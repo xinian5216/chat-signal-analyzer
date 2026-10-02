@@ -643,7 +643,7 @@ class TestReleaseGates:
         """release blocker\uff1aSignalLens.spec \u5fc5\u987b\u5217\u5168\u8fd0\u884c\u65f6\u6a21\u5757\u3002"""
         spec = (REPO_ROOT / "SignalLens.spec").read_text(encoding="utf-8")
         for module in ("relationship_profile.py", "salience.py",
-                       "interaction_dynamics.py", "timeline.py",
+                       "interaction_dynamics.py", "observer_advice.py", "timeline.py",
                        "scroll_anchor.py", "context_builder.py",
                        "friend_history.py", "behavior.py",
                        "longitudinal.py", "app.py"):

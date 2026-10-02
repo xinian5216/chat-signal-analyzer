@@ -28,7 +28,7 @@ SignalLens 是一个**本地优先**的 Streamlit 工具：聊天解析、隐私
 **下载 → 解压 → 双击 SignalLens.exe → 使用**。不需要 Python、pip、venv、
 PowerShell、CMD，也不用手工创建 `.env` 或执行 `streamlit run`。
 
-1. 到 GitHub Releases 下载 `SignalLens-v0.4.0-Windows-x64-portable.zip`
+1. 到 GitHub Releases 下载 `SignalLens-v0.5.0-Windows-x64-portable.zip`
    （用页面给出的 SHA256 校验完整性）；
 2. 解压整个 ZIP 到**可写**目录（桌面、文档等；不要放进 Program Files，
    也不要直接在压缩包里运行）；

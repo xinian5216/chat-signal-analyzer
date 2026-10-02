@@ -475,6 +475,7 @@ RUNTIME_MODULES = (
     "relationship_profile",
     "salience",
     "interaction_dynamics",
+    "observer_advice",
     "app",
 )
 
@@ -497,10 +498,11 @@ def _module_smoke() -> int:
     import relationship_profile as rp
     import salience as sal
     import interaction_dynamics as idyn
+    import observer_advice as advice
     print("[module-smoke] OK imports=" + ",".join(RUNTIME_MODULES))
     print("[module-smoke] versions="
           f"profile={rp.PROFILE_VERSION},salience={sal.SALIENCE_VERSION},"
-          f"interaction={idyn.INTERACTION_VERSION}")
+          f"interaction={idyn.INTERACTION_VERSION},observer={advice.ADVICE_VERSION}")
     return 0
 
 
