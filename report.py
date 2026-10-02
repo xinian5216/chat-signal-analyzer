@@ -15,6 +15,7 @@ from analyzer import DEFAULT_MODEL, EMOTION_LABELS, INTENT_OPTIONS, SCHEMA_VERSI
 from relationship_profile import build_profile
 from salience import build_salience
 import interaction_dynamics as idyn
+from observer_advice import build_observer_advice, advice_markdown
 from scoring import (
     INTENT_PROFILE_LABELS,
     TREND_LABELS,
@@ -31,6 +32,26 @@ from scoring import (
 
 TOP_SIGNALS_MAX = 5          # “主要关系信号”最多列几条
 TOP_BEHAVIORS_IN_SUMMARY = 3
+
+
+def _report_profile(results: list[dict], stats: dict,
+                    interaction: dict | None = None,
+                    salience: dict | None = None) -> dict:
+    """Keep UI evidence text out of every nested report event channel."""
+    profile = build_profile(results, stats=stats,
+                            salience=salience or build_salience(
+                                results, stats=stats, interaction=interaction),
+                            interaction=interaction)
+    def sanitize(value):
+        if isinstance(value, dict):
+            if value.get('source') == idyn.SOURCE:
+                value = idyn.report_view({'events': [value]})['events'][0]
+            return {k: sanitize(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [sanitize(v) for v in value]
+        return value
+
+    return sanitize(profile)
 
 
 def report_filename(ext: str) -> str:
@@ -131,7 +152,7 @@ def build_json_report(
             "message_weight": m["weight"],
         })
 
-    salience_out = build_salience(results, stats=stats)
+    salience_out = build_salience(results, stats=stats, interaction=interaction)
     return {
         "metadata": {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -146,8 +167,9 @@ def build_json_report(
         },
         "summary": {"text": build_summary_text(results, stats)},
         # Relationship Profile v2（Issue #18）：additive 新键，legacy 字段保持不变
-        "relationship_profile": build_profile(
-            results, stats=stats, salience=salience_out),
+        "relationship_profile": _report_profile(
+            results, stats, interaction=interaction, salience=salience_out),
+        "observer_advice": build_observer_advice(results, stats, interaction),
         # Salience 通道（Issue #19）：additive 新键；事件明细保存在
         # relationship_profile.dimensions[*].salient_events / counter_events，
         # 此处只留版本 / 基线摘要 / diagnostics，避免重复保存
@@ -415,14 +437,13 @@ def build_markdown_report(
     ]
 
     # ---- 关系画像（Issue #18：主要解释层，位于 legacy overall 之前）----
-    lines += _profile_markdown_section(build_profile(
-        results, stats=stats, salience=build_salience(results, stats=stats,
-                                                      interaction=interaction),
-        interaction=interaction))
+    lines += _profile_markdown_section(_report_profile(results, stats, interaction))
 
     # ---- 互动结构证据（Issue #20；additive、0 API）----
     if interaction:
         lines += _interaction_markdown_section(interaction)
+
+    lines += [advice_markdown(build_observer_advice(results, stats, interaction)), ""]
 
     # ---- 总体结果（辅助参考）----
     lines += ["## 总体结果（辅助参考）", ""]

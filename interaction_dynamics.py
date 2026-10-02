@@ -133,6 +133,9 @@ GENERIC_ANCHORS = frozenset({
     "项目", "报告", "文件", "考试", "学习", "地铁", "公交", "打车", "机票",
     "高铁", "快递", "电影", "音乐", "游戏", "朋友", "家人", "妈妈", "爸爸",
     "对象", "结婚", "生日", "假期", "春节", "国庆", "早上", "凌晨",
+    "最近", "现在", "之前", "以后", "时候", "感觉", "事情", "怎么",
+    "什么", "那个", "这个", "可以", "知道", "还是", "就是", "然后",
+    "有点", "一下", "一般", "一点", "其实", "可能", "不过", "但是",
 })
 
 # interaction dimension → relationship_profile dimension key 映射
@@ -626,6 +629,7 @@ def _detect_personal_recall(messages: list[dict],
                 "explicit" if len(anchors[0]) >= 3 else "observable",
                 REVIEW_CANDIDATE,
                 "TA 后续消息可能明确关联到此前用户提到的具体事项（待人工核对）",
+                anchors=[i, j],
             ))
             break     # 同一 user 消息只取第一条严格候选
     return events
@@ -872,7 +876,8 @@ def build_interaction_events(messages: list[dict],
     messages = list(messages or [])
     results_by_index = _results_by_index(results)
     events: list[dict] = []
-    events += _detect_reengagement(messages)
+    reengagement_events = _detect_reengagement(messages)
+    events += reengagement_events
     events += _detect_followups(messages, results_by_index)
     invitation_events = _detect_invitation_progression(messages,
                                                        results_by_index)
@@ -884,7 +889,7 @@ def build_interaction_events(messages: list[dict],
     events.sort(key=lambda e: (e["window"]["start_index"],
                                e["window"]["end_index"], e["event_type"]))
 
-    reciprocity = _reciprocity(messages, results_by_index, events,
+    reciprocity = _reciprocity(messages, results_by_index, reengagement_events,
                                invitation_events)
 
     media_turns = sum(1 for t in _turns(messages) if t["media_only"])
@@ -1014,7 +1019,7 @@ def _strip_chat_excerpt(event: dict) -> dict:
     trigger = dict(event.get("trigger") or {})
     if trigger.get("observations"):
         kept = [o for o in trigger["observations"]
-                if not str(o).startswith("TA 后续回应")]
+                if not str(o).startswith(("TA 后续回应", "共同 distinctive anchor"))]
         trigger["observations"] = kept or [
             f"规则分类见事件类型 {event.get('event_type')}"]
     event["trigger"] = trigger
