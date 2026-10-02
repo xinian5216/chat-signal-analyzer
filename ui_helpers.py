@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import re
+
 from parser import MEDIA_KIND_LABELS, MEDIA_MARKERS
 from scoring import (
     EFFECTIVE_MESSAGE_MIN_EVIDENCE,
@@ -17,6 +19,71 @@ from scoring import (
     message_metrics,
     rank_relationship_signals,
 )
+
+
+def evidence_message_rows(messages: list[dict], results: list[dict],
+                          indices: list[int], radius: int = 1) -> list[dict]:
+    """Resolve local evidence by analysis index; never substitute a different chat.
+
+    Exact anchors survive large cross-day windows. Neighbours are bounded so an
+    event spanning hundreds of messages does not render the entire transcript.
+    When the analysis transcript is missing, only exact result entries are used.
+    """
+    anchors = {i for i in indices if isinstance(i, int) and not isinstance(i, bool)
+               and i >= 0}
+    by_index = {e['index']: e for e in results}
+    selected = set(anchors)
+    if messages:
+        for i in anchors:
+            if i < len(messages):
+                selected.update(range(max(0, i - radius),
+                                      min(len(messages), i + radius + 1)))
+    rows = []
+    for i in sorted(selected):
+        message = (messages[i] if 0 <= i < len(messages) else by_index.get(i))
+        if message is None:
+            if i in anchors:
+                rows.append({'index': i, 'anchor': True, 'speaker': 'unknown',
+                             'time': None, 'text': '原文不可用，请重新导入对应聊天。'})
+            continue
+        text = (media_placeholder_label(message.get('media_kinds') or [],
+                                       message.get('duration_seconds'))
+                if message.get('content_type') == 'media'
+                else str(message.get('text') or '（空消息）'))
+        rows.append({'index': i, 'anchor': i in anchors,
+                     'speaker': message.get('speaker', 'unknown'),
+                     'time': message.get('time'), 'text': text})
+    return rows
+
+
+def literal_markdown(text: str) -> str:
+    """Display pasted chat as text rather than executable links/formatting."""
+    return re.sub(r'([\\`*_{}\[\]()<>#+.!|~-])', r'\\\1', str(text))
+
+
+def key_evidence_items(profile: dict) -> list[dict]:
+    """Flatten existing evidence for display; preserve both sides and candidates."""
+    items = {}
+    for dim in profile['dimensions'].values():
+        for field, label in (('salient_events', '显著证据'),
+                             ('counter_events', '相反证据'),
+                             ('interaction_events', '互动结构')):
+            for event in dim.get(field) or []:
+                event_type = (event.get('event_type') or event.get('event_class') or '')
+                identity = (('interaction', event_type.removesuffix('_with_care_signal'),
+                             (event.get('window') or {}).get('start_index'),
+                             (event.get('window') or {}).get('end_index'))
+                            if event.get('source') == 'interaction_event'
+                            else ('message', event.get('message_index'),
+                                  event.get('metric'), label))
+                if identity not in items:
+                    items[identity] = {'event': event, 'labels': []}
+                elif event.get('trigger'):
+                    items[identity]['event'] = event
+                tag = f"{dim['label']} · {label}"
+                if tag not in items[identity]['labels']:
+                    items[identity]['labels'].append(tag)
+    return list(items.values())
 
 # ---------------------------------------------------------------------------
 # 短标签（避免窄列截断；完整说明由调用方放在 caption）

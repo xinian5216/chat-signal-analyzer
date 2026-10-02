@@ -76,9 +76,14 @@ from relationship_profile import build_profile
 from salience import build_salience
 from interaction_dynamics import (build_interaction_events,
                                 interaction_behavior_candidates)
+from observer_advice import (build_observer_advice, advice_markdown,
+                             GOALS, FEELINGS)
 
 # 展示层辅助（短标签 / 徽章 / 过滤 / 排版数据，不含业务逻辑）
 from ui_helpers import (
+    evidence_message_rows,
+    literal_markdown,
+    key_evidence_items,
     BEHAVIOR_MIN_DISPLAY,
     filter_entries,
     hidden_behavior_count,
@@ -1558,22 +1563,39 @@ def _signal_row(stats: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _show_interaction_window(event: dict) -> None:
-    """互动事件窗口：只显示 index 范围 / 观察 / 其他可能 / 限制。
+def _show_evidence_messages(indices: list[int], results: list[dict]) -> None:
+    """Read the analysis snapshot only, never a subsequently imported chat."""
+    indices = sorted({i for i in indices if isinstance(i, int)})
+    if len(indices) > 8:
+        indices = indices[:4] + indices[-4:]
+        st.caption("窗口较长，先展示两端关键消息及附近对话；完整聊天可在「全部消息」回看。")
+    rows = evidence_message_rows(
+        st.session_state.get("analysis_messages") or [], results, indices)
+    previous = None
+    for row in rows:
+        if previous is not None and row['index'] > previous + 1:
+            st.caption("⋯ 中间消息省略 ⋯")
+        role = {"me": "我", "them": "TA"}.get(row['speaker'], "未知角色")
+        marker = " · 关键依据" if row['anchor'] else " · 上下文"
+        st.caption(f"消息 #{row['index'] + 1} · {role} · {row['time'] or '时间未提供'}{marker}")
+        st.markdown(literal_markdown(row['text']))
+        previous = row['index']
 
-    默认**不**展示聊天正文（隐私默认）；需要看上下文时用
-    房间内的「查看对话窗口」（行为审核面板）。
-    """
+
+def _show_interaction_window(event: dict) -> None:
+    """Show local text alongside structural evidence; exports remain opt-in."""
     window = event.get("window") or {}
     start, end = window.get("start_index"), window.get("end_index")
-    if start is None:
+    if start is None or end is None:
         return
     with st.expander(f"查看互动窗口（消息 #{start + 1}"
                      f" ~ #{end + 1}）"):
         st.markdown(f"- 窗口：消息 #{start + 1} ~ #{end + 1}"
                     f"（时间可信度：{event.get('time_basis', '-')}）")
+        _show_evidence_messages(window.get("anchor_indices") or [start, end],
+                                st.session_state.get("results") or [])
         for note in (event.get("trigger") or {}).get("observations") or []:
-            st.markdown(f"- {note}")
+            st.markdown(f"- {literal_markdown(note)}")
         st.caption(f"其他可能：{event.get('alternative_explanation', '')}")
         for note in event.get("limitations") or []:
             st.caption(f"限制：{note}")
@@ -1627,6 +1649,8 @@ def _show_profile_card(dim: dict) -> None:
                             f"{e['metric']}={e['value']}（{e['salience_level']}）"
                             f"：{e['reason']}"
                         )
+                        _show_evidence_messages([e['message_index']],
+                                                st.session_state.get("results") or [])
                     st.caption(f"其他可能：{e['alternative_explanation']}")
                     if (e.get("evidence_consistency") or {}).get("level") == "conflicted":
                         st.caption(f"注意：{e['evidence_consistency']['reason']}可靠性需谨慎解释。")
@@ -1657,6 +1681,8 @@ def _show_profile_card(dim: dict) -> None:
                             f"{item['metric']}={item['value']}{conf}"
                             f"（{item['role']}）：{item['reason']}"
                         )
+                        _show_evidence_messages([item['message_index']],
+                                                st.session_state.get("results") or [])
                 else:
                     st.markdown("- 没有可追溯的单条证据（数据不足或无直接指标）")
                 for note in dim["limitations"]:
@@ -1694,6 +1720,12 @@ def show_profile_section(results: list[dict], stats: dict) -> None:
 def show_overview_tab(results: list[dict], stats: dict) -> None:
     # ---- 关系画像（主要解释层，置顶）----
     show_profile_section(results, stats)
+    preview = build_observer_advice(results, stats,
+                                    build_interaction_events(_behavior_messages(), results))
+    st.markdown("**旁观者建议 · 优先行动**")
+    for card in preview['cards'][:3]:
+        st.markdown(f"- **{card['title']}**：{card['action']}")
+    st.caption("在「旁观建议」查看完整依据、相反线索、沟通措辞与调整投入的条件。")
 
     # ---- Legacy 互动亲近信号指数（降级为辅助参考）----
     if overview_mode(stats) == "reference":
@@ -1769,6 +1801,39 @@ def show_overview_tab(results: list[dict], stats: dict) -> None:
 
 
 def show_key_messages_tab(results: list[dict]) -> None:
+    messages = _behavior_messages()
+    interaction = build_interaction_events(messages, results)
+    profile = build_profile(results, interaction=interaction,
+                            salience=build_salience(results, interaction=interaction))
+    items = key_evidence_items(profile)
+    st.markdown("#### 关键证据与对话原文")
+    st.caption("显著证据、相反证据和待核对互动线索分别保留；正文只在本机回看，导出由报告选项决定。")
+    categories = ["全部"] + [d['label'] for d in profile['dimensions'].values()]
+    category = st.radio("关注方向", categories, horizontal=True, key="key_evidence_category")
+    if category != "全部":
+        items = [i for i in items if any(label.startswith(category + " ·")
+                                       for label in i['labels'])]
+    if items:
+        pages = (len(items) + 9) // 10
+        page = st.selectbox("证据页", range(pages),
+                            format_func=lambda p: f"第 {p + 1} / {pages} 页",
+                            key=f"key_evidence_page_{category}_{pages}")
+        st.caption(f"共 {len(items)} 条，每页最多 10 条。")
+        for item in items[page * 10:(page + 1) * 10]:
+            event = item['event']
+            with st.container(border=True):
+                st.markdown("**" + " / ".join(item['labels']) + "**")
+                st.markdown(literal_markdown(event['reason']))
+                if event.get('review_status') == 'review_required':
+                    st.caption("待人工核对，尚未作为确定结论。")
+                if event.get('source') == 'interaction_event':
+                    _show_interaction_window(event)
+                else:
+                    _show_evidence_messages([event['message_index']], results)
+                    st.caption("其他可能：" + event['alternative_explanation'])
+    else:
+        st.caption("该方向尚无显著或相反证据；不代表相应行为不存在。")
+    st.divider()
     st.markdown("#### 关键互动消息")
     st.caption("按关系信息量与判断置信度排序，仅用于解释整体结果。")
     ranked = rank_relationship_signals(results, max_n=5)
@@ -1781,7 +1846,7 @@ def show_key_messages_tab(results: list[dict]) -> None:
         with st.container(border=True):
             time_part = f" · {e['time']}" if e.get("time") else ""
             st.markdown(f"**TA{time_part}**")
-            st.markdown(f"“{e['text']}”")
+            _show_evidence_messages([e['index']], results)
             top_emotion = max(r["emotion"]["probabilities"].items(), key=lambda kv: kv[1])
             top_intent = max(r["intent"]["probabilities"].items(), key=lambda kv: kv[1])
             show_badges([
@@ -1793,6 +1858,47 @@ def show_key_messages_tab(results: list[dict]) -> None:
                 f"关系信息量 {m['evidence']:.1f}/4",
             ])
             st.markdown(f"关系信号 **{m['base_score'] * 100:.0f} / 100**")
+
+
+def show_observer_tab(results: list[dict], stats: dict) -> None:
+    st.markdown("### 旁观者建议")
+    st.caption("把已发生的行为、可能的解释和你能采取的行动分开；建议依据当前样本，可以按自己的需要选择。")
+    goal = st.radio("你想重点看什么", list(GOALS), format_func=GOALS.get,
+                    horizontal=True, key="observer_goal")
+    feeling = st.radio("这段相处目前给你的感受（可选）", list(FEELINGS),
+                       format_func=FEELINGS.get, horizontal=True,
+                       key="observer_feeling")
+    advice = build_observer_advice(results, stats,
+                                   build_interaction_events(_behavior_messages(), results),
+                                   goal=goal, feeling=feeling)
+    for card in advice['cards']:
+        with st.container(border=True):
+            st.markdown(f"**{card['title']}**")
+            st.markdown(f"**观察**：{card['observation']}")
+            st.markdown(f"**容易忽略**：{card['blind_spot']}")
+            st.markdown(f"**下一步**：{card['action']}")
+            st.markdown(f"**可以这样说**：{card['suggested_words']}")
+            st.markdown(f"**观察什么**：{card['watch_for']}")
+            st.markdown(f"**调整投入的条件**：{card['stop_condition']}")
+            for field, title in (("supporting", "支持 / 待核对依据"),
+                                 ("counter", "相反 / 需留意依据")):
+                refs = card[field]
+                with st.expander(f"{title}（{len(refs)} 条）"):
+                    if not refs:
+                        st.caption("无可追溯消息；属于一般行动建议或缺证据提醒。")
+                    for ref in refs[:10]:
+                        st.markdown(literal_markdown(ref['reason']))
+                        if ref['review_required']:
+                            st.caption("待人工核对，尚未作为确定结论。")
+                        _show_evidence_messages(ref['anchor_indices'], results)
+                    if len(refs) > 10:
+                        st.caption("其余依据可在「关键消息」分页回看。")
+            for note in card['caveats']:
+                st.caption(note)
+    for note in advice['limitations']:
+        st.caption(note)
+    st.download_button("下载本次旁观建议", advice_markdown(advice),
+                       file_name="observer-advice.md", mime="text/markdown")
 
 
 # 全部消息视图每页条数：分页渲染，避免一次创建上百个 expander / progress。
@@ -2003,7 +2109,7 @@ def show_report_tab(results: list[dict], stats: dict) -> None:
     st.caption("需要 PDF？使用浏览器 Ctrl+P → 另存为 PDF。")
 
 
-RESULT_VIEWS = ["概览", "关键消息", "全部消息", "报告", "长期观察"]
+RESULT_VIEWS = ["概览", "关键消息", "旁观建议", "全部消息", "报告", "长期观察"]
 
 FRIEND_PRIVACY_NOTE = (
     "好友档案**只保存在本机**（`friend_history.db`，与 Jev 分析缓存是两个独立文件）。"
@@ -3794,6 +3900,9 @@ def show_results(results: list[dict], stats: dict) -> None:
     if view == "关键消息":
         with _Stage("results:key_messages"):
             show_key_messages_tab(results)
+    elif view == "旁观建议":
+        with _Stage("results:observer"):
+            show_observer_tab(results, stats)
     elif view == "全部消息":
         with _Stage("results:all_messages"):
             show_all_messages_tab(results, stats)

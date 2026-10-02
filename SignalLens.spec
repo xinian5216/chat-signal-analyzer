@@ -93,6 +93,7 @@ PROJECT_MODULES = [
     "relationship_profile.py",
     "salience.py",
     "interaction_dynamics.py",
+    "observer_advice.py",
     "portable_launcher.py",
     "tools/clipboard_probe/probe.py",
 ]
