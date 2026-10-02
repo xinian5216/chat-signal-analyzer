@@ -78,9 +78,10 @@ jobs:
 
       - name: Verify packaged artifact
         run: |
-          $env:SIGNALLENS_FROZEN_EXE = "${{ github.workspace }}\SignalLens-v$((Get-Content VERSION).Trim())-Windows-x64-portable.zip"
-          if (-not (Test-Path $env:SIGNALLENS_FROZEN_EXE)) { throw "ZIP 不存在" }
-          python scripts/package_portable.py --build-dir dist/SignalLens --out-dir "${{ runner.temp }}"
+          $releaseVersion = (Get-Content VERSION).Trim()
+          $releaseZip = "${{ github.workspace }}\SignalLens-v$releaseVersion-Windows-x64-portable.zip"
+          if (-not (Test-Path -LiteralPath $releaseZip)) { throw "ZIP 不存在" }
+          python scripts/validate_release.py --zip "$releaseZip" --expect-version "$releaseVersion"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
