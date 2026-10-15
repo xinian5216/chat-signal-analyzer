@@ -131,4 +131,3 @@ def test_metadata_is_not_copied_into_processed_pixels():
     assert b"private-person-name" not in image.data
     with Image.open(BytesIO(image.data)) as clean:
         assert not clean.getexif() and not clean.info
-
