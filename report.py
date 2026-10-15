@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import provenance as ap
 
 from analyzer import DEFAULT_MODEL, EMOTION_LABELS, INTENT_OPTIONS, SCHEMA_VERSION
 from relationship_profile import build_profile
@@ -121,6 +122,7 @@ def build_json_report(
     skipped_media: int = 0, interaction: dict | None = None,
 ) -> dict:
     interaction_out = interaction
+    provenance = ap.summarize(results)
     messages = []
     for e in sorted(results, key=lambda e: e["index"]):
         if e.get("error"):
@@ -156,8 +158,14 @@ def build_json_report(
     return {
         "metadata": {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
-            "model": DEFAULT_MODEL,
-            "schema_version": SCHEMA_VERSION,
+            "model": next(iter(provenance["actual_models"]), "unknown")
+                     if len(provenance["actual_models"]) <= 1 else "mixed",
+            "requested_models": provenance["requested_models"],
+            "schema_version": ap.schema_label(provenance),
+            "report_schema_version": SCHEMA_VERSION,
+            "analysis_provenance": provenance,
+            "visual_analysis": stats.get("visual_analysis") or {"requested": 0},
+            "event_semantic_review": stats.get("event_semantic_review") or {"requested": 0},
             "ta_messages": stats["analyzed"],
             "effective_messages": stats["effective_messages"],
             "failed_messages": stats["failed"],
@@ -416,7 +424,9 @@ def build_markdown_report(
     # ---- 基本信息 ----
     lines += ["## 基本信息", ""]
     lines.append(f"- 分析时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    lines.append(f"- Jev 模型：{DEFAULT_MODEL}")
+    provenance = ap.summarize(results)
+    lines.append(f"- 实际 Jev 模型：{ap.model_label(provenance)}")
+    lines.extend(f"- 注意：{warning}" for warning in provenance["warnings"])
     lines.append(f"- TA 消息数：{analyzed}")
     lines.append(f"- 有效关系消息：{effective}")
     if skipped_media:
@@ -424,9 +434,13 @@ def build_markdown_report(
             f"- 跳过非文本媒体：{skipped_media} 条"
             "（复制文本只含媒体占位符，未含实际图片/视频内容，未参与分析）"
         )
+    visual = stats.get("visual_analysis") or {}
+    if visual.get("requested"):
+        lines.append(f"- 图片辅助分析：成功 {visual.get('analyzed', 0)} 张，失败 {visual.get('failed', 0)} 张；未计入文字评分，未导出图片内容。")
     dr = _data_range(results)
     lines.append(f"- 数据范围：{dr['first'] or '-'} ~ {dr['last'] or '-'}")
-    lines.append(f"- 分析 schema：{SCHEMA_VERSION}")
+    lines.append(f"- 分析 schema：{ap.schema_label(provenance)}")
+    lines.append(f"- 报告引擎 schema：{SCHEMA_VERSION}")
     if stats["failed"]:
         lines.append(f"- 分析失败：{stats['failed']} 条")
     lines += [

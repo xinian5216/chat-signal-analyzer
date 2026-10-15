@@ -120,8 +120,9 @@ def test_json_schema_and_validity():
                   "relation_confidence", "message_weight"):
         assert field in m
     assert set(m["romantic_signal"]) == {"raw", "evidence"}
-    assert data["metadata"]["schema_version"] == analyzer.SCHEMA_VERSION
-    assert data["metadata"]["schema_version"].startswith("chat-signal-v")
+    assert data["metadata"]["schema_version"] == "unknown"  # synthetic results lack source provenance
+    assert data["metadata"]["report_schema_version"] == analyzer.SCHEMA_VERSION
+    assert data["metadata"]["report_schema_version"].startswith("chat-signal-v")
 
 
 def test_json_respects_privacy_option():

@@ -46,6 +46,7 @@ from rich_paste import (
     component_error,
     get_component,
 )
+import provenance as ap
 from vision import vision_status
 from tools.clipboard_probe.probe import format_probe_report
 from scoring import (
@@ -272,6 +273,9 @@ def clear_analysis_results() -> None:
     st.session_state["results"] = None
     st.session_state["stats"] = None
     st.session_state["report_cache"] = None
+    st.session_state["visual_results"] = []
+    st.session_state["event_review_results"] = []
+    st.session_state["analysis_images"] = {}
     bump_analysis_revision()
 
 
@@ -360,13 +364,22 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
         )
         return
 
+    options = st.session_state.get("analysis_options") or {}
+    model = options.get("model", DEFAULT_MODEL)
+    context_mode = options.get("context_mode", "recent")
+    optional_stats = {k: v for k, v in (st.session_state.get("stats") or {}).items()
+                      if k in ("visual_analysis", "event_semantic_review")} if only_failed else {}
+    if not only_failed:
+        st.session_state["visual_results"] = []
+        st.session_state["event_review_results"] = []
     cache = get_cache()
     only_indices = None
     if only_failed and st.session_state["results"]:
         only_indices = {e["index"] for e in st.session_state["results"] if e.get("error")}
 
     try:
-        client = create_client(api_key=api_key)
+        client = (create_client(api_key=api_key) if model == DEFAULT_MODEL
+                  else create_client(api_key=api_key, model=model))
     except Exception as exc:  # SDK 初始化失败（如无 key）
         st.session_state["run_error"] = f"初始化 TypeSafe 客户端失败：{exc}"
         return
@@ -374,7 +387,8 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
     # 并发时每个 worker 线程独立创建 client：官方 SDK 未承诺线程安全，
     # 不让多个线程共享同一个 transport。
     def _client_factory():
-        return create_client(api_key=api_key)
+        return (create_client(api_key=api_key) if model == DEFAULT_MODEL
+                else create_client(api_key=api_key, model=model))
 
     with st.status("正在分析聊天…", expanded=True) as status:
         bar = st.progress(0.0)
@@ -398,6 +412,7 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
             new_results = analyze_messages(
                 client, messages, cache=cache, only_indices=only_indices,
                 progress_cb=cb, client_factory=_client_factory,
+                model=model, context_mode=context_mode,
             )
         finally:
             # 并发路径里的 worker client 由 analyzer 负责关闭；
@@ -420,6 +435,7 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
             st.session_state["stats"] = compute_conversation_stats(
                 st.session_state["results"]
             )
+            st.session_state["stats"].update(optional_stats)
         st.session_state["skipped_media"] = skipped_media_count(messages)
         st.session_state["analysis_completed_at"] = time.time()
         bump_analysis_revision()   # 新的一整份结果 → 报告 memo 身份失效
@@ -448,6 +464,12 @@ def run_analysis(messages: list[dict], only_failed: bool = False) -> None:
             label="✓ 分析完成 · " + " · ".join(parts),
             state="complete",
         )
+
+    if not only_failed:
+        run_visual_analysis(messages, st.session_state.get("analysis_images") or {},
+                            api_key=api_key, model=model)
+        run_event_reviews(messages, enabled=bool(options.get("event_review")),
+                          api_key=api_key, model=model)
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +583,8 @@ def show_input_stage() -> tuple[str | None, list, str]:
                 "添加图片（可选）——用于绑定文本中的 [图片] 占位符",
                 type=["png", "jpg", "jpeg", "webp", "bmp", "gif"],
                 accept_multiple_files=True,
-                help="从微信保存或截图后拖入；仅存于本机内存，不发送给 Jev，"
+                help="从微信保存或截图后拖入；默认仅在本机内存，"
+                     "只有启用图片实验并确认最终预览后才上传；"
                      "不写入报告。",
             )
             if st.session_state.get("messages"):
@@ -1069,6 +1092,198 @@ def set_messages(new_messages: list[dict], *, source: str = "import") -> None:
         )
 
 
+
+
+def run_event_reviews(messages: list[dict], *, enabled: bool, api_key: str, model: str) -> None:
+    from event_review import review_plans, review_event, MAX_EVENT_REQUESTS
+    results = []
+    plans = review_plans(messages, build_interaction_events(messages, st.session_state["results"])) if enabled else []
+    if plans:
+        client = create_client(api_key=api_key) if model == DEFAULT_MODEL else create_client(api_key=api_key, model=model)
+        try:
+            with st.status("正在辅助核对互动事件…", expanded=False):
+                for plan in plans[:MAX_EVENT_REQUESTS]:
+                    entry = {key: plan[key] for key in ("event_type", "source_indices", "start_index", "end_index")}
+                    try:
+                        entry["result"] = review_event(client, plan, model=model, cache=get_cache())
+                    except Exception as exc:
+                        entry["error"] = type(exc).__name__
+                    results.append(entry)
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+    st.session_state["event_review_results"] = results
+    st.session_state["stats"]["event_semantic_review"] = {
+        "candidates": len(plans), "requested": len(results),
+        "analyzed": sum("result" in r for r in results),
+        "failed": sum("error" in r for r in results),
+        "deferred": max(0, len(plans)-MAX_EVENT_REQUESTS), "auto_confirmed": False}
+
+
+def show_event_reviews() -> None:
+    from event_review import OPTIONS
+    results = st.session_state.get("event_review_results") or []
+    if not results:
+        return
+    with st.expander("事件语义辅助（仍需人工确认）", expanded=False):
+        st.caption("这些判断只辅助理解已有候选，不自动确认行为事件或修改关系画像。"
+                   "可在长期观察的现有审核队列中核对、修改并确认事件。")
+        messages = st.session_state.get("analysis_messages") or []
+        labels = {"refusal_scope": "拒绝范围", "response_relation": "后续请求", "followup": "后续安排", "recall": "具体回忆"}
+        for entry in results:
+            st.markdown(f"**消息 #{entry['start_index']+1}–#{entry['end_index']+1}**")
+            if entry.get("error"):
+                st.warning("本条辅助判断未完成，原始事件候选仍可人工核对。")
+                continue
+            for name, options in OPTIONS.items():
+                answer = entry["result"][name]
+                st.write(labels[name] + "：" + options[answer["choice"]])
+            with st.expander("回看实际用于判断的聊天", expanded=False):
+                for index in entry["source_indices"]:
+                    if index < len(messages):
+                        message = messages[index]
+                        st.write(f"#{index+1} {message['speaker']}：{message.get('text', '')}")
+        deferred = (st.session_state.get("stats") or {}).get("event_semantic_review", {}).get("deferred", 0)
+        if deferred:
+            st.info(f"另有 {deferred} 条候选未发送，仍可在原审核队列中核对。")
+
+
+def show_analysis_options() -> None:
+    with st.expander("分析设置", expanded=False):
+        models = list(dict.fromkeys([DEFAULT_MODEL, ap.PINNED_BASELINE_MODEL,
+                                     ap.CANDIDATE_MODEL]))
+        st.selectbox("分析模型", models, key="selected_analysis_model",
+                     help="固定版本便于复核；1.14 尚待本项目的中文对照验证。")
+        selected = st.session_state.get("selected_analysis_model", DEFAULT_MODEL)
+        if not ap.versioned_model(selected):
+            st.warning("当前使用会变化的模型别名，本次不复用持久分析缓存。")
+        st.checkbox("补充检索相关的较早聊天（实验）", key="related_history_enabled",
+                    help="只检索本次导入中目标消息之前的原文，最多补充 3 条；不读取好友备注或旧总结。")
+        st.checkbox("为待核对事件增加语义辅助（实验，最多额外 8 次请求）", key="event_review_enabled")
+        st.caption("更改设置后需重新开始分析。已有结果与导出仍保留其原始分析条件。")
+
+
+def _image_binding_scope(index: int, asset, prepared) -> str:
+    return ap.digest({"order": st.session_state.get("order_signature"),
+                      "index": index, "asset": asset.sha256,
+                      "prepared": prepared.sha256})
+
+
+def _bound_image_assets() -> dict:
+    bindings = {**(st.session_state.get("media_bindings") or {}),
+                **(st.session_state.get("media_manual") or {})}
+    assets = {a.id: a for a in st.session_state.get("media_assets") or []}
+    return {index: assets[asset_id] for index, asset_id in bindings.items()
+            if asset_id in assets}
+
+
+def show_image_previews(messages: list[dict]) -> None:
+    from vision import prepare_image, VisionValidationError
+    st.checkbox("启用图片辅助分析（实验，默认关闭）", key="visual_enabled")
+    if not st.session_state.get("visual_enabled"):
+        return
+    st.info("只有逐图确认后的图片会发送给 TypeSafe。请遮挡姓名、头像、通知等信息；"
+            "文字脱敏不会遮挡图片。视觉结果单独呈现，需人工核对，不自动计入九项评分。")
+    prepared_map = st.session_state.setdefault("vision_prepared", {})
+    for index, asset in sorted(_bound_image_assets().items()):
+        if index >= len(messages) or messages[index].get("speaker") != "them":
+            continue
+        key = f"vision_{index}_{asset.sha256[:12]}"
+        with st.expander(f"图片 #{index + 1}：上传前处理", expanded=False):
+            _asset_thumb(asset, width=320)
+            with st.form(key + "_prepare"):
+                horizontal = st.slider("保留的左右范围（%）", 0, 100, (0, 100), key=key+"_crop_x")
+                vertical = st.slider("保留的上下范围（%）", 0, 100, (0, 100), key=key+"_crop_y")
+                mask = st.checkbox("增加一块黑色遮挡", key=key+"_mask")
+                mask_x = st.slider("遮挡的左右范围（%）", 0, 100, (0, 25), key=key+"_mask_x")
+                mask_y = st.slider("遮挡的上下范围（%）", 0, 100, (0, 20), key=key+"_mask_y")
+                st.caption("范围均相对原图。修改后需重新生成预览；上传以最终预览为准。"
+                           "需要多块遮挡时，可先在本机图片工具处理后重新上传。")
+                submit = st.form_submit_button("生成最终上传预览")
+            if submit:
+                try:
+                    crop = (horizontal[0]/100, vertical[0]/100,
+                            horizontal[1]/100, vertical[1]/100)
+                    rectangles = [(mask_x[0]/100, mask_y[0]/100,
+                                   mask_x[1]/100, mask_y[1]/100)] if mask else []
+                    image = prepare_image(asset, crop=crop, redactions=rectangles)
+                    prepared_map[index] = {"image": image,
+                        "scope": _image_binding_scope(index, asset, image)}
+                except VisionValidationError as exc:
+                    prepared_map.pop(index, None)
+                    st.error(str(exc))
+            record = prepared_map.get(index)
+            if record and record["scope"] == _image_binding_scope(index, asset, record["image"]):
+                st.image(record["image"].data, caption="实际将上传的图片（已去除原文件元数据）", width=320)
+                st.checkbox("我已检查这张最终预览，同意上传给 TypeSafe", key="vision_approved_"+record["scope"])
+
+
+def approved_images(messages: list[dict]) -> dict:
+    if not st.session_state.get("visual_enabled"):
+        return {}
+    records = st.session_state.get("vision_prepared") or {}
+    approved = {}
+    for index, asset in _bound_image_assets().items():
+        record = records.get(index)
+        if not record or index >= len(messages) or messages[index].get("speaker") != "them":
+            continue
+        scope = _image_binding_scope(index, asset, record["image"])
+        if record["scope"] == scope and st.session_state.get("vision_approved_"+scope):
+            approved[index] = record["image"]
+    return approved
+
+
+def run_visual_analysis(messages: list[dict], images: dict, *, api_key: str, model: str) -> None:
+    from context_builder import select_context
+    from vision import analyze_prepared
+    results = []
+    if images:
+        client = create_client(api_key=api_key) if model == DEFAULT_MODEL else create_client(api_key=api_key, model=model)
+        try:
+            with st.status("正在分析已确认的图片…", expanded=False):
+                for index, image in sorted(images.items()):
+                    try:
+                        result = analyze_prepared(client, image,
+                            select_context(messages[:index]) + [messages[index]],
+                            model=model, approved=True, cache=get_cache())
+                        results.append({"index": index, "result": result})
+                    except Exception as exc:
+                        results.append({"index": index, "error": type(exc).__name__})
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+    st.session_state["visual_results"] = results
+    st.session_state["stats"]["visual_analysis"] = {
+        "requested": len(images), "analyzed": sum("result" in r for r in results),
+        "failed": sum("error" in r for r in results),
+        "included_in_text_scores": False}
+
+
+def show_visual_results() -> None:
+    from vision import FUNCTIONS, TONES
+    results = st.session_state.get("visual_results") or []
+    if not results:
+        return
+    with st.expander("图片辅助线索（需人工核对）", expanded=False):
+        st.caption("仅反映图片与当时前文中的可观察表达；未计入关系评分，也未保存到好友档案。")
+        for entry in results:
+            st.markdown(f"**图片消息 #{entry['index'] + 1}**")
+            if entry.get("error"):
+                st.warning("图片未能完成分析；文字结果已保留。可重新开始分析重试。")
+                continue
+            result = entry["result"]
+            if result["readability"]["choice"] != "clear":
+                st.warning("图片只有部分可辨内容或无法可靠辨认，以下线索需谨慎核对。")
+            st.write("互动用途：" + FUNCTIONS[result["function"]["choice"]])
+            st.write("可观察语气：" + TONES[result["tone"]["choice"]])
+            st.caption("模型：" + result["model"])
+
+
 def show_media_binding_panel(messages: list[dict]) -> None:
     """② 阶段：媒体捕获 + 绑定状态 + 手动匹配。"""
     assets = st.session_state.get("media_assets") or []
@@ -1090,34 +1305,37 @@ def show_media_binding_panel(messages: list[dict]) -> None:
             "自动对应关系不确定。请手动匹配（也可以标记“不分析”）。"
         )
 
-    for idx in unbound:
-        m = messages[idx]
-        time_part = f" · {m.get('time')}" if m.get("time") else ""
+    # Keep every binding editable, including an explicit "do not analyze" choice.
+    # The previous panel hid a row immediately after writing its default choice.
+    asset_by_id = {asset.id: asset for asset in assets}
+    for idx in placeholders:
+        message = messages[idx]
         with st.container(border=True):
-            st.markdown(f"**聊天图片 #{idx + 1}**　TA{time_part}")
-            st.caption(f"消息内容：{m.get('text', '')[:60]}")
-            options = ["（不分析）"] + [
-                f"图片 #{n}（{a.mime_type}，{a.size / 1024:.0f} KB）"
-                for n, a in enumerate(assets, start=1)
-            ]
-            choice = st.selectbox(
-                "请选择图片：", options, key=f"media_match_{idx}",
-            )
-            cols = st.columns(min(len(assets), 4))
-            for n, a in enumerate(assets[:4]):
-                with cols[n]:
-                    _asset_thumb(a, width=110)
-            if choice and choice != "（不分析）":
-                n = int(choice.split("#")[1].split("（")[0]) - 1
-                st.session_state["media_manual"][idx] = assets[n].id
-                st.caption("已手动绑定（仅本机显示，不进入分析）。")
-            elif choice == "（不分析）":
+            st.markdown(f"**聊天图片 #{idx + 1}**")
+            options = ["", "skip"] + list(asset_by_id)
+            current = manual.get(idx, auto.get(idx, ""))
+            if idx in manual and not current:
+                current = "skip"
+            labels = {"": "（请选择）", "skip": "（不分析）"}
+            labels.update({asset.id: f"图片 #{number}（{asset.mime_type}，{asset.size / 1024:.0f} KB）"
+                           for number, asset in enumerate(assets, 1)})
+            scope = ap.digest({"order": st.session_state.get("order_signature"),
+                               "assets": list(asset_by_id)})[:16]
+            choice = st.selectbox("请选择图片：", options,
+                index=options.index(current) if current in options else 0,
+                format_func=lambda value: labels[value], key=f"media_match_{idx}_{scope}")
+            if choice == "skip":
                 st.session_state["media_manual"][idx] = ""
-                st.caption("已标记为不分析。")
+            elif choice in asset_by_id:
+                st.session_state["media_manual"][idx] = choice
+                _asset_thumb(asset_by_id[choice], width=160)
+            else:
+                st.session_state["media_manual"].pop(idx, None)
 
-    bound_total = len(auto) + len([v for v in manual.values() if v])
+    bound_total = len(_bound_image_assets())
     st.caption(f"已绑定 {bound_total} / {len(placeholders)} 个图片占位符 · "
                f"图片分析：{vision_status()}")
+    show_image_previews(messages)
 
 
 def show_message_card(entry: dict) -> None:
@@ -1468,6 +1686,8 @@ def show_confirm_stage(messages: list[dict]) -> None:
             "。预览内容已本地脱敏；unknown = 无法确定发言人（未根据内容猜测）。"
         )
 
+        show_analysis_options()
+
         # ---- 分析按钮 ----
         them_n = counts["them"]
         unknown_n = counts["unknown"]
@@ -1515,6 +1735,9 @@ def show_confirm_stage(messages: list[dict]) -> None:
             f"跳过 {skipped_media_count(messages)} 条 TA 非文本媒体 · "
             "缓存命中不会重复请求 API"
         )
+        image_count = len(approved_images(messages))
+        if image_count:
+            st.caption(f"另将分析已确认的图片 {image_count} 张（独立于文字评分）。")
         if st.button("开始 Jev 分析", type="primary",
                      disabled=(not can_run)
                      or st.session_state.get("analysis_state") == "running"):
@@ -1526,6 +1749,18 @@ def show_confirm_stage(messages: list[dict]) -> None:
             st.session_state["analysis_messages"] = target
             # 两段式：先 pending + rerun，下一轮再真正执行分析。
             # 这样一个新 rerun 里看到的 "running" 只可能是上一轮被中断。
+            st.session_state["analysis_options"] = {
+                "model": st.session_state.get("selected_analysis_model", DEFAULT_MODEL),
+                "context_mode": "related" if st.session_state.get("related_history_enabled") else "recent",
+                "event_review": bool(st.session_state.get("event_review_enabled")),
+            }
+            # Keep image bindings on the exact analysis index space after unknown filtering.
+            selected_images = approved_images(messages)
+            original_indices = [i for i, m in enumerate(messages)
+                                if not (unknown_n and ignore_unknown) or m["speaker"] in ("me", "them")]
+            st.session_state["analysis_images"] = {
+                new: selected_images[old] for new, old in enumerate(original_indices)
+                if old in selected_images}
             st.session_state["pending_target"] = target
             st.session_state["analysis_state"] = "pending"
             st.session_state["result_view"] = "概览"
@@ -1718,6 +1953,12 @@ def show_profile_section(results: list[dict], stats: dict) -> None:
 
 
 def show_overview_tab(results: list[dict], stats: dict) -> None:
+    provenance = ap.summarize(results)
+    st.caption("实际分析模型：" + ap.model_label(provenance))
+    for warning in provenance["warnings"]:
+        st.warning(warning)
+    show_visual_results()
+    show_event_reviews()
     # ---- 关系画像（主要解释层，置顶）----
     show_profile_section(results, stats)
     preview = build_observer_advice(results, stats,
@@ -2095,7 +2336,7 @@ def show_report_tab(results: list[dict], stats: dict) -> None:
                  height=150)
     include_text = st.checkbox(
         "报告中包含本地脱敏后的聊天文本",
-        value=False,
+        value=False, key="report_include_text",
         help="关闭时导出匿名报告：只保留统计与消息编号，不含聊天文本。",
     )
     md, payload_json = _build_or_reuse_reports(results, stats, include_text)
@@ -2159,7 +2400,7 @@ def save_run_to_friend(friend_id: str, results: list[dict], stats: dict,
         analysis_started_at=st.session_state.get("analysis_started_at"),
         analysis_completed_at=st.session_state.get("analysis_completed_at"),
         schema_version=ANALYSIS_SCHEMA_VERSION,
-        request_model=DEFAULT_MODEL,
+        request_model=next(iter(ap.summarize(results)["requested_models"]), DEFAULT_MODEL),
         summary_text=build_summary_text(results, stats),
         evidence=safe_evidence,
     )
@@ -2614,7 +2855,7 @@ def _exportable_snapshot(full: dict) -> dict:
             "analysis_completed_at", "chat_first_time", "chat_last_time",
             "full_time_ratio", "message_count", "analyzed_count",
             "failed_count", "skipped_media_count", "case_signature",
-            "schema_version", "request_model", "response_model",
+            "schema_version", "request_model", "response_model", "analysis_provenance",
             "summary_text", "warnings", "messages", "results", "evidence")
     return {k: full.get(k) for k in keep if full.get(k) is not None}
 
@@ -3934,7 +4175,7 @@ def show_sidebar() -> None:
         st.markdown("### SignalLens")
         st.divider()
         st.caption("模型")
-        st.markdown(f"`{DEFAULT_MODEL}`")
+        st.markdown(f"`{(st.session_state.get('analysis_options') or {}).get('model', DEFAULT_MODEL)}`")
         st.caption("分析引擎")
         st.markdown("TypeSafe Jev")
         st.caption("隐私")
@@ -3942,9 +4183,9 @@ def show_sidebar() -> None:
         st.divider()
         if st.button("清除分析缓存", use_container_width=True):
             get_cache().clear()
-            st.toast("已清空 Jev 逐条分析缓存。")
+            st.toast("已清空本地分析缓存（含可选图片和事件辅助）。")
         st.caption(
-            "只清空 **Jev 逐条分析缓存**（独立文件 analysis_cache）。"
+            "只清空 **分析缓存**（文字、可选图片与事件辅助的结构化结果）。"
             "好友档案与历史分析在另一个独立文件里，**不受影响**；"
             "要删除档案请在④结果 →「长期观察」里操作。"
         )
@@ -4081,7 +4322,7 @@ def main() -> None:
     # 若在顶部直接渲染，步骤会落后一个 run（需再交互一次才更新）。
     steps_slot = st.empty()
     steps_slot.markdown(steps_markdown(
-        4 if (results and stats) else (2 if messages else 1)
+        4 if (stats and (results or st.session_state.get("visual_results"))) else (2 if messages else 1)
     ))
 
     # ① 输入（解析并替换 / 追加片段，全部本地完成）
@@ -4103,7 +4344,7 @@ def main() -> None:
     # ③④ 结果
     results = st.session_state.get("results")
     stats = st.session_state.get("stats")
-    if results and stats:
+    if stats and (results or st.session_state.get("visual_results")):
         # 分析已完成 → 步骤推进到 ④（同一次 run 内更新占位符）
         steps_slot.markdown(steps_markdown(4))
         show_results(results, stats)

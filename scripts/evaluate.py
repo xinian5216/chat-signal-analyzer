@@ -42,6 +42,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import evaluation as ev  # noqa: E402
+import provenance as ap  # noqa: E402
 
 
 def _run_fixtures(report_path: str | None, cases_path: str | None = None,
@@ -49,6 +50,11 @@ def _run_fixtures(report_path: str | None, cases_path: str | None = None,
     cases = ev.load_cases(cases_path)
     results = ev.load_fixture_results(fixture_path)
     aggregate = ev.evaluate_cases(cases, results)
+    aggregate["meta"] = _report_meta(cases, model="synthetic", mode="fixtures",
+        schema_version="synthetic-fixture-contract", failed=0, cases_path=cases_path)
+    fixture_file = Path(fixture_path) if fixture_path else ev.DEFAULT_FIXTURE_PATH
+    aggregate["meta"]["fixture_sha256"] = hashlib.sha256(fixture_file.read_bytes()).hexdigest()
+    aggregate["meta"]["provenance"] = "synthetic"
     print(ev.format_report(aggregate))
     if report_path:
         _write_json(report_path, aggregate)
@@ -92,6 +98,23 @@ def _compare(baseline_path: str, candidate_path: str) -> int:
         print(f"  candidate: {cand_id['file']} "
               f"({cand_id['count']} cases, sha256 {cand_id['sha'][:16]}…)",
               file=sys.stderr)
+        return 3
+
+    base_meta, cand_meta = baseline.get("meta", {}), candidate.get("meta", {})
+    if (base_meta.get("provenance") == "synthetic") != (cand_meta.get("provenance") == "synthetic"):
+        print("refusing to compare synthetic fixtures with actual model evaluation", file=sys.stderr)
+        return 3
+    for label, report in (("baseline", baseline), ("candidate", candidate)):
+        provenance = report.get("meta", {}).get("analysis_provenance")
+        if provenance and not provenance.get("comparable"):
+            print(f"refusing to compare: {label} includes mixed or unknown model results", file=sys.stderr)
+            return 3
+    left = baseline.get("meta", {}).get("analysis_provenance", {}).get("recipes", [])
+    right = candidate.get("meta", {}).get("analysis_provenance", {}).get("recipes", [])
+    def conditions(recipes):
+        return [{k: v for k, v in r.items() if k != "requested_model"} for r in recipes]
+    if left and right and conditions(left) != conditions(right):
+        print("refusing model comparison: question or context conditions differ", file=sys.stderr)
         return 3
 
     base_schema, cand_schema = base_id.get("schema"), cand_id.get("schema")
@@ -205,8 +228,7 @@ def _regenerate_from_raw(raw_path: str, cases_path: str | None,
             (r.get("model") for r in raw_results.values()
              if isinstance(r, dict) and r.get("model")), None)
     if not model:
-        from analyzer import DEFAULT_MODEL
-        model = DEFAULT_MODEL
+        model = "unknown"
     failed = sum(1 for r in raw_results.values()
                  if not isinstance(r, dict) or r.get("error"))
     meta = _report_meta(cases, model=model, mode="real-offline-regen",
@@ -214,6 +236,7 @@ def _regenerate_from_raw(raw_path: str, cases_path: str | None,
                         failed=failed,
                         cases_path=cases_path or ev.DEFAULT_CASES_PATH)
     meta["schema_source"] = schema_source
+    meta["analysis_provenance"] = ap.summarize([{ "result": result } for result in raw_results.values()])
     aggregate["meta"] = meta
     print(ev.format_report(aggregate))
     print(f"cases file: {meta['benchmark_cases_file']}; "
@@ -442,7 +465,7 @@ def validate_cases_for_real(cases: list[dict]) -> list[str]:
 
 def _run_real(confirmed: bool, report_path: str | None,
               raw_report_path: str | None = None,
-              cases_path: str | None = None) -> int:
+              cases_path: str | None = None, model: str | None = None) -> int:
     """真实模式：人工显式确认 + API key 才允许调用 Jev。"""
     refusal = _gate_real(confirmed)
     if refusal:
@@ -451,6 +474,10 @@ def _run_real(confirmed: bool, report_path: str | None,
 
     from analyzer import (DEFAULT_MODEL, SCHEMA_VERSION, analyze_messages)
     from privacy import mask_messages
+    model = model or DEFAULT_MODEL
+    if not ap.versioned_model(model):
+        print("refusing live evaluation: pin an explicit Jev version", file=sys.stderr)
+        return 2
 
     cases = ev.load_cases(cases_path)
 
@@ -468,7 +495,7 @@ def _run_real(confirmed: bool, report_path: str | None,
     from typesafe_sdk import TypeSafeClient
 
     client = TypeSafeClient(api_key=os.environ["TYPESAFE_API_KEY"],
-                            model=DEFAULT_MODEL)
+                            model=model)
     estimate = estimate_live_requests(cases)
     print(f"planned live requests: {estimate['estimated_live_requests']} "
           f"({estimate['cases']} cases x {estimate['targets_per_case']} "
@@ -476,17 +503,22 @@ def _run_real(confirmed: bool, report_path: str | None,
 
     def analyze_fn(messages, only_indices):
         masked = mask_messages(messages)
-        return analyze_messages(client, masked, only_indices=only_indices)
+        return analyze_messages(client, masked, only_indices=only_indices, model=model)
 
     # 原始输出**先**落盘：聚合阶段即使崩溃也不丢失已付费的模型响应
     # （历史事故：一次真实基线在第 34/34 次请求完成后因聚合缺键崩溃，
     #  34 次真实响应全部丢失）。
-    raw_results, failures = collect_real_results(cases, analyze_fn)
+    try:
+        raw_results, failures = collect_real_results(cases, analyze_fn)
+    finally:
+        client.close()
+    batch_provenance = ap.summarize([{ "result": result } for result in raw_results.values()])
     raw_target = raw_report_path or _default_raw_path()
     _write_json(raw_target, {
         "meta": {
             "schema_version": SCHEMA_VERSION,
-            "model": DEFAULT_MODEL,
+            "model": model,
+            "analysis_provenance": batch_provenance,
             "benchmark_cases_file": str(cases_path or ev.DEFAULT_CASES_PATH)
             .replace("\\", "/"),
             "generated_at": datetime.now(timezone.utc).isoformat(
@@ -497,15 +529,16 @@ def _run_real(confirmed: bool, report_path: str | None,
     })
     print(f"raw model outputs written: {raw_target}")
     aggregate = ev.evaluate_cases(cases, raw_results)
-    aggregate["meta"] = _report_meta(cases, model=DEFAULT_MODEL, mode="real",
+    aggregate["meta"] = _report_meta(cases, model=model, mode="real",
                                      schema_version=SCHEMA_VERSION,
                                      failed=len(failures),
                                      cases_path=cases_path
                                      or ev.DEFAULT_CASES_PATH)
 
+    aggregate["meta"]["analysis_provenance"] = batch_provenance
     print(ev.format_report(aggregate))
     print(f"schema version: {SCHEMA_VERSION}; "
-          f"model: {DEFAULT_MODEL}; cache: off")
+          f"model: {model}; cache: off")
     print(f"cases file: {aggregate['meta']['benchmark_cases_file']}; "
           f"cases sha256: {aggregate['meta']['benchmark_sha256'][:16]}…")
     if failures:
@@ -540,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="真实调用 Jev（人工专用，需额外确认与 API key）")
     parser.add_argument("--yes-run-live-api", action="store_true",
                         help="显式确认允许真实模式调用 Jev")
+    parser.add_argument("--model", help="真实模式的明确模型版本，例如 jev-1.13.0 或 jev-1.14.0")
+    parser.add_argument("--plan", action="store_true", help="只校验案例并显示预计请求数，不调用 API")
     parser.add_argument("--report", metavar="PATH",
                         help="聚合评估报告（含 meta；可被 --compare 读取）")
     parser.add_argument("--raw-report", metavar="PATH",
@@ -563,6 +598,15 @@ def main(argv: list[str] | None = None) -> int:
                              "推断 raw 的 schema 版本")
     args = parser.parse_args(argv)
 
+    if args.plan:
+        cases = ev.load_cases(args.cases)
+        problems = validate_cases_for_real(cases)
+        print(json.dumps({"requests_per_model": len(cases),
+                          "paired_models": [ap.PINNED_BASELINE_MODEL, ap.CANDIDATE_MODEL],
+                          "total_paired_requests": len(cases) * 2,
+                          "benchmark_sha256": hashlib.sha256(Path(args.cases or ev.DEFAULT_CASES_PATH).read_bytes()).hexdigest(),
+                          "problems": problems, "live_api_called": False}, ensure_ascii=False, indent=2))
+        return 4 if problems else 0
     if args.compare:
         return _compare(args.compare[0], args.compare[1])
     if args.from_raw:
@@ -571,7 +615,7 @@ def main(argv: list[str] | None = None) -> int:
                                     args.schema_from_report)
     if args.real:
         return _run_real(args.yes_run_live_api, args.report,
-                         args.raw_report, args.cases)
+                         args.raw_report, args.cases, args.model)
     return _run_fixtures(args.report, args.cases, args.fixture_file)
 
 

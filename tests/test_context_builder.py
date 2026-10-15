@@ -81,7 +81,7 @@ class RecordingClient:
             "romantic_signal": _FakeAnswer(noul=0.1),
             "distancing_signal": _FakeAnswer(noul=0.1),
         }
-        return SimpleNamespace(answers=answers, model="fake")
+        return SimpleNamespace(answers=answers, model="jev-1.13.0")
 
 
 def _msg(speaker, text, time=None):

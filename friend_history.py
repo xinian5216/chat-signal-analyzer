@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import paths
+import provenance as ap
 from merge import message_fingerprint
 from privacy import mask_text
 from timeline import TIME_FULL, time_kind
@@ -143,6 +144,7 @@ class RunSummary:
     response_model: str | None
     summary_text: str
     warnings: list[str] = field(default_factory=list)
+    analysis_provenance: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -257,13 +259,11 @@ def build_run_snapshot(
             row["result"] = entry["result"]
         result_rows.append(row)
 
-    # 实际返回的模型版本：Jev 响应里带的 model（可能与请求模型不同）
-    response_model = None
-    for row in result_rows:
-        model = (row.get("result") or {}).get("model")
-        if model:
-            response_model = model
-            break
+    analysis_provenance = ap.summarize(result_rows)
+    actual_models = analysis_provenance["actual_models"]
+    response_model = next(iter(actual_models)) if len(actual_models) == 1 else (
+        "mixed" if actual_models else None)
+    snapshot_stats = {**stats, "analysis_provenance": analysis_provenance}
 
     return {
         "friend_id": friend_id,
@@ -280,9 +280,9 @@ def build_run_snapshot(
         "schema_version": schema_version,
         "request_model": request_model,
         "response_model": response_model,
-        "stats": stats,
+        "stats": snapshot_stats,
         "summary_text": summary_text,
-        "warnings": list(stats.get("warnings") or []),
+        "warnings": list(stats.get("warnings") or []) + analysis_provenance["warnings"],
         "messages": msg_rows,
         "results": result_rows,
         "evidence": normalize_evidence(evidence),
@@ -922,6 +922,7 @@ class FriendStore:
             schema_version=row[13], request_model=row[14],
             response_model=row[15], summary_text=row[17],
             warnings=json.loads(row[18] or "[]"),
+            analysis_provenance=json.loads(row[16] or "{}").get("analysis_provenance", {}),
         )
 
     _RUN_COLUMNS = (
@@ -943,9 +944,25 @@ class FriendStore:
             rows = conn.execute(
                 self._RUN_COLUMNS + " WHERE friend_id = ?", (friend_id,)
             ).fetchall()
+            summaries = [self._row_to_summary(r) for r in rows]
+            missing = {summary.run_id: summary for summary in summaries
+                       if not summary.analysis_provenance}
+            # Stream legacy payloads only when needed, not every new run's full data.
+            if missing:
+                cursor = conn.execute(
+                    "SELECT r.run_id, r.results_json FROM history_results r"
+                    " JOIN history_runs h ON h.run_id = r.run_id WHERE h.friend_id = ?",
+                    (friend_id,),
+                )
+                for run_id, payload in cursor:
+                    if run_id in missing:
+                        missing[run_id].analysis_provenance = ap.summarize(json.loads(payload))
         finally:
             conn.close()
-        summaries = [self._row_to_summary(r) for r in rows]
+        for summary in summaries:
+            actual = summary.analysis_provenance.get("actual_models", {})
+            if len(actual) > 1:
+                summary.response_model = "mixed"
         summaries.sort(key=lambda s: (
             s.chat_first_time or "9999-99-99 99:99",
             s.chat_last_time or "9999-99-99 99:99",
@@ -977,6 +994,12 @@ class FriendStore:
             conn.close()
         summary = self._row_to_summary(row)
         stats = json.loads(row[16] or "{}")
+        result_rows = self._load_results(run_id)
+        if not summary.analysis_provenance:
+            summary.analysis_provenance = ap.summarize(result_rows)
+        actual = summary.analysis_provenance.get("actual_models", {})
+        if len(actual) > 1:
+            summary.response_model = "mixed"
         return {
             **summary.__dict__,
             "stats": stats,
@@ -985,7 +1008,7 @@ class FriendStore:
                  "speaker": m[3], "is_target": bool(m[4])}
                 for m in messages
             ],
-            "results": self._load_results(run_id),
+            "results": result_rows,
             "evidence": [
                 {"index": e[0], "stance": e[1], "note": e[2], "snippet": e[3]}
                 for e in results

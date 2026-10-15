@@ -116,7 +116,7 @@ def counting_client(monkeypatch, tmp_path):
                 "relational_ease": fake(score=2.0),
                 "romantic_signal": fake(noul=0.1),
                 "distancing_signal": fake(noul=0.1),
-            }, model="jev-fixture")
+            }, model="jev-1.13.0")
 
     class TmpCache(storage.Cache):
         def __init__(self, *a, **k):
