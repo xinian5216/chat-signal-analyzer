@@ -7,7 +7,7 @@
 SignalLens 是一个**本地优先**的 Streamlit 工具：聊天解析、隐私脱敏、缓存和报告
 均在本机完成；脱敏后的必要上下文会发送给
 [TypeSafe Jev](https://typesafe.ai/)（System One 决策模型）进行结构化判断，
-再再由本地固定公式聚合出「互动亲近信号指数」。
+再由本地固定公式聚合出「互动亲近信号指数」。
 
 结果页的**主要解释层是「关系画像」（Relationship Profile）**：它把
 可观察信号拆成多个维度（主动与投入 / 关心与回应 / 互动熟悉度 /
@@ -40,7 +40,7 @@ SignalLens 是一个**本地优先**的 Streamlit 工具：聊天解析、隐私
 **下载 → 解压 → 双击 SignalLens.exe → 使用**。不需要 Python、pip、venv、
 PowerShell、CMD，也不用手工创建 `.env` 或执行 `streamlit run`。
 
-1. 到 GitHub Releases 下载 `SignalLens-v0.5.0-Windows-x64-portable.zip`
+1. 到 GitHub Releases 下载 `SignalLens-v0.6.0-Windows-x64-portable.zip`
    （用页面给出的 SHA256 校验完整性）；
 2. 解压整个 ZIP 到**可写**目录（桌面、文档等；不要放进 Program Files，
    也不要直接在压缩包里运行）；

@@ -645,6 +645,7 @@ class TestReleaseGates:
         for module in ("relationship_profile.py", "salience.py",
                        "interaction_dynamics.py", "observer_advice.py", "timeline.py",
                        "scroll_anchor.py", "context_builder.py",
+                       "provenance.py", "event_review.py", "vision.py",
                        "friend_history.py", "behavior.py",
                        "longitudinal.py", "app.py"):
             assert f'"{module}"' in spec, module

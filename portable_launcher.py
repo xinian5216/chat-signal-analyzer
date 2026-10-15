@@ -449,7 +449,7 @@ def launcher_main() -> int:
 
 MODULE_SMOKE_FLAG = "--module-smoke"
 
-# frozen 运行时必需的本地模块（v0.4 全链路）。
+# frozen 运行时必需的本地模块（含 v0.6 实验能力）。
 # 研究工具（diagnostics / evaluation）故意不在其中：
 # 它们不进 Portable 包，这里也不能因为“保险”而引入。
 RUNTIME_MODULES = (
@@ -460,6 +460,8 @@ RUNTIME_MODULES = (
     "timeline",
     "scroll_anchor",
     "context_builder",
+    "provenance",
+    "event_review",
     "analyzer",
     "scoring",
     "storage",
@@ -491,6 +493,29 @@ def _module_smoke() -> int:
             importlib.import_module(name)
         except Exception:
             failed.append((name, traceback.format_exc(limit=3)))
+    # Pillow 的编解码插件在功能执行时才加载，仅 import vision 不足以验包。
+    # 使用纯合成像素验证本地 PNG 路径与 SDK Image 类型，不创建客户端。
+    if not failed:
+        try:
+            from io import BytesIO
+            from PIL import Image as PixelImage
+            from typesafe_sdk import Image as RequestImage
+            from media import MediaAsset
+            from vision import prepare_image, image_questions
+            from event_review import review_questions
+
+            source = BytesIO()
+            PixelImage.new("RGB", (320, 320), "white").save(source, format="PNG")
+            prepared = prepare_image(MediaAsset(id="frozen-smoke", data=source.getvalue()))
+            with PixelImage.open(BytesIO(prepared.data)) as decoded:
+                decoded.load()
+                if decoded.format != "PNG" or decoded.size != (320, 320):
+                    raise RuntimeError("synthetic PNG roundtrip failed")
+            RequestImage(prepared.data)
+            if len(image_questions()) != 3 or len(review_questions()) != 4:
+                raise RuntimeError("optional question construction failed")
+        except Exception:
+            failed.append(("optional-runtime", traceback.format_exc(limit=3)))
     if failed:
         for name, tb in failed:
             print(f"[module-smoke] FAIL {name}: {tb}", file=sys.stderr)
@@ -503,6 +528,7 @@ def _module_smoke() -> int:
     print("[module-smoke] versions="
           f"profile={rp.PROFILE_VERSION},salience={sal.SALIENCE_VERSION},"
           f"interaction={idyn.INTERACTION_VERSION},observer={advice.ADVICE_VERSION}")
+    print("[module-smoke] optional=png-roundtrip,sdk-image,event-questions")
     return 0
 
 

@@ -197,7 +197,8 @@ def _module_smoke(exe: Path) -> None:
     """用真正的 SignalLens.exe --module-smoke 验证 frozen 运行时模块。
 
     覆目标（release hardening #26：§23）：app / Profile v2 / Salience /
-    Interaction Dynamics / Behavior / Report 在冻结环境里均可导入。
+    Interaction Dynamics / Behavior / Report 与新增 provenance / event_review
+    在冻结环境里均可导入，并实际执行合成 PNG 编解码与 SDK Image 构造。
     不启动 Streamlit、不触网、不需 API Key。
     """
     result = subprocess.run(
@@ -212,7 +213,8 @@ def _module_smoke(exe: Path) -> None:
                    "profile=relationship-profile-v2",
                    "salience=salience-v1",
                    "interaction=interaction-dynamics-v1",
-                   "observer=observer-advice-v1"):
+                   "observer=observer-advice-v1",
+                   "optional=png-roundtrip,sdk-image,event-questions"):
         assert marker in result.stdout, f"缺少标记：{marker}"
     print("[frozen-smoke] OK module-smoke "
           f"({exe.stat().st_size / 1024 / 1024:.0f} MB exe)")
