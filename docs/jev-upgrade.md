@@ -58,8 +58,8 @@ Choice 顺序扰动应作为后续独立实验，不能与模型升级同时改�
 
 ## 事件语义辅助
 
-仅对已有 review_required 的 boundary_response / invitation_progression /
-personal_recall_candidate 辅助判断，最多 8 次。只读取事件 end_index 及之前的
+仅对已有 review_required 的 boundary_continued_request / boundary_ambiguous /
+invitation_progression / personal_recall_candidate 辅助判断，最多 8 次。只读取事件 end_index 及之前的
 原文；闭集回答不能自动确认事件、追加档案或修改 salience。超额候选仍保留，
 界面显示未发送数量。语义结果不是兑现证据，更不是心理或关系结果预测。
 
