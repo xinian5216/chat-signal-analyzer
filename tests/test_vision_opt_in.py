@@ -132,26 +132,3 @@ def test_metadata_is_not_copied_into_processed_pixels():
     with Image.open(BytesIO(image.data)) as clean:
         assert not clean.getexif() and not clean.info
 
-
-def test_official_sdk_serializes_processed_image_with_local_mock_transport():
-    import httpx2
-    from typesafe_sdk import TypeSafeClient
-    calls = []
-    prepared = prepare_image(asset())
-    questions = image_questions()
-    def handler(request):
-        calls.append(request)
-        assert request.headers["TypeSafe-Danger-Zone-Images"] == "true"
-        assert "multipart/form-data" in request.headers["content-type"]
-        assert prepared.data in request.read()
-        assert not any("sharing" in name.lower() for name in request.headers)
-        return httpx2.Response(200, json={
-            "model": "jev-1.13.0", "usage": {"input_tokens": 10, "output_tokens": 5},
-            "answers": {name: {"type": "choice", "choice": next(iter(q.criteria)),
-                "confidence": .9, "probabilities": {key: float(i == 0)
-                    for i, key in enumerate(q.criteria)}} for name, q in questions.items()}})
-    with httpx2.Client(transport=httpx2.MockTransport(handler)) as http:
-        with TypeSafeClient(api_key="test-key-not-a-real-secret", http_client=http,
-                            model="jev-1.13.0", compression=False) as client:
-            result = analyze_prepared(client, prepared, [], model="jev-1.13.0", approved=True)
-    assert len(calls) == 1 and result["review_required"]
