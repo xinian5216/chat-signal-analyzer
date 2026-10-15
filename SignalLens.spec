@@ -79,6 +79,8 @@ PROJECT_MODULES = [
     "scroll_anchor.py",
     "context_builder.py",
     "analyzer.py",
+    "provenance.py",
+    "event_review.py",
     "scoring.py",
     "storage.py",
     "settings_store.py",

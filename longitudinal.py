@@ -17,6 +17,7 @@ Jev，不改动九问与评分，也不新增任何“尊重分 / 喜欢概率 /
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import provenance as ap
 from datetime import datetime
 
 from analyzer import DEFAULT_MODEL, SCHEMA_VERSION
@@ -187,11 +188,26 @@ def eligibility(runs: list[RunSummary], *,
     ordered = list(runs)
     out: list[RunEligibility] = []
     # 各次真实返回的模型版本集合：只在**同一档案内部**互相比较。
-    # （请求用的 DEFAULT_MODEL 是移动别名，永远不必要求相等。）
-    returned = {r.response_model for r in ordered if r.response_model}
+    # （请求名可能是移动别名；实际版本才是模型比较依据。）
+    returned = set()
+    conditions = set()
+    for run in ordered:
+        for recipe in run.analysis_provenance.get("recipes", []):
+            conditions.add(ap.digest({k: v for k, v in recipe.items() if k != "requested_model"}))
+        returned.update(run.analysis_provenance.get("actual_models", {}))
+        if not run.analysis_provenance and run.response_model:
+            returned.add(run.response_model)
     for run in ordered:
         reasons: list[str] = []
         status = "usable"
+
+        if len(conditions) > 1:
+            status = "reevaluate"
+            reasons.append("各次分析的问题或上下文条件不同，需统一条件重新分析后比较")
+        provenance = run.analysis_provenance
+        if provenance and not provenance.get("comparable"):
+            status = "reevaluate"
+            reasons.extend(provenance.get("warnings") or ["无法确认分析条件一致性"])
 
         if run.schema_version and run.schema_version != schema_version:
             status = "reevaluate"

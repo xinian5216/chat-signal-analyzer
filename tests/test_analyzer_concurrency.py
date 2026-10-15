@@ -54,7 +54,7 @@ def _response():
                                       confidence=0.9),
         "romantic_signal": FakeAnswer(noul=0.2),
         "distancing_signal": FakeAnswer(noul=0.2),
-    }, model="fake")
+    }, model="jev-1.13.0")
 
 
 class LatencyClient:
@@ -343,7 +343,8 @@ def test_cache_key_semantics_unchanged_by_concurrency(tmp_path):
         target = {"speaker": "them", "text": entry["text"],
                   "time": entry.get("time"), "raw_speaker": "TA"}
         state = analyzer.build_state(entry["context"], target)
-        key = make_cache_key(state, schema, analyzer.DEFAULT_MODEL,
+        key = make_cache_key(state, {"questions": schema,
+                                     "recipe": entry["result"]["analysis_provenance"]}, analyzer.DEFAULT_MODEL,
                              analyzer.SCHEMA_VERSION)
         assert TmpCache().get(key) is not None
 
@@ -375,7 +376,7 @@ def test_real_sdk_client_without_factory_runs_serially():
             self.in_flight = 0
             self._lock = threading.Lock()
 
-        def system_one(self, state, questions):
+        def system_one(self, state, questions, **kwargs):
             with self._lock:
                 self.calls.append(state)
                 self.in_flight += 1

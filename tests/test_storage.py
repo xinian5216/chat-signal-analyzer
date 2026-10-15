@@ -189,7 +189,7 @@ class _FakeClientA:
 
         self.calls += 1
         return SimpleNamespace(
-            model="fake",
+            model="jev-1.13.0",
             answers={
                 "emotion": A(choice="calm", probabilities={"calm": 1.0}, confidence=0.9),
                 "intent": A(choice="other", probabilities={"other": 1.0}, confidence=0.9),

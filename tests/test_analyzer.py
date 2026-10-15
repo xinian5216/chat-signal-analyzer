@@ -29,7 +29,7 @@ def make_fake_response():
         "romantic_signal": FakeAnswer(noul=0.1),
         "distancing_signal": FakeAnswer(noul=0.9),
     }
-    return SimpleNamespace(answers=answers, model="jev-test")
+    return SimpleNamespace(answers=answers, model="jev-1.13.0")
 
 
 class FakeClient:
@@ -101,7 +101,9 @@ def test_schema_v30_only_distancing_semantics_changed():
     schema_v31 = analyzer.build_questions_schema()
     assert "relational_ease" in schema_v31
     assert len(schema_v31) == 9
-    assert schema_v31["distancing_signal"] == {"type": "noul"}
+    assert schema_v31["distancing_signal"]["type"] == "noul"
+    assert schema_v31["distancing_signal"]["instructions"] == analyzer.DISTANCING_QUESTION
+    assert set(schema_v31["distancing_signal"]["criteria"]) == {"true", "false"}
 
     # 模拟 v2 时代的 schema（无 relational_ease 问题）与版本号
     schema_v2 = {k: v for k, v in schema_v31.items() if k != "relational_ease"}

@@ -123,3 +123,60 @@ def debug_context_view(target_index: int, context: list[dict]) -> dict:
         "speaker_sequence": [m.get("speaker") for m in context],
         "turn_speakers": [t["speaker"] for t in turns],
     }
+
+
+RELATED_CONTEXT_VERSION = "related-history-v1"
+RELATED_MAX_MESSAGES = 3
+RELATED_MAX_CHARS = 1200
+
+
+def select_related_context(prefix: list[dict], target: dict) -> list[dict]:
+    """Opt-in literal retrieval from past messages only; not semantic memory.
+
+    Keep the normal recent window. Add bounded older messages only when an
+    explicit back-reference has a distinctive shared anchor. No summaries,
+    guessed dates, future messages or private profile fields are introduced.
+    """
+    import re
+    from parser import MEDIA_MARKERS
+
+    def strip_media_markers(value):
+        for marker in MEDIA_MARKERS.values():
+            value = value.replace(marker, " ")
+        return re.sub(r"\[发送了一条 \d+ 秒语音，内容未知\]", " ", value)
+
+    recent = select_context(prefix)
+    text = strip_media_markers(target.get("text", ""))
+    if not re.search(r"上次|之前|还记得|后来|怎么样|那个|那件|前几天", text):
+        return recent
+    cleaned = re.sub(r"你|我|的|了|吗|啊|上次|之前|还记得|后来|怎么样|那个|那件|前几天", " ", text)
+    anchors = set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", cleaned))
+    tokens = set()
+    for anchor in anchors:
+        tokens.add(anchor.lower())
+        if re.fullmatch(r"[\u4e00-\u9fff]+", anchor):
+            tokens.update(anchor[i:i+2] for i in range(len(anchor)-1))
+    if not tokens:
+        return recent
+    recent_start = len(prefix) - len(recent)
+    candidates = []
+    for index, message in enumerate(prefix):
+        if index >= recent_start or message.get("content_type") == "media":
+            continue
+        body = strip_media_markers(message.get("text", "")).lower()
+        score = sum(len(token) for token in tokens if token in body)
+        if score >= 2:
+            candidates.append((score, index, message))
+    selected = []
+    remaining = RELATED_MAX_CHARS
+    for _, index, message in sorted(candidates, key=lambda c: (-c[0], -c[1])):
+        size = len(message.get("text", ""))
+        if size > remaining:
+            continue
+        selected.append((index, message))
+        remaining -= size
+        if len(selected) >= RELATED_MAX_MESSAGES:
+            break
+    indexes = {index for index, _ in selected}
+    return [message for index, message in enumerate(prefix)
+            if index in indexes or index >= recent_start]

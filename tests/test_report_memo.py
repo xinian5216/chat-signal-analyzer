@@ -127,7 +127,7 @@ def _run_chat(at, chat):
 def _open_report(at):
     at.segmented_control[0].set_value("报告")
     at.run()
-    at.checkbox[0].check()      # 报告中包含本地脱敏后的聊天文本
+    at.checkbox(key="report_include_text").check()      # 报告中包含本地脱敏后的聊天文本
     at.run()
 
 
@@ -234,7 +234,7 @@ def test_include_text_toggle_rebuilds_report(counting_client):
     anon = at.session_state["report_cache"]["md"]
     assert "阿尔法第一条" not in anon           # 默认匿名报告不含原文
 
-    at.checkbox[0].check()
+    at.checkbox(key="report_include_text").check()
     at.run()
     assert at.session_state["report_cache"]["key"] == (
         at.session_state["analysis_revision"], True,
@@ -244,7 +244,7 @@ def test_include_text_toggle_rebuilds_report(counting_client):
     assert "收到，谢谢" in at.session_state["report_cache"]["json"]
     anon_json = at.session_state["report_cache"]["json"]
 
-    at.checkbox[0].uncheck()
+    at.checkbox(key="report_include_text").uncheck()
     at.run()
     assert at.session_state["report_cache"]["key"] == (
         at.session_state["analysis_revision"], False,

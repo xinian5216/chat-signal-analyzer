@@ -4,7 +4,8 @@
 绝不解释图片内容（视觉识别属于后续阶段，见 vision.py）。
 
 硬约束：
-- 图片二进制**绝不进入** Jev state / SQLite 缓存 / Markdown·JSON 报告；
+- 图片二进制**绝不进入**文字 Jev state / SQLite 缓存 / Markdown·JSON 报告；
+  只有独立的 vision.py 实验请求可发送用户逐图确认后的处理像素；
 - 纯文本路径的缓存 key 不受影响（Jev state 仍只含中性 marker）；
 - 绑定原则保守：无法证明顺序时拒绝自动绑定，交予用户手动匹配。
 """

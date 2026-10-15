@@ -14,9 +14,11 @@ import sys
 import threading
 import time
 
-from context_builder import select_context
+from context_builder import select_context, select_related_context, RELATED_CONTEXT_VERSION
 from parser import has_media_marker
 from storage import make_cache_key
+from provenance import (PINNED_BASELINE_MODEL, CACHE_VERSION, CONTEXT_VERSION,
+                        AGGREGATION_VERSION, digest, versioned_model)
 
 # 缓存 schema 版本。v3.3：**不改变任何问题、评分或判断规则**，只修一个
 # 数据正确性问题：合并多片段后先按可靠时间线排序（timeline.sort_messages）
@@ -25,7 +27,7 @@ from storage import make_cache_key
 # 的内容随排序变化，cache key 必须变化 → bump 使旧（错误顺序下的）缓存
 # 自然失效；不删除缓存、不改九问。
 SCHEMA_VERSION = "chat-signal-v3.3"
-DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "jev-latest")
+DEFAULT_MODEL = os.environ.get("TYPESAFE_DEFAULT_MODEL", "").strip() or PINNED_BASELINE_MODEL
 API_TIMEOUT_SECONDS = 30.0
 MAX_RETRIES = 2  # SDK 默认即为 2，指数退避，这里显式声明
 
@@ -293,28 +295,20 @@ def build_questions() -> dict:
     }
 
 
-def build_questions_schema() -> dict:
-    """问题的纯 JSON 镜像，用于缓存 key（不依赖 SDK 对象序列化行为）。"""
-    return {
-        "emotion": {"type": "choice", "criteria": EMOTION_OPTIONS},
-        "intent": {"type": "choice", "criteria": INTENT_OPTIONS},
-        "warmth": {"type": "score", "criteria": WARMTH_LEVELS},
-        "engagement": {"type": "score", "criteria": ENGAGEMENT_LEVELS},
-        "special_attention": {"type": "score", "criteria": SPECIAL_ATTENTION_LEVELS},
-        "relationship_evidence_strength": {
-            "type": "score",
-            "criteria": RELATIONSHIP_EVIDENCE_LEVELS,
-        },
-        "relational_ease": {
-            "type": "score",
-            "criteria": RELATIONAL_EASE_LEVELS,
-        },
-        "romantic_signal": {"type": "noul"},
-        "distancing_signal": {"type": "noul"},
-    }
+def build_questions_schema(questions: dict | None = None) -> dict:
+    """Hash the actual full question definitions, including instructions and order."""
+    questions = build_questions() if questions is None else questions
+    schema = {}
+    for name, question in questions.items():
+        block = {"type": question.type, "instructions": question.instructions,
+                 "criteria": question.criteria}
+        if question.type == "choice" and isinstance(question.criteria, dict):
+            block["option_order"] = list(question.criteria)
+        schema[name] = block
+    return schema
 
 
-def build_state(context: list[dict], target: dict) -> dict:
+def build_state(context: list[dict], target: dict, *, context_mode: str = "recent") -> dict:
     """构建 Jev state：目标消息 + turn-aware 有界上下文（Context Builder v2）。
 
     ``context`` 是 target 之前**全部**历史消息（chronological，双方混合）。
@@ -339,7 +333,8 @@ def build_state(context: list[dict], target: dict) -> dict:
                 "text": item.get("text", ""),
                 "time": item.get("time"),
             }
-            for item in select_context(context)
+            for item in (select_related_context(context, target)
+                         if context_mode == "related" else select_context(context))
         ],
         "target_message": {
             "speaker": target.get("speaker"),
@@ -395,13 +390,13 @@ def extract_answers(response) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def create_client(api_key: str | None = None):
+def create_client(api_key: str | None = None, model: str | None = None):
     """创建 TypeSafeClient（显式 max_retries=2，指数退避，与需求一致）。"""
     from typesafe_sdk import RetryPolicy, TypeSafeClient
 
     return TypeSafeClient(
         api_key=api_key,
-        model=DEFAULT_MODEL,
+        model=model or DEFAULT_MODEL,
         timeout=API_TIMEOUT_SECONDS,
         retry=RetryPolicy(max_retries=MAX_RETRIES),
     )
@@ -571,6 +566,8 @@ def analyze_messages(
     progress_cb=None,
     max_workers: int | None = None,
     client_factory=None,
+    model: str | None = None,
+    context_mode: str = "recent",
 ) -> list[dict]:
     """分析 TA 的消息（先查缓存，再对未命中的消息做**有限并发**请求）。
 
@@ -598,7 +595,18 @@ def analyze_messages(
           元数据不进入 state，因此不会无谓改变缓存 key。
     """
     questions = build_questions()
-    questions_schema = build_questions_schema()
+    questions_schema = build_questions_schema(questions)
+    if context_mode not in ("recent", "related"):
+        raise ValueError("Unknown context mode")
+    requested_model = model or DEFAULT_MODEL
+    # Moving aliases cannot safely identify a persistent cache namespace.
+    cache_enabled = cache is not None and versioned_model(requested_model)
+    recipe = {"cache_version": CACHE_VERSION,
+              "requested_model": requested_model, "schema_version": SCHEMA_VERSION,
+              "questions_sha256": digest(questions_schema),
+              "context_policy": RELATED_CONTEXT_VERSION if context_mode == "related" else CONTEXT_VERSION,
+              "aggregation_version": AGGREGATION_VERSION,
+              "modalities": ["text"]}
 
     targets = [
         (i, m)
@@ -642,15 +650,16 @@ def analyze_messages(
                 "text": m["text"],
                 "time": m.get("time"),
             }
-            state = build_state(prefix_view, target_state)
+            state = build_state(prefix_view, target_state, context_mode=context_mode)
             window = state["conversation_context"]
             plans.append({
                 "index": i,
                 "message": m,
                 "state": state,
                 "context": window,
-                "key": None if cache is None else make_cache_key(
-                    state, questions_schema, DEFAULT_MODEL, SCHEMA_VERSION
+                "key": None if not cache_enabled else make_cache_key(
+                    state, {"questions": questions_schema, "recipe": recipe},
+                    requested_model, SCHEMA_VERSION
                 ),
                 "base": {
                     "index": i,
@@ -672,6 +681,8 @@ def analyze_messages(
         cached = None
         if cache is not None and plan["key"] is not None:
             cached = cache.get(plan["key"])
+        if cached is not None and cached.get("model") != requested_model:
+            cached = None
         if cached is not None:
             cache_hits += 1
             results_by_index[plan["index"]] = {
@@ -716,12 +727,20 @@ def analyze_messages(
     def _call(plan: dict):
         started = time.perf_counter()
         try:
-            response = _worker_client().system_one(
-                state=plan["state"], questions=questions
+            worker_client = _worker_client()
+            kwargs = {"model": requested_model} if _is_sdk_client(worker_client) else {}
+            response = worker_client.system_one(
+                state=plan["state"], questions=questions, **kwargs
             )
         finally:
             plan["latency"] = (time.perf_counter() - started) * 1000
-        return extract_answers(response)
+        extracted = extract_answers(response)
+        returned_model = extracted.get("model")
+        if versioned_model(requested_model) and versioned_model(returned_model) \
+                and returned_model != requested_model:
+            raise ValueError("Returned model does not match the pinned request")
+        extracted["analysis_provenance"] = dict(recipe)
+        return extracted
 
     def _record_error(plan: dict, exc: BaseException) -> None:
         kind = error_kind(exc)
@@ -731,7 +750,8 @@ def analyze_messages(
         }
 
     def _record_success(plan: dict, extracted: dict) -> None:
-        if cache is not None and plan["key"] is not None:
+        if cache is not None and plan["key"] is not None \
+                and extracted.get("model") == requested_model:
             cache.set(plan["key"], extracted)
         results_by_index[plan["index"]] = {
             **plan["base"], "result": extracted, "cached": False

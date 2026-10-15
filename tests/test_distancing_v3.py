@@ -179,8 +179,12 @@ def test_other_questions_and_options_structurally_unchanged():
     assert len(analyzer.WARMTH_LEVELS) == 5
     assert len(analyzer.RELATIONAL_EASE_LEVELS) == 5
     schema = build_questions_schema()
-    assert schema["distancing_signal"] == {"type": "noul"}
-    assert schema["romantic_signal"] == {"type": "noul"}
+    assert schema["distancing_signal"]["type"] == "noul"
+    assert schema["distancing_signal"]["instructions"] == questions["distancing_signal"].instructions
+    assert schema["distancing_signal"]["criteria"] == questions["distancing_signal"].criteria
+    assert schema["romantic_signal"]["type"] == "noul"
+    assert schema["romantic_signal"]["instructions"] == questions["romantic_signal"].instructions
+    assert schema["romantic_signal"]["criteria"] == questions["romantic_signal"].criteria
     assert len(schema) == 9
 
 

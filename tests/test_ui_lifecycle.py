@@ -62,7 +62,7 @@ def fake_response(evidence=2.4):
                                       confidence=0.9),
         "romantic_signal": FakeAnswer(noul=0.2),
         "distancing_signal": FakeAnswer(noul=0.2),
-    }, model="fake")
+    }, model="jev-1.13.0")
 
 
 @pytest.fixture

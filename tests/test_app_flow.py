@@ -311,7 +311,7 @@ def test_media_chat_skips_media_and_shows_events(counting_client):
     n = len(counting_client)
     body = _texts(at)
     before = body.count("内容未分析")     # 仅②阶段预览表里的媒体行
-    at.checkbox[0].check()          # 显示媒体事件
+    at.checkbox(key="show_media_events").check()  # 按控件身份选择，设置区也有 checkbox
     at.run()
     assert len(counting_client) == n                # 仍然 0 API
     body = _texts(at)
