@@ -131,3 +131,14 @@ def test_metadata_is_not_copied_into_processed_pixels():
     assert b"private-person-name" not in image.data
     with Image.open(BytesIO(image.data)) as clean:
         assert not clean.getexif() and not clean.info
+
+
+def test_transparent_pixels_are_composited_instead_of_revealing_hidden_rgb():
+    stream = BytesIO()
+    source = Image.new("RGBA", (300, 300), (255, 0, 0, 0))
+    source.putpixel((150, 150), (255, 0, 0, 128))
+    source.save(stream, format="PNG")
+    prepared = prepare_image(make_asset(stream.getvalue(), "image/png"))
+    with Image.open(BytesIO(prepared.data)) as image:
+        assert image.getpixel((0, 0)) == (255, 255, 255)
+        assert image.getpixel((150, 150)) == (255, 127, 127)

@@ -47,7 +47,9 @@ def prepare_image(asset: MediaAsset, *, crop=None, redactions=()) -> PreparedIma
                     raise VisionValidationError("图片像素过多，请先裁剪。")
                 if getattr(original, "is_animated", False):
                     raise VisionValidationError("动画需先导出一张静态图片。")
-                image = ImageOps.exif_transpose(original).convert("RGB")
+                pixels = ImageOps.exif_transpose(original).convert("RGBA")
+                image = Image.new("RGB", pixels.size, "white")
+                image.paste(pixels, mask=pixels.getchannel("A"))
     except VisionValidationError:
         raise
     except Exception:
