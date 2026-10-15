@@ -107,3 +107,24 @@ def test_same_model_different_context_conditions_are_mixed():
     two = {"model": "jev-1.13.0", "analysis_provenance": {"context_policy": "related"}}
     info = ap.summarize([{"result": one}, {"result": two}])
     assert info["mixed"] and not info["comparable"]
+
+
+def test_known_recipe_and_unrecorded_legacy_conditions_cannot_mix(tmp_path):
+    from dataclasses import replace
+    store = fh.FriendStore(tmp_path / "history.db")
+    friend = store.create_friend("测试")
+    messages = [msg(0, "them", "2026-08-01 09:00", "第一条")]
+    entries = [result(0, messages[0]["time"])]
+    snapshot = fh.build_run_snapshot(friend_id=friend.friend_id, messages=messages,
+        results=entries, stats=compute_conversation_stats(entries),
+        schema_version=analyzer.SCHEMA_VERSION, request_model="jev-1.13.0")
+    store.save_run(snapshot)
+    old = store.list_runs(friend.friend_id)[0]
+    known = {**entries[0]["result"], "analysis_provenance": {
+        "context_policy": "related-history-v1", "schema_version": analyzer.SCHEMA_VERSION}}
+    new_info = ap.summarize([{"result": known}])
+    modern = replace(old, run_id="new-run", chat_first_time="2026-08-02 09:00",
+                     chat_last_time="2026-08-02 09:00", analysis_provenance=new_info)
+    assert all(item.status == "reevaluate" for item in lg.eligibility([old, modern]))
+    batch = ap.summarize([entries[0], {"result": known}])
+    assert batch["mixed"] and not batch["comparable"]

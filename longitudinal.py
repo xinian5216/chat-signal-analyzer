@@ -191,6 +191,8 @@ def eligibility(runs: list[RunSummary], *,
     # （请求名可能是移动别名；实际版本才是模型比较依据。）
     returned = set()
     conditions = set()
+    recipe_coverage = [bool(run.analysis_provenance.get("recipes")) for run in ordered]
+    incomplete_conditions = any(recipe_coverage) and not all(recipe_coverage)
     for run in ordered:
         for recipe in run.analysis_provenance.get("recipes", []):
             conditions.add(ap.digest({k: v for k, v in recipe.items() if k != "requested_model"}))
@@ -201,6 +203,9 @@ def eligibility(runs: list[RunSummary], *,
         reasons: list[str] = []
         status = "usable"
 
+        if incomplete_conditions:
+            status = "reevaluate"
+            reasons.append("部分旧记录缺少完整分析条件，无法确认与新记录可比；统一条件重新分析后比较")
         if len(conditions) > 1:
             status = "reevaluate"
             reasons.append("各次分析的问题或上下文条件不同，需统一条件重新分析后比较")

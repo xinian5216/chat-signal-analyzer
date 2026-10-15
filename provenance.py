@@ -48,12 +48,14 @@ def summarize(results: list[dict]) -> dict:
             requested[str(recipe.get("requested_model") or "unknown")] += 1
         else:
             legacy += 1
-    mixed = len(models) > 1 or len(recipes) > 1
+    mixed = len(models) > 1 or len(recipes) > 1 or (bool(recipes) and legacy > 0)
     warnings = []
     if len(models) > 1:
         warnings.append("本批结果混用了多个实际模型版本；统一模型重新分析后再比较。")
     if len(recipes) > 1:
         warnings.append("本批结果的分析条件不同；统一条件重新分析后再比较。")
+    if recipes and legacy:
+        warnings.append("本批混入缺少完整分析条件的旧结果；统一条件重新分析后再比较。")
     if unknown or unversioned:
         warnings.append("部分结果缺少可确认的实际模型版本，不能确认跨期可比性。")
     return {
